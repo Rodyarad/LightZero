@@ -2,7 +2,7 @@ import logging
 import os
 from functools import partial
 from typing import Optional, Tuple
-
+import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
@@ -99,7 +99,8 @@ def train_muzero(
         policy.learn_mode.load_state_dict(torch.load(model_path, map_location=cfg.policy.device))
 
     # Create worker components: learner, collector, evaluator, replay buffer, commander.
-    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial'),  
+    comet_config={"project_name": "lightzero", "disabled": False, }) if get_rank() == 0 else None
     learner = BaseLearner(cfg.policy.learn.learner, policy.learn_mode, tb_logger, exp_name=cfg.exp_name)
 
     # ==============================================================
