@@ -27,7 +27,7 @@ shapes2d_efficientzero_config = dict(
     env=dict(
         stop_value=int(1e6),
         env_id=env_id,
-        observation_shape=[3, 64, 64],
+        observation_shape=[3, 96, 96],
         frame_stack_num=1,
         gray_scale=False,
         collector_env_num=collector_env_num,
@@ -37,7 +37,7 @@ shapes2d_efficientzero_config = dict(
     ),
     policy=dict(
         model=dict(
-            observation_shape=[3, 64, 64],
+            observation_shape=[3, 96, 96],
             image_channel=3,
             frame_stack_num=1,
             gray_scale=False,

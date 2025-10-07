@@ -33,11 +33,11 @@ class Shapes2dEnvLightZero(BaseEnv):
         # (str) The type of the environment, here it's Atari.
         env_type='Shapes2d',
         # (tuple) The shape of the observation space, which is a stacked frame of 4 images each of 96x96 pixels.
-        observation_shape=(4, 64, 64),
+        observation_shape=(3, 96, 96),
         # (int) The maximum number of steps in each episode during data collection.
-        collect_max_episode_steps=int(1.08e5),
+        collect_max_episode_steps=int(100),
         # (int) The maximum number of steps in each episode during evaluation.
-        eval_max_episode_steps=int(1.08e5),
+        eval_max_episode_steps=int(100),
         # (bool) If True, the game is rendered in real-time.
         render_mode_human=False,
         # (bool) If True, a video of the game play is saved.
