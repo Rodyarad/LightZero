@@ -155,7 +155,9 @@ class Shapes2d(gym.Env):
             n_movable_objects = self.n_boxes - len(self.goal_ids) * self.static_goals - len(self.static_box_ids)
             self.action_space = spaces.Discrete(4 * n_movable_objects)
 
-        if self.observation_type in ['shapes'] + list(self.SHAPE2RENDER.keys()):
+        if self.observation_type == 'coordinates':
+            self.observation_space = spaces.Box(low=-1, high=1, shape=(self.n_boxes, 2), dtype=np.float32)
+        elif self.observation_type in ['shapes'] + list(self.SHAPE2RENDER.keys()):
             observation_shape = (self.w * self.render_scale, self.w * self.render_scale, self._get_image_channels())
             if self.channels_first:
                 observation_shape = (observation_shape[2], *observation_shape[:2])
@@ -185,7 +187,9 @@ class Shapes2d(gym.Env):
         return [seed]
 
     def _get_observation(self):
-        if self.observation_type == 'shapes':
+        if self.observation_type == 'coordinates':
+            result = self._get_coordinates_info()
+        elif self.observation_type == 'shapes':
             result = self.render_shapes()
         else:
             result = self.render_shape(self.observation_type)
@@ -204,7 +208,8 @@ class Shapes2d(gym.Env):
     def _get_coordinates_info(self):
         # object coordinates normalized to (-1, 1)
         coordinates = (self.box_pos + 0.5) / self.w * 2 - 1
-        coordinates[self.box_pos[:, 0] < 0] = 1e+8
+        coordinates[self.box_pos[:, 0] < 0] = -1
+        coordinates = coordinates.flatten()
 
         return coordinates
 

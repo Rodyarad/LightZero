@@ -166,3 +166,24 @@ register(
         'do_reward_push_only': True,
     },
 )
+
+register(
+    'Navigation5x5-coord-v0',
+    entry_point='zoo.shapes2d.env.shapes2d.shapes2d:Shapes2d',
+    max_episode_steps=100,
+    kwargs={
+        'observation_type': 'coordinates',
+        'return_state': False,
+        'border_walls': True,
+        'n_boxes': 5,
+        'n_goals': 1,
+        'n_static_boxes': 0,
+        'static_goals': True,
+        'width': 5,
+        'render_scale': 10,
+        'channel_wise': False,
+        'ternary_interactions': False,
+        'embodied_agent': False,
+        'do_reward_push_only': False,
+    },
+)

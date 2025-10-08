@@ -7,9 +7,7 @@ import cv2
 import gymnasium
 import gym
 import numpy as np
-from ding.envs import NoopResetWrapper, MaxAndSkipWrapper, EpisodicLifeWrapper, FireResetWrapper, WarpFrameWrapper, \
-    ScaledFloatFrameWrapper, \
-    ClipRewardWrapper, FrameStackWrapper
+from ding.envs import ScaledFloatFrameWrapper
 from ding.utils.compression_helper import jpeg_data_compressor
 from easydict import EasyDict
 # from gymnasium.wrappers import RecordVideo
@@ -43,13 +41,15 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
 
     #env = GymnasiumToGymWrapper(env)
     #env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
-    if config.warp_frame:
-        # we must set WarpFrame before ScaledFloatFrameWrapper
-        env = WarpFrame(env, width=config.observation_shape[1], height=config.observation_shape[2], grayscale=config.gray_scale)
+    if config.from_pixels:
+        if config.warp_frame:
+            # we must set WarpFrame before ScaledFloatFrameWrapper
+            env = WarpFrame(env, width=config.observation_shape[1], height=config.observation_shape[2], grayscale=config.gray_scale)
     if config.scale:
         env = ScaledFloatFrameWrapper(env)
 
-    env = JpegWrapper(env, transform2string=config.transform2string)
+    if config.from_pixels:
+        env = JpegWrapper(env, transform2string=config.transform2string)
     if config.game_wrapper:
         env = GameWrapper(env)
 

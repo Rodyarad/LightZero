@@ -2,7 +2,7 @@ from easydict import EasyDict
 from zoo.shapes2d.config.shapes2d_env_action_space_map import shapes2d_env_action_space_map
 import comet_ml
 
-env_id = 'Navigation5x5-v0'  # You can specify any Shapes2d game here
+env_id = 'Navigation5x5-coord-v0'  # You can specify any Shapes2d game here
 action_space_size = shapes2d_env_action_space_map[env_id]
 
 # ==============================================================
@@ -25,11 +25,10 @@ num_unroll_steps = 5
 shapes2d_efficientzero_config = dict(
     exp_name=f'data_efficientzero/{env_id[:-14]}_efficientzero_stack4_H{num_unroll_steps}_seed0',
     env=dict(
+        from_pixels=False,
         stop_value=int(1e6),
         env_id=env_id,
-        observation_shape=[3, 64, 64],
-        frame_stack_num=1,
-        gray_scale=False,
+        observation_shape=[10],
         collector_env_num=collector_env_num,
         evaluator_env_num=evaluator_env_num,
         n_evaluator_episode=evaluator_env_num,
@@ -37,28 +36,26 @@ shapes2d_efficientzero_config = dict(
     ),
     policy=dict(
         model=dict(
-            observation_shape=[3, 64, 64],
-            image_channel=3,
+            observation_shape=10,
             frame_stack_num=1,
-            gray_scale=False,
             action_space_size=action_space_size,
-            downsample=True,
+            model_type='mlp',
             self_supervised_learning_loss=True,  # default is False
             discrete_action_encoding_type='one_hot',
-            norm_type='BN',
+            norm_type='LN',
             reward_support_range=(-50., 51., 1.),
             value_support_range=(-50., 51., 1.),
         ),
         cuda=True,
         env_type='not_board_games',
         game_segment_length=400,
-        use_augmentation=True,
+        use_augmentation=False,
         use_priority=False,
         replay_ratio=replay_ratio,
         update_per_collect=update_per_collect,
         batch_size=batch_size,
         dormant_threshold=0.025,
-        optim_type='SGD',
+        optim_type='AdamW',
         piecewise_decay_lr_scheduler=True,
         learning_rate=0.2,
         target_update_freq=100,

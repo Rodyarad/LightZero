@@ -22,6 +22,7 @@ class Shapes2dEnvLightZero(BaseEnv):
         _reward_space, obs, _eval_episode_return, has_reset, _seed, _dynamic_seed
     """
     config = dict(
+        from_pixels=True,
         # (int) The number of environment instances used for data collection.
         collector_env_num=8,
         # (int) The number of environment instances used for evaluator.
@@ -33,7 +34,7 @@ class Shapes2dEnvLightZero(BaseEnv):
         # (str) The type of the environment, here it's Atari.
         env_type='Shapes2d',
         # (tuple) The shape of the observation space, which is a stacked frame of 4 images each of 96x96 pixels.
-        observation_shape=(3, 96, 96),
+        observation_shape=(3, 64, 64),
         # (int) The maximum number of steps in each episode during data collection.
         collect_max_episode_steps=int(100),
         # (int) The maximum number of steps in each episode during evaluation.
@@ -47,9 +48,6 @@ class Shapes2dEnvLightZero(BaseEnv):
         replay_path=None,
         # (bool) If set to True, the game screen is converted to grayscale, reducing the complexity of the observation space.
         gray_scale=False,
-        # (int) Specifies the number of consecutive frames to stack after collecting environment data.
-        # The stacking process is applied within the collector and evaluator modules.
-        frame_stack_num=1,
         # (int) The number of frames to skip between each action. Higher values result in faster simulation.
         frame_skip=0,
         # (bool) If True, the channels of the observation images are placed last (e.g., height, width, channels).
@@ -109,15 +107,9 @@ class Shapes2dEnvLightZero(BaseEnv):
             # Create and return the wrapped environment for Atari LightZero.
             self._env = wrap_lightzero(self.cfg)
 
-            observation_space_before_stack = (
-                int(self.cfg.observation_shape[0] / self.cfg.frame_stack_num),
-                self.cfg.observation_shape[1],
-                self.cfg.observation_shape[2]
-            )
-
             self._observation_space = gym.spaces.Dict({
                 'observation': gym.spaces.Box(
-                    low=0, high=1, shape=observation_space_before_stack, dtype=np.float32
+                    low=0, high=1, shape=self.cfg.observation_shape, dtype=np.float32
                 ),
                 'action_mask': gym.spaces.Box(
                     low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
@@ -184,11 +176,11 @@ class Shapes2dEnvLightZero(BaseEnv):
             - observation (:obj:`dict`): The dictionary containing current observation, action mask, and to_play flag.
         """
         observation = self.obs
-
-        if not self.channel_last:
-            # move the channel dim to the fist axis
-            # (96, 96, 3) -> (3, 96, 96)
-            observation = np.transpose(observation, (2, 0, 1))
+        if self.cfg.from_pixels:
+            if not self.channel_last:
+                # move the channel dim to the fist axis
+                # (96, 96, 3) -> (3, 96, 96)
+                observation = np.transpose(observation, (2, 0, 1))
 
         action_mask = np.ones(self._action_space.n, 'int8')
 
@@ -248,8 +240,8 @@ class Shapes2dEnvLightZero(BaseEnv):
         collector_env_num = cfg.pop('collector_env_num')
         cfg = copy.deepcopy(cfg)
         cfg.max_episode_steps = cfg.collect_max_episode_steps
-        cfg.episode_life = True
-        cfg.clip_rewards = True
+        cfg.episode_life = False
+        cfg.clip_rewards = False
         return [cfg for _ in range(collector_env_num)]
 
     @staticmethod
