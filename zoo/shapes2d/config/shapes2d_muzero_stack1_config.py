@@ -10,7 +10,7 @@ action_space_size = shapes2d_env_action_space_map[env_id]
 # ==============================================================
 collector_env_num = 8
 n_episode = 8
-evaluator_env_num = 3
+evaluator_env_num = 30
 num_simulations = 50
 update_per_collect = None
 replay_ratio = 0.25
@@ -33,8 +33,8 @@ shapes2d_muzero_config = dict(
         evaluator_env_num=evaluator_env_num,
         n_evaluator_episode=evaluator_env_num,
         manager=dict(shared_memory=False, ),
-        collect_max_episode_steps=int(2e4),
-        eval_max_episode_steps=int(1e4),
+        collect_max_episode_steps=int(100),
+        eval_max_episode_steps=int(100),
     ),
     policy=dict(
         model=dict(
