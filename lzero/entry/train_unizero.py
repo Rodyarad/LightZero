@@ -2,7 +2,7 @@ import logging
 import os
 from functools import partial
 from typing import Tuple, Optional
-
+import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
@@ -13,7 +13,7 @@ from ding.rl_utils import get_epsilon_greedy_fn
 from ding.utils import set_pkg_seed, get_rank
 from ding.worker import BaseLearner
 from tensorboardX import SummaryWriter
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
 
 from lzero.entry.utils import log_buffer_memory_usage
 from lzero.policy import visit_count_temperature
@@ -106,7 +106,8 @@ def train_unizero(
         logging.info("Pretrained model loaded successfully!")
 
     # Create core components for training
-    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial'),
+    comet_config={"project_name": "lightzero", "disabled": False, }) if get_rank() == 0 else None
     learner = BaseLearner(cfg.policy.learn.learner, policy.learn_mode, tb_logger, exp_name=cfg.exp_name)
     replay_buffer = GameBuffer(cfg.policy)
     collector = Collector(env=collector_env, policy=policy.collect_mode, tb_logger=tb_logger, exp_name=cfg.exp_name,
