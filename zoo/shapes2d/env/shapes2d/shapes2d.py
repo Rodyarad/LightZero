@@ -208,10 +208,29 @@ class Shapes2d(gym.Env):
     def _get_coordinates_info(self):
         # object coordinates normalized to (-1, 1)
         coordinates = (self.box_pos + 0.5) / self.w * 2 - 1
-        coordinates[self.box_pos[:, 0] < 0] = -1
+        active_mask = self.box_pos[:, 0] < 0
+        coordinates[active_mask] = -1
         coordinates = coordinates.flatten()
 
-        return coordinates
+        num_objects = len(coordinates) // 2
+        result = []
+
+        for i in range(num_objects):
+            one_hot = np.zeros(5)
+            one_hot[i] = 1 
+            
+            if i != num_objects - 1:
+                flag = 0 if active_mask[i] else 1
+            else:
+                flag = 0
+            
+            x, y = coordinates[2 * i: 2 * i + 2]
+            
+            result.extend(one_hot)
+            result.append(flag)
+            result.extend([x, y])
+
+        return np.array(result)
 
     def reset(self, seed=None, options=None):
         state = np.full(shape=[self.w, self.w], fill_value=-1, dtype=np.int32)
