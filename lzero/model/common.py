@@ -7,7 +7,7 @@ Overview:
 """
 import math
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Sequence
 from typing import Tuple
 
 import numpy as np
@@ -1435,4 +1435,568 @@ class PredictionHiddenNetwork(nn.Module):
 
         value = self.fc_value(latent_history_value)
         policy = self.fc_policy(latent_history_policy)
+        return policy, value
+
+def get_act_fn(act_fn):
+    if act_fn == 'relu':
+        return nn.ReLU()
+    elif act_fn == 'leaky_relu':
+        return nn.LeakyReLU()
+    elif act_fn == 'elu':
+        return nn.ELU()
+    elif act_fn == 'sigmoid':
+        return nn.Sigmoid()
+    elif act_fn == 'softplus':
+        return nn.Softplus()
+    else:
+        raise ValueError('Invalid argument for `act_fn`.')
+
+def unsorted_segment_sum(tensor, segment_ids, num_segments):
+    """Custom PyTorch op to replicate TensorFlow's `unsorted_segment_sum`."""
+    result_shape = (num_segments, tensor.size(1))
+    result = tensor.new_full(result_shape, 0)  # Init empty result tensor.
+    segment_ids = segment_ids.unsqueeze(-1).expand(-1, tensor.size(1))
+    result.scatter_add_(0, segment_ids, tensor)
+    return result
+
+def to_one_hot(indices, max_index):
+    """Get one-hot encoding of index tensors."""
+    zeros = torch.zeros(
+        indices.size()[0], max_index, dtype=torch.float32,
+        device=indices.device)
+    return zeros.scatter_(1, indices.unsqueeze(1), 1)
+
+def make_node_mlp_layers(num_layers, input_dim, hidden_dim, output_dim, act_fn, layer_norm):
+    layers = []
+
+    for idx in range(num_layers):
+
+        if idx == 0:
+            # first layer, input_dim => hidden_dim
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(get_act_fn(act_fn))
+        elif idx == num_layers - 2:
+            # layer before the last, add layer norm
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            if layer_norm:
+                layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(get_act_fn(act_fn))
+        elif idx == num_layers - 1:
+            # last layer, hidden_dim => output_dim and no activation
+            layers.append(nn.Linear(hidden_dim, output_dim))
+        else:
+            # all other layers, hidden_dim => hidden_dim
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(get_act_fn(act_fn))
+
+    return layers
+
+class GNN(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, action_dim, num_objects, ignore_action=False, copy_action=False,
+                 act_fn='relu', layer_norm=True, num_layers=3, use_interactions=True, edge_actions=False,
+                 output_dim=None):
+        super(GNN, self).__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        if self.output_dim is None:
+            self.output_dim = self.input_dim
+
+        self.num_objects = num_objects
+        self.ignore_action = ignore_action
+        self.copy_action = copy_action
+        self.use_interactions = use_interactions
+        self.edge_actions = edge_actions
+        self.num_layers = num_layers
+
+        if self.ignore_action:
+            self.action_dim = 0
+        else:
+            self.action_dim = action_dim
+
+        tmp_action_dim = self.action_dim
+        edge_mlp_input_size = self.input_dim * 2 + int(self.edge_actions) * tmp_action_dim
+
+        self.edge_mlp = nn.Sequential(*self.make_node_mlp_layers_(
+            edge_mlp_input_size, self.hidden_dim, act_fn, layer_norm
+        ))
+
+        if self.num_objects == 1 or not self.use_interactions:
+            node_input_dim = self.input_dim + tmp_action_dim
+        else:
+            node_input_dim = hidden_dim + self.input_dim + tmp_action_dim
+
+        self.node_mlp = nn.Sequential(*self.make_node_mlp_layers_(
+            node_input_dim, self.output_dim, act_fn, layer_norm
+        ))
+
+        self.edge_list = None
+        self.batch_size = 0
+
+    def _edge_model(self, source, target, action=None):
+        if action is None:
+            x = [source, target]
+        else:
+            x = [source, target, action]
+
+        out = torch.cat(x, dim=1)
+        return self.edge_mlp(out)
+
+    def _node_model(self, node_attr, edge_index, edge_attr):
+        if edge_attr is not None:
+            row, col = edge_index
+            agg = unsorted_segment_sum(
+                edge_attr, row, num_segments=node_attr.size(0))
+            out = torch.cat([node_attr, agg], dim=1)
+        else:
+            out = node_attr
+        return self.node_mlp(out)
+
+    def _get_edge_list_fully_connected(self, batch_size, num_objects, device):
+        # Only re-evaluate if necessary (e.g. if batch size changed).
+        if self.edge_list is None or self.batch_size != batch_size:
+            self.batch_size = batch_size
+
+            # Create fully-connected adjacency matrix for single sample.
+            adj_full = torch.ones(num_objects, num_objects)
+
+            # Remove diagonal.
+            adj_full -= torch.eye(num_objects)
+            self.edge_list = adj_full.nonzero()
+
+            # Copy `batch_size` times and add offset.
+            self.edge_list = self.edge_list.repeat(batch_size, 1)
+            offset = torch.arange(
+                0, batch_size * num_objects, num_objects).unsqueeze(-1)
+            offset = offset.expand(batch_size, num_objects * (num_objects - 1))
+            offset = offset.contiguous().view(-1)
+            self.edge_list += offset.unsqueeze(-1)
+
+            # Transpose to COO format -> Shape: [2, num_edges].
+            self.edge_list = self.edge_list.transpose(0, 1)
+            self.edge_list = self.edge_list.to(device)
+
+        return self.edge_list
+
+    def process_action_(self, action):
+        if self.copy_action:
+            if action.shape[1] == 1 and (action.dtype in (torch.int32, torch.int64)):
+                # action is an integer
+                action = action.squeeze(1)
+                action_vec = to_one_hot(action, self.action_dim).repeat(1, self.num_objects)
+            else:
+                # action is a vector
+                action_vec = action.repeat(1, self.num_objects)
+            # mix node and batch dimension
+            action_vec = action_vec.reshape(-1, self.action_dim).float()
+        else:
+            # we have a separate action for each node
+            if action.shape[1] == 1 and (action.dtype in (torch.int32, torch.int64)):
+                # index for both object and action
+                action = action.squeeze(1)
+                action_vec = to_one_hot(action, self.action_dim * self.num_objects)
+                action_vec = action_vec.reshape(-1, self.action_dim)
+            else:
+                action_vec = action.reshape(action.size(0), self.action_dim * self.num_objects)
+                action_vec = action_vec.reshape(-1, self.action_dim)
+
+        return action_vec
+
+    def forward(self, states, action):
+
+        device = states.device
+        batch_size = states.size(0)
+        num_nodes = states.size(1)
+
+        # states: [batch_size (B), num_objects, embedding_dim]
+        # node_attr: Flatten states tensor to [B * num_objects, embedding_dim]
+        node_attr = states.reshape(-1, self.input_dim)
+
+        action_vec = None
+        if not self.ignore_action:
+            action_vec = self.process_action_(action)
+
+        edge_attr = None
+        edge_index = None
+
+        if num_nodes > 1 and self.use_interactions:
+            # edge_index: [B * (num_objects*[num_objects-1]), 2] edge list
+            edge_index = self._get_edge_list_fully_connected(
+                batch_size, num_nodes, device)
+
+            row, col = edge_index
+            edge_attr = self._edge_model(node_attr[row], node_attr[col], action_vec[row] if self.edge_actions else None)
+
+        if not self.ignore_action:
+            # Attach action to each state
+            node_attr = torch.cat([node_attr, action_vec], dim=-1)
+
+        node_attr = self._node_model(
+            node_attr, edge_index, edge_attr)
+
+        # [batch_size, num_nodes, hidden_dim]
+        node_attr = node_attr.view(batch_size, num_nodes, -1)
+
+        return node_attr
+
+    def make_node_mlp_layers_(self, input_dim, output_dim, act_fn, layer_norm):
+        return make_node_mlp_layers(self.num_layers, input_dim, self.hidden_dim, output_dim, act_fn, layer_norm)
+
+class OCDynamicsNetwork(nn.Module):
+    def __init__(
+        self,
+        observation_shape: Sequence[int],
+        action_encoding_dim: int = 2,
+        num_res_blocks: int = 1,
+        num_channels: int = 64,
+        reward_head_channels: int = 64,
+        reward_head_hidden_channels: Sequence[int] = [32],
+        output_support_size: int = 601,
+        flatten_input_size_for_reward_head: int = 64,
+        downsample: bool = False,
+        rnn_hidden_size: int = 512,
+        last_linear_layer_init_zero: bool = True,
+        activation: Optional[nn.Module] = nn.ReLU(inplace=True),
+        norm_type: Optional[str] = 'BN',
+        embedding_dim: int = 256,
+        group_size: int = 8,
+        use_sim_norm: bool = False,
+        res_connection_in_dynamics: bool = True,
+    ):
+        """
+        Define the Dynamics Network for predicting the next latent state, reward,
+        and reward hidden state based on the current state and action.
+
+        Arguments:
+            observation_shape (Sequence[int]): Shape of the input observation, e.g., (12, 96, 96).
+            action_encoding_dim (int): Dimension of the action encoding.
+            num_res_blocks (int): Number of residual blocks in the MuZero model.
+            num_channels (int): Number of channels in the latent state.
+            reward_head_channels (int): Number of channels in the reward head.
+            reward_head_hidden_channels (Sequence[int]): Hidden layers in the reward head MLP.
+            output_support_size (int): Size of the output for reward classification.
+            flatten_input_size_for_reward_head (int): Flattened output size for the reward head.
+            downsample (bool): Whether to downsample the input observation. Default is False.
+            rnn_hidden_size (int): Hidden size of the LSTM in the dynamics network.
+            last_linear_layer_init_zero (bool): Whether to initialize the last reward MLP layer to zero. Default is True.
+            activation (Optional[nn.Module]): Activation function used in the network. Default is ReLU(inplace=True).
+            norm_type (Optional[str]): Type of normalization used in the network. Default is 'BN'.
+            embedding_dim (int): Embedding dimension if using SimNorm.
+            group_size (int): Group size for SimNorm.
+            use_sim_norm (bool): Whether to use SimNorm. Default is False.
+            res_connection_in_dynamics (bool): Whether to use residual connections in the dynamics. Default is True.
+        """
+        super().__init__()
+        assert norm_type in ['BN', 'LN'], "Normalization type must be 'BN' or 'LN'"
+        assert num_channels > action_encoding_dim, f'Number of channels:{num_channels} <= action encoding dimension:{action_encoding_dim}'
+
+        self.action_encoding_dim = action_encoding_dim
+        self.num_channels = num_channels
+        self.rnn_hidden_size = rnn_hidden_size
+        self.flatten_input_size_for_reward_head = flatten_input_size_for_reward_head
+
+        self.num_channels_of_latent_state = num_channels - self.action_encoding_dim
+        self.activation = activation
+
+        # 1x1 convolution to adjust the number of channels
+        self.conv = nn.Conv2d(num_channels, self.num_channels_of_latent_state, kernel_size=1, stride=1, bias=False)
+
+        # Choose between BatchNorm or LayerNorm
+        if norm_type == 'BN':
+            self.norm_common = nn.BatchNorm2d(self.num_channels_of_latent_state)
+        elif norm_type == 'LN':
+            self.norm_common = nn.LayerNorm(
+                [self.num_channels_of_latent_state,
+                 math.ceil(observation_shape[-2] / (16 if downsample else 1)),
+                 math.ceil(observation_shape[-1] / (16 if downsample else 1))]
+            )
+
+        # Residual Blocks
+        self.resblocks = nn.ModuleList([
+            ResBlock(
+                in_channels=self.num_channels_of_latent_state,
+                activation=self.activation,
+                norm_type=norm_type,
+                res_type='basic',
+                bias=False
+            ) for _ in range(num_res_blocks)
+        ])
+
+        # Reward prediction residual blocks
+        self.reward_resblocks = nn.ModuleList([
+            ResBlock(
+                in_channels=self.num_channels_of_latent_state,
+                activation=self.activation,
+                norm_type=norm_type,
+                res_type='basic',
+                bias=False
+            ) for _ in range(num_res_blocks)
+        ])
+
+        # 1x1 convolution to adjust the number of reward head channels
+        self.conv1x1_reward = nn.Conv2d(self.num_channels_of_latent_state, reward_head_channels, 1)
+
+        # Choose normalization before LSTM
+        if norm_type == 'BN':
+            self.norm_before_lstm = nn.BatchNorm2d(reward_head_channels)
+        elif norm_type == 'LN':
+            self.norm_before_lstm = nn.LayerNorm(
+                [reward_head_channels,
+                 math.ceil(observation_shape[-2] / (16 if downsample else 1)),
+                 math.ceil(observation_shape[-1] / (16 if downsample else 1))]
+            )
+
+        # Reward head MLP
+        self.fc_reward_head = MLP(
+            self.rnn_hidden_size,
+            hidden_channels=reward_head_hidden_channels[0],
+            layer_num=len(reward_head_hidden_channels) + 1,
+            out_channels=output_support_size,
+            activation=activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+
+        self.latent_state_dim = self.flatten_input_size_for_reward_head
+
+        self.gru = nn.GRU(input_size=self.latent_state_dim, hidden_size=self.rnn_hidden_size, num_layers=1, batch_first=True)
+
+        # Compute output dimensions and shapes based on whether downsampling is used
+        if downsample:
+            ceil_size = math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
+            self.output_dim = self.num_channels_of_latent_state * ceil_size
+            self.output_shape = (
+                self.num_channels_of_latent_state,
+                math.ceil(observation_shape[1] / 16),
+                math.ceil(observation_shape[2] / 16)
+            )
+        else:
+            self.output_dim = self.num_channels_of_latent_state * observation_shape[1] * observation_shape[2]
+            self.output_shape = (self.num_channels_of_latent_state, observation_shape[1], observation_shape[2])
+
+        # Flatten dimension of the latent state
+        self.latent_state_flatten_dim = 64 * 8 * 8
+
+        # Linear layer to adjust dimensions
+        self.linear_common = nn.Linear(self.latent_state_flatten_dim, self.latent_state_dim, bias=False)
+
+        # Dynamics head MLP
+        self.fc_dynamics_head = MLP(
+            self.rnn_hidden_size,
+            hidden_channels=self.rnn_hidden_size,
+            layer_num=2,
+            out_channels=self.latent_state_flatten_dim,
+            activation=activation,
+            norm_type=norm_type,
+            output_activation=True,
+            output_norm=True,
+            last_linear_layer_init_zero=False  # Important for convergence
+        )
+
+        self.res_connection_in_dynamics = res_connection_in_dynamics
+        self.use_sim_norm = use_sim_norm
+
+        # If using SimNorm
+        if self.use_sim_norm:
+            self.embedding_dim = embedding_dim
+            self.last_linear = nn.Linear(self.latent_state_flatten_dim, self.embedding_dim, bias=False)
+            init.kaiming_normal_(self.last_linear.weight, mode='fan_out', nonlinearity='relu')
+            self.sim_norm = SimNorm(simnorm_dim=group_size)
+
+    def forward(
+        self,
+        state_action_encoding: torch.Tensor,
+        dynamics_hidden_state: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        """
+        Forward pass for the Dynamics Network. Predict the next latent state,
+        the next dynamics hidden state, and the reward based on the current state-action encoding.
+
+        Arguments:
+            state_action_encoding (torch.Tensor): State-action encoding, a concatenation of the latent state and action encoding.
+            dynamics_hidden_state (Tuple[torch.Tensor, torch.Tensor]): Hidden state for the LSTM related to reward.
+
+        Returns:
+            next_latent_state (torch.Tensor): Next latent state.
+            next_dynamics_hidden_state (Tuple[torch.Tensor, torch.Tensor]): Next hidden state for the LSTM.
+            reward (torch.Tensor): Predicted reward.
+        """
+        # Extract latent state
+        latent_state = state_action_encoding[:, :-self.action_encoding_dim, :, :]
+
+        # Adjust channels and normalize
+        x = self.conv(state_action_encoding)
+        x = self.norm_common(x)
+        x += latent_state  # Residual connection
+        x = self.activation(x)
+
+        # Pass through residual blocks
+        for block in self.resblocks:
+            x = block(x)
+
+        # Reshape and transform
+        x = self.linear_common(x.view(-1, self.latent_state_flatten_dim))
+        x = self.activation(x).unsqueeze(1)
+
+        # ==================== GRU backbone ==================
+        # Pass through GRU
+        gru_outputs, next_dynamics_hidden_state = self.gru(x, dynamics_hidden_state)
+
+        # Predict reward
+        reward = self.fc_reward_head(gru_outputs.squeeze(1))
+
+        # Predict next latent state
+        next_latent_state_encoding = self.fc_dynamics_head(gru_outputs.squeeze(1))
+
+        # Residual connection
+        if self.res_connection_in_dynamics:
+            next_latent_state = next_latent_state_encoding.view(latent_state.shape) + latent_state
+        else:
+            next_latent_state = next_latent_state_encoding.view(latent_state.shape)
+
+        # Apply SimNorm if used
+        if self.use_sim_norm:
+            next_latent_state = self.sim_norm(next_latent_state)
+
+        return next_latent_state, next_dynamics_hidden_state, reward
+
+
+class OCPredictionNetwork(nn.Module):
+
+    def __init__(
+            self,
+            observation_shape: SequenceType,
+            action_space_size: int,
+            num_res_blocks: int,
+            num_channels: int,
+            value_head_channels: int,
+            policy_head_channels: int,
+            value_head_hidden_channels: int,
+            policy_head_hidden_channels: int,
+            output_support_size: int,
+            flatten_input_size_for_value_head: int,
+            flatten_input_size_for_policy_head: int,
+            downsample: bool = False,
+            last_linear_layer_init_zero: bool = True,
+            activation: nn.Module = nn.ReLU(inplace=True),
+            norm_type: Optional[str] = 'BN',
+    ) -> None:
+        """
+        Overview:
+            The definition of policy and value prediction network, which is used to predict value and policy by the
+            given latent state.
+        Arguments:
+            - observation_shape (:obj:`SequenceType`): The shape of observation space, e.g. (C, H, W) for image.
+            - action_space_size: (:obj:`int`): Action space size, usually an integer number for discrete action space.
+            - num_res_blocks (:obj:`int`): The number of res blocks in AlphaZero model.
+            - num_channels (:obj:`int`): The channels of hidden states.
+            - value_head_channels (:obj:`int`): The channels of value head.
+            - policy_head_channels (:obj:`int`): The channels of policy head.
+            - value_head_hidden_channels (:obj:`SequenceType`): The number of hidden layers used in value head (MLP head).
+            - policy_head_hidden_channels (:obj:`SequenceType`): The number of hidden layers used in policy head (MLP head).
+            - output_support_size (:obj:`int`): The size of categorical value output.
+            - self_supervised_learning_loss (:obj:`bool`): Whether to use self_supervised_learning related networks \
+            - flatten_input_size_for_value_head (:obj:`int`): The size of flatten hidden states, i.e. the input size \
+                of the value head.
+            - flatten_input_size_for_policy_head (:obj:`int`): The size of flatten hidden states, i.e. the input size \
+                of the policy head.
+            - downsample (:obj:`bool`): Whether to do downsampling for observations in ``representation_network``.
+            - last_linear_layer_init_zero (:obj:`bool`): Whether to use zero initializations for the last layer of \
+                dynamics/prediction mlp, default sets it to True.
+            - activation (:obj:`Optional[nn.Module]`): Activation function used in network, which often use in-place \
+                operation to speedup, e.g. ReLU(inplace=True).
+            - norm_type (:obj:`str`): The type of normalization in networks. defaults to 'BN'.
+        """
+        super(PredictionNetwork, self).__init__()
+        assert norm_type in ['BN', 'LN'], "norm_type must in ['BN', 'LN']"
+
+        self.resblocks = nn.ModuleList(
+            [
+                ResBlock(
+                    in_channels=num_channels, activation=activation, norm_type=norm_type, res_type='basic', bias=False
+                ) for _ in range(num_res_blocks)
+            ]
+        )
+
+        self.conv1x1_value = nn.Conv2d(num_channels, value_head_channels, 1)
+        self.conv1x1_policy = nn.Conv2d(num_channels, policy_head_channels, 1)
+
+        if observation_shape[1] == 96:
+            latent_shape = (observation_shape[1] / 16, observation_shape[2] / 16)
+        elif observation_shape[1] == 64:
+            latent_shape = (observation_shape[1] / 8, observation_shape[2] / 8)
+
+        if norm_type == 'BN':
+            self.norm_value = nn.BatchNorm2d(value_head_channels)
+            self.norm_policy = nn.BatchNorm2d(policy_head_channels)
+        elif norm_type == 'LN':
+            if downsample:
+                self.norm_value = nn.LayerNorm(
+                    [value_head_channels, *latent_shape],
+                    eps=1e-5)
+                self.norm_policy = nn.LayerNorm([policy_head_channels, *latent_shape], eps=1e-5)
+            else:
+                self.norm_value = nn.LayerNorm([value_head_channels, observation_shape[-2], observation_shape[-1]],
+                                               eps=1e-5)
+                self.norm_policy = nn.LayerNorm([policy_head_channels, observation_shape[-2], observation_shape[-1]],
+                                                eps=1e-5)
+
+        self.flatten_input_size_for_value_head = flatten_input_size_for_value_head
+        self.flatten_input_size_for_policy_head = flatten_input_size_for_policy_head
+
+        self.activation = activation
+
+        self.fc_value = MLP_V2(
+            in_channels=self.flatten_input_size_for_value_head,
+            hidden_channels=value_head_hidden_channels,
+            out_channels=output_support_size,
+            activation=self.activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            # last_linear_layer_init_zero=True is beneficial for convergence speed.
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+        self.fc_policy = MLP_V2(
+            in_channels=self.flatten_input_size_for_policy_head,
+            hidden_channels=policy_head_hidden_channels,
+            out_channels=action_space_size,
+            activation=self.activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            # last_linear_layer_init_zero=True is beneficial for convergence speed.
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+
+    def forward(self, latent_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Overview:
+            Forward computation of the prediction network.
+        Arguments:
+            - latent_state (:obj:`torch.Tensor`): input tensor with shape (B, latent_state_dim).
+        Returns:
+            - policy (:obj:`torch.Tensor`): policy tensor with shape (B, action_space_size).
+            - value (:obj:`torch.Tensor`): value tensor with shape (B, output_support_size).
+        """
+        for res_block in self.resblocks:
+            latent_state = res_block(latent_state)
+
+        value = self.conv1x1_value(latent_state)
+        value = self.norm_value(value)
+        value = self.activation(value)
+
+        policy = self.conv1x1_policy(latent_state)
+        policy = self.norm_policy(policy)
+        policy = self.activation(policy)
+
+        value = value.reshape(-1, self.flatten_input_size_for_value_head)
+        policy = policy.reshape(-1, self.flatten_input_size_for_policy_head)
+
+        value = self.fc_value(value)
+        policy = self.fc_policy(policy)
         return policy, value
