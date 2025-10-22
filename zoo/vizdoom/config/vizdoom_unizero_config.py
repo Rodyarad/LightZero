@@ -10,9 +10,9 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
     # ==============================================================
     collector_env_num = 8
     game_segment_length = 20
-    evaluator_env_num = 3
+    evaluator_env_num = 30
     num_simulations = 50
-    max_env_step = int(5e5)
+    max_env_step = int(1e6)
     batch_size = 64
     num_unroll_steps = 10
     infer_context_length = 4
@@ -37,7 +37,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
         env=dict(
             stop_value=int(1e6),
             env_id=env_id,
-            observation_shape=(3, 64, 64),
+            observation_shape=(3, 128, 128),
             gray_scale=False,
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
@@ -50,7 +50,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
         policy=dict(
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1000000, ), ), ),  # default is 10000
             model=dict(
-                observation_shape=(3, 64, 64),
+                observation_shape=(3, 128, 128),
                 action_space_size=action_space_size,
                 world_model_cfg=dict(
                     policy_entropy_weight=1e-4,

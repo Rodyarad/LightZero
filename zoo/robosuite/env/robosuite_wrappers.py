@@ -4,7 +4,6 @@ from typing import Optional
 
 import cv2
 # import gymnasium as gym
-import gymnasium
 import gym
 import numpy as np
 from ding.envs import ScaledFloatFrameWrapper
@@ -12,7 +11,9 @@ from ding.utils.compression_helper import jpeg_data_compressor
 from easydict import EasyDict
 # from gymnasium.wrappers import RecordVideo
 from gym.wrappers import RecordVideo
-from vizdoom import gymnasium_wrapper
+
+from omegaconf import OmegaConf
+from zoo.robosuite.env.robosuite import RobosuiteEnv
 
 
 def wrap_lightzero(config: EasyDict) -> gym.Env:
@@ -27,7 +28,8 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     Return:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
-    env = gymnasium.make(config.env_id)
+    env = RobosuiteEnv(task='Lift', horizon=config.max_episode_steps, seed=config.seed)
+
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -39,21 +41,15 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             name_prefix=video_name
         )
 
-    env = GymnasiumToGymWrapper(env)
-    #env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
+    #env = TimeLimit(env, max_episode_steps=env.unwrapped._max_episode_length)
     if config.from_pixels:
         if config.warp_frame:
             # we must set WarpFrame before ScaledFloatFrameWrapper
-            env = WarpFrame(env, width=config.observation_shape[1], height=config.observation_shape[2], grayscale=config.gray_scale,
-            dict_space_key='screen')
-    env = ExtractObservation(env, key='screen')
+            env = WarpFrame(env, width=config.observation_shape[1], height=config.observation_shape[2], grayscale=config.gray_scale,)
     if config.scale:
         env = ScaledFloatFrameWrapper(env)
     if config.from_pixels:
         env = JpegWrapper(env, transform2string=config.transform2string)
-    if config.game_wrapper:
-        env = GameWrapper(env)
-
     return env
 
 
@@ -145,17 +141,6 @@ class WarpFrame(gym.ObservationWrapper):
             obs[self._key] = frame
         return obs
 
-class ExtractObservation(gym.ObservationWrapper):
-    def __init__(self, env: gym.Env, key: str = 'screen'):
-        super().__init__(env)
-        assert isinstance(env.observation_space, gymnasium.spaces.Dict), type(env.observation_space)
-        assert key in env.observation_space.spaces, key
-        self._key = key
-        self.observation_space = env.observation_space.spaces[key]
-
-    def observation(self, obs):
-        return obs[self._key]
-
 class JpegWrapper(gym.Wrapper):
     """
     Overview:
@@ -186,70 +171,3 @@ class JpegWrapper(gym.Wrapper):
             observation = jpeg_data_compressor(observation)
 
         return observation
-
-
-class GameWrapper(gym.Wrapper):
-    """
-    Overview:
-        A wrapper to adapt the environment to the game interface.
-    """
-
-    def __init__(self, env: gym.Env):
-        """
-        Arguments:
-            - env (:obj:`gym.Env`): The environment to wrap.
-        """
-        super().__init__(env)
-
-    def legal_actions(self):
-        return [_ for _ in range(self.env.action_space.n)]
-
-class GymnasiumToGymWrapper(gym.Wrapper):
-    """
-    Overview:
-        A wrapper class that adapts a Gymnasium environment to the Gym interface.
-    Interface:
-        ``__init__``, ``reset``, ``seed``
-    Properties:
-        - _seed (:obj:`int` or None): The seed value for the environment.
-    """
-
-    def __init__(self, env):
-        """
-        Overview:
-            Initializes the GymnasiumToGymWrapper.
-        Arguments:
-            - env (:obj:`gymnasium.Env`): The Gymnasium environment to be wrapped.
-        """
-
-        assert isinstance(env, gymnasium.Env), type(env)
-        super().__init__(env)
-        self._seed = None
-
-    def seed(self, seed):
-        """
-        Overview:
-            Sets the seed value for the environment.
-        Arguments:
-            - seed (:obj:`int`): The seed value to use for random number generation.
-        """
-        self._seed = seed
-
-    def reset(self, **kwargs):
-        """
-        Overview:
-            Resets the environment and returns the initial observation.
-        Returns:
-            - observation (:obj:`Any`): The initial observation of the environment.
-        """
-        result = self.env.reset(seed=self._seed, **kwargs)
-        if isinstance(result, tuple):
-            obs, info = result
-        else:
-            obs = result
-        return obs
-
-    def step(self, action):
-        obs, rew, terminated, truncated, info = self.env.step(action)
-        done = terminated or truncated
-        return obs, rew, done, info

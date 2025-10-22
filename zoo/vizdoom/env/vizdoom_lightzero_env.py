@@ -34,7 +34,7 @@ class VizdoomEnvLightZero(BaseEnv):
         # (str) The type of the environment, here it's Atari.
         env_type='Vizdoom',
         # (tuple) The shape of the observation space, which is a stacked frame of 4 images each of 96x96 pixels.
-        observation_shape=(3, 64, 64),
+        observation_shape=(3, 128, 128),
         # (int) The maximum number of steps in each episode during data collection.
         collect_max_episode_steps=int(2100),
         # (int) The maximum number of steps in each episode during evaluation.
