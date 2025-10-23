@@ -1,6 +1,19 @@
 DI-engine>=0.5.3
 gymnasium[atari]==0.29.1
+opencv-python==4.11.0.86
 numpy>=1.24.1,<2
+scikit-image==0.18.3
+causal_world==1.2
+robosuite==1.4.1
+mani-skill==3.0.0b3
+mujoco-py<2.2,>=2.1
+transformers==4.36.0
+#--index-url https://download.pytorch.org/whl/cu118
+torch==2.1.2
+torchvision==0.16.2
+gym[accept-rom-license]
+vizdoom
+omegaconf
 pympler
 minigrid
 moviepy
@@ -10,3 +23,6 @@ xxhash
 einops
 openai
 nltk
+pyecharts
+comet_ml
+torchvision

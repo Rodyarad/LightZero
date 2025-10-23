@@ -11,7 +11,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
     # ==============================================================
     collector_env_num = 8
     game_segment_length = 20
-    evaluator_env_num = 3
+    evaluator_env_num = 30
     num_simulations = 50
     max_env_step = int(5e5)
     batch_size = 64
