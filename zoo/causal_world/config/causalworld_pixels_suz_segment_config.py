@@ -60,6 +60,7 @@ def main(seed):
             n_evaluator_episode=evaluator_env_num,
             manager=dict(shared_memory=False, ),
         ),
+        run_id_comet_ml=None,
         policy=dict(
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1000000,),),),  # default is 10000
             model=dict(

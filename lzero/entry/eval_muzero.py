@@ -40,8 +40,12 @@ def eval_muzero(
         - policy (:obj:`Policy`): Converged policy.
     """
     cfg, create_cfg = input_cfg
-    assert create_cfg.policy.type in ['efficientzero', 'muzero', 'muzero_context', 'muzero_rnn_full_obs', 'stochastic_muzero', 'gumbel_muzero', 'sampled_efficientzero', 'unizero'], \
-        "LightZero now only support the following algo.: 'efficientzero', 'muzero', 'muzero_context', 'muzero_rnn_full_obs', 'stochastic_muzero', 'gumbel_muzero', 'sampled_efficientzero', 'unizero'"
+    assert create_cfg.policy.type in [
+        'efficientzero', 'muzero', 'muzero_context', 'muzero_rnn_full_obs',
+        'stochastic_muzero', 'gumbel_muzero', 'sampled_efficientzero',
+        'unizero', 'sampled_unizero'
+    ], \
+        "LightZero now only support the following algo.: 'efficientzero', 'muzero', 'muzero_context', 'muzero_rnn_full_obs', 'stochastic_muzero', 'gumbel_muzero', 'sampled_efficientzero', 'unizero', 'sampled_unizero'"
 
     if cfg.policy.cuda and torch.cuda.is_available():
         cfg.policy.device = 'cuda'

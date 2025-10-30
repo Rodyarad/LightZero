@@ -1027,6 +1027,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'model': self._learn_model.state_dict(),
             'target_model': self._target_model.state_dict(),
             'optimizer_world_model': self._optimizer_world_model.state_dict(),
+            'lr_scheduler': self.lr_scheduler.state_dict(),
         }
 
     def _load_state_dict_learn(self, state_dict: Dict[str, Any]) -> None:
@@ -1039,7 +1040,8 @@ class UniZeroPolicy(MuZeroPolicy):
         self._learn_model.load_state_dict(state_dict['model'])
         self._target_model.load_state_dict(state_dict['target_model'])
         self._optimizer_world_model.load_state_dict(state_dict['optimizer_world_model'])
-
+        self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
+        
     def recompute_pos_emb_diff_and_clear_cache(self) -> None:
         """
         Overview:

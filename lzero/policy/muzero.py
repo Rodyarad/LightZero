@@ -1027,6 +1027,7 @@ class MuZeroPolicy(Policy):
             'model': self._learn_model.state_dict(),
             'target_model': self._target_model.state_dict(),
             'optimizer': self._optimizer.state_dict(),
+            'lr_scheduler': self.lr_scheduler.state_dict(),
         }
 
     def _load_state_dict_learn(self, state_dict: Dict[str, Any]) -> None:
@@ -1039,7 +1040,8 @@ class MuZeroPolicy(Policy):
         self._learn_model.load_state_dict(state_dict['model'])
         self._target_model.load_state_dict(state_dict['target_model'])
         self._optimizer.load_state_dict(state_dict['optimizer'])
-
+        self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
+        
     def __del__(self):
         if self._cfg.model.analysis_sim_norm:
             # Remove hooks after training.

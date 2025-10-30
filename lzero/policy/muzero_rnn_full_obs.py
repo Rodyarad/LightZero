@@ -781,3 +781,29 @@ class MuZeroRNNFullObsPolicy(MuZeroPolicy):
             self._cfg.device
         )
         self.last_batch_action = [-1 for _ in range(self.evaluator_env_num)]
+
+    def _state_dict_learn(self) -> Dict[str, Any]:
+        """
+        Overview:
+            Return the state_dict of learn mode, usually including model, target_model and optimizer.
+        Returns:
+            - state_dict (:obj:`Dict[str, Any]`): The dict of current policy learn state, for saving and restoring.
+        """
+        return {
+            'model': self._learn_model.state_dict(),
+            'target_model': self._target_model.state_dict(),
+            'optimizer': self._optimizer.state_dict(),
+            'lr_scheduler': self.lr_scheduler.state_dict(),
+        }
+
+    def _load_state_dict_learn(self, state_dict: Dict[str, Any]) -> None:
+        """
+        Overview:
+            Load the state_dict variable into policy learn mode.
+        Arguments:
+            - state_dict (:obj:`Dict[str, Any]`): The dict of policy learn state saved before.
+        """
+        self._learn_model.load_state_dict(state_dict['model'])
+        self._target_model.load_state_dict(state_dict['target_model'])
+        self._optimizer.load_state_dict(state_dict['optimizer'])
+        self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])

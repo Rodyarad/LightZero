@@ -35,6 +35,7 @@ rnn_hidden_size = 4096
 
 shapes2d_muzero_config = dict(
     exp_name=f'data_muzero_rnn_fullobs/{env_id[:-14]}_muzero-rnn-fullobs_stack1_H{num_unroll_steps}_initconlen{context_length_init}_sslw{ssl_loss_weight}_hidden-{rnn_hidden_size}_seed0',
+    run_id_comet_ml=None,
     env=dict(
         stop_value=int(1e6),
         env_id=env_id,

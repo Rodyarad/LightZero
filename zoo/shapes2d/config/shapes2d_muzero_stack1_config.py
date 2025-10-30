@@ -23,6 +23,7 @@ reanalyze_ratio = 0.
 
 shapes2d_muzero_config = dict(
     exp_name=f'data_muzero/{env_id[:-14]}_muzero_ns{num_simulations}_upc{update_per_collect}_rer{reanalyze_ratio}_stack1_seed0',
+    run_id_comet_ml=None,
     env=dict(
         stop_value=int(1e6),
         env_id=env_id,

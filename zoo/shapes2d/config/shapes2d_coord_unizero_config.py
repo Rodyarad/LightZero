@@ -34,6 +34,7 @@ shapes2d_coord_unizero_config = dict(
     ),
     policy=dict(
         learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1000, ), ), ),
+        run_id_comet_ml=None,
         model=dict(
             observation_shape=40,
             action_space_size=action_space_size,

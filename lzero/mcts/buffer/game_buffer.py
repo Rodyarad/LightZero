@@ -71,6 +71,26 @@ class GameBuffer(ABC, object):
         self.base_idx = 0
         self.clear_time = 0
 
+    def state_dict(self):
+        return {
+            'game_segment_buffer': self.game_segment_buffer,
+            'game_pos_priorities': self.game_pos_priorities,
+            'game_segment_game_pos_look_up': self.game_segment_game_pos_look_up,
+            'keep_ratio': self.keep_ratio,
+            'num_of_collected_episodes': self.num_of_collected_episodes,
+            'base_idx': self.base_idx,
+            'clear_time': self.clear_time,
+        }
+
+    def load_state_dict(self, state):
+        self.game_segment_buffer = state['game_segment_buffer']
+        self.game_pos_priorities = state['game_pos_priorities']
+        self.game_segment_game_pos_look_up = state['game_segment_game_pos_look_up']
+        self.keep_ratio = state.get('keep_ratio', self.keep_ratio)
+        self.num_of_collected_episodes = state['num_of_collected_episodes']
+        self.base_idx = state['base_idx']
+        self.clear_time = state['clear_time']
+
     @abstractmethod
     def sample(
             self, batch_size: int, policy: Union["MuZeroPolicy", "EfficientZeroPolicy", "SampledEfficientZeroPolicy", "GumbelMuZeroPolicy"]
