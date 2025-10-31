@@ -17,7 +17,7 @@ def main(seed):
     n_episode = 8
     num_segments = 8
     game_segment_length = 100
-    evaluator_env_num = 3
+    evaluator_env_num = 30
     num_simulations = 50
     replay_ratio = 0.1
     max_env_step = int(5e5)
