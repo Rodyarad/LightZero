@@ -1070,7 +1070,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             'model': self._learn_model.state_dict(),
             'target_model': self._target_model.state_dict(),
             'optimizer_world_model': self._optimizer_world_model.state_dict(),
-            'lr_scheduler': self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None,
+            'lr_scheduler': self.lr_scheduler.state_dict() if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler else None,
         }
 
     def _load_state_dict_learn(self, state_dict: Dict[str, Any]) -> None:
@@ -1083,5 +1083,5 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         self._learn_model.load_state_dict(state_dict['model'])
         self._target_model.load_state_dict(state_dict['target_model'])
         self._optimizer_world_model.load_state_dict(state_dict['optimizer_world_model'])
-        if 'lr_scheduler' in state_dict and state_dict['lr_scheduler'] is not None and self.lr_scheduler is not None:
+        if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler:
             self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
