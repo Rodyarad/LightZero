@@ -130,7 +130,7 @@ class CausalWorldEnvLightZero(BaseEnv):
         if self._save_replay_gif:
             self._frames = []
 
-        action_mask = None
+        action_mask = -1
         obs = {'observation': obs, 'action_mask': np.array(action_mask), 'to_play': np.array(-1), 'timestep': np.array(self._timestep)}
 
         return obs
@@ -187,7 +187,7 @@ class CausalWorldEnvLightZero(BaseEnv):
             if not self.channel_last:
                 obs = np.transpose(obs, (2, 0, 1))
 
-        action_mask = None
+        action_mask = -1
         obs = {'observation': obs, 'action_mask': np.array(action_mask), 'to_play': np.array(-1), 'timestep': np.array(self._timestep)}
 
         return BaseEnvTimestep(obs, rew, done, info)

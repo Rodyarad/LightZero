@@ -159,6 +159,8 @@ def train_unizero(
         world_size = 1
         rank = 0
 
+    did_initial_eval = False
+
     while True:
         # Log memory usage of the replay buffer
         log_buffer_memory_usage(learner.train_iter, replay_buffer, tb_logger)
@@ -185,7 +187,7 @@ def train_unizero(
             collect_kwargs['epsilon'] = epsilon_greedy_fn(collector.envstep)
 
         # Evaluate policy performance
-        if learner.train_iter == 0 or evaluator.should_eval(learner.train_iter):
+        if (learner.train_iter == 0 and not did_initial_eval) or evaluator.should_eval(learner.train_iter):
             logging.info(f"Training iteration {learner.train_iter}: Starting evaluation...")
             #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
             stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
@@ -193,6 +195,10 @@ def train_unizero(
             if stop:
                 logging.info("Stopping condition met, training ends!")
                 break
+
+        if learner.train_iter == 0 and not did_initial_eval:
+            save_ckpt_with_state('iteration_0.pth.tar')       
+            did_initial_eval = True
 
         # Collect new data
         new_data = collector.collect(train_iter=learner.train_iter, policy_kwargs=collect_kwargs)
