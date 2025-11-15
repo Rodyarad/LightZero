@@ -51,6 +51,7 @@ shapes2d_muzero_config = dict(
         # eval_max_episode_steps=int(50),
     ),
     policy=dict(
+        learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=5e3,),),),
         model=dict(
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
@@ -67,6 +68,7 @@ shapes2d_muzero_config = dict(
             context_length=context_length_init,  # NOTE
             use_sim_norm=True,
         ),
+        model_path=None,
         cuda=True,
         env_type='not_board_games',
         game_segment_length=400,
@@ -83,7 +85,7 @@ shapes2d_muzero_config = dict(
         reanalyze_ratio=reanalyze_ratio,
         ssl_loss_weight=ssl_loss_weight,
         n_episode=n_episode,
-        eval_freq=int(2e3),
+        eval_freq=int(5e3),
         replay_buffer_size=int(1e6),
         collector_env_num=collector_env_num,
         evaluator_env_num=evaluator_env_num,

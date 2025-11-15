@@ -33,7 +33,7 @@ shapes2d_coord_unizero_config = dict(
         manager=dict(shared_memory=False, ),
     ),
     policy=dict(
-        learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1000, ), ), ),
+        learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=5e3, ), ), ),
         run_id_comet_ml=None,
         model=dict(
             observation_shape=40,

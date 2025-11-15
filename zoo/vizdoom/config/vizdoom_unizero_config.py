@@ -49,7 +49,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1000000, ), ), ),  # default is 10000
+            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=5e3, ), ), ),  # default is 10000
             model=dict(
                 observation_shape=(3, 96, 96),
                 action_space_size=action_space_size,
@@ -101,7 +101,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
     vizdoom_unizero_create_config = EasyDict(vizdoom_unizero_create_config)
     create_config = vizdoom_unizero_create_config
 
-    main_config.exp_name = f'data_lz/data_unizero/{env_id[:-14]}/{env_id[:-14]}_uz_nlayer{num_layers}_gsl{game_segment_length}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
+    main_config.exp_name = f'data_lz/data_unizero/Vizdoom_uz_nlayer{num_layers}_gsl{game_segment_length}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
     from lzero.entry import train_unizero
     train_unizero([main_config, create_config], seed=seed, model_path=main_config.policy.model_path, max_env_step=max_env_step)
 

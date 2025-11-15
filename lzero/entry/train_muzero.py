@@ -249,7 +249,7 @@ def train_muzero(
 
         freq = getattr(getattr(cfg.policy.learn, 'learner', {}), 'hook', {}).get('save_ckpt_after_iter', None)
         if isinstance(freq, int) and freq > 0 and learner.train_iter > 0 and learner.train_iter % freq == 0:
-            save_ckpt_with_state(f'iteration_{learner.train_iter}.pth.tar')
+            save_ckpt_with_state(f'last_ckpt.pth.tar')
 
         if collector.envstep >= max_env_step or learner.train_iter >= max_train_iter:
             if cfg.policy.eval_offline:

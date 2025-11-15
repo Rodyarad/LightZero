@@ -61,7 +61,7 @@ def main(seed):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1000000,),),),  # default is 10000
+            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=5e3,),),),  # default is 10000
             model=dict(
                 observation_shape=(3, 84, 84),
                 action_space_size=action_space_size,

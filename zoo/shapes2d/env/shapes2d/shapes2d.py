@@ -216,7 +216,7 @@ class Shapes2d(gym.Env):
         result = []
 
         for i in range(num_objects):
-            one_hot = np.zeros(5)
+            one_hot = np.zeros(num_objects)
             one_hot[i] = 1 
             
             if i != num_objects - 1:

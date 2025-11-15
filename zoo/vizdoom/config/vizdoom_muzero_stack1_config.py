@@ -1,9 +1,8 @@
 from easydict import EasyDict
-from zoo.shapes2d.config.shapes2d_env_action_space_map import shapes2d_env_action_space_map
 import comet_ml
 
-env_id = 'Navigation5x5-v0'  # You can specify any Shapes2d game here
-action_space_size = shapes2d_env_action_space_map[env_id]
+env_id = 'VizdoomDefendLine-v0'
+action_space_size = 4
 
 # ==============================================================
 # begin of the most frequently changed config specified by the user
@@ -15,13 +14,13 @@ num_simulations = 50
 update_per_collect = None
 replay_ratio = 0.25
 batch_size = 256
-max_env_step = int(5e5)
+max_env_step = int(1e6)
 reanalyze_ratio = 0.
 # ==============================================================
 # end of the most frequently changed config specified by the user
 # ==============================================================
 
-shapes2d_muzero_config = dict(
+vizdoom_muzero_config = dict(
     exp_name=f'data_muzero/{env_id[:-14]}_muzero_ns{num_simulations}_upc{update_per_collect}_rer{reanalyze_ratio}_stack1_seed0',
     run_id_comet_ml=None,
     env=dict(
@@ -73,13 +72,13 @@ shapes2d_muzero_config = dict(
         evaluator_env_num=evaluator_env_num,
     ),
 )
-shapes2d_muzero_config = EasyDict(shapes2d_muzero_config)
-main_config = shapes2d_muzero_config
+vizdoom_muzero_config = EasyDict(vizdoom_muzero_config)
+main_config = vizdoom_muzero_config
 
-shapes2d_muzero_create_config = dict(
+vizdoom_muzero_create_config = dict(
     env=dict(
-        type='shapes2d_lightzero',
-        import_names=['zoo.shapes2d.env.shapes2d_lightzero_env'],
+        type='vizdoom_lightzero',
+        import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
     ),
     env_manager=dict(type='subprocess'),
     policy=dict(
@@ -87,8 +86,8 @@ shapes2d_muzero_create_config = dict(
         import_names=['lzero.policy.muzero'],
     ),
 )
-shapes2d_muzero_create_config = EasyDict(shapes2d_muzero_create_config)
-create_config = shapes2d_muzero_create_config
+vizdoom_muzero_create_config = EasyDict(vizdoom_muzero_create_config)
+create_config = vizdoom_muzero_create_config
 
 if __name__ == "__main__":
     from lzero.entry import train_muzero
