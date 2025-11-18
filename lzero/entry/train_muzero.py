@@ -176,7 +176,7 @@ def train_muzero(
 
     # Ensure iteration_0 checkpoint also has sidecars (meta + buffer)
     if learner.train_iter == 0:
-        save_ckpt_with_state('iteration_0.pth.tar')
+        save_ckpt_with_state('last_ckptpth.tar')
 
     while True:
         log_buffer_memory_usage(learner.train_iter, replay_buffer, tb_logger)
@@ -210,6 +210,7 @@ def train_muzero(
             else:
                 #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
                 stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
+                save_ckpt_with_state('last_ckpt.pth.tar')
                 if stop:
                     break
 
@@ -247,9 +248,6 @@ def train_muzero(
             if cfg.policy.use_priority:
                 replay_buffer.update_priority(train_data, log_vars[0]['value_priority_orig'])
 
-        freq = getattr(getattr(cfg.policy.learn, 'learner', {}), 'hook', {}).get('save_ckpt_after_iter', None)
-        if isinstance(freq, int) and freq > 0 and learner.train_iter > 0 and learner.train_iter % freq == 0:
-            save_ckpt_with_state(f'last_ckpt.pth.tar')
 
         if collector.envstep >= max_env_step or learner.train_iter >= max_train_iter:
             if cfg.policy.eval_offline:

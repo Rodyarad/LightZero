@@ -191,13 +191,14 @@ def train_unizero(
             logging.info(f"Training iteration {learner.train_iter}: Starting evaluation...")
             #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
             stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
+            save_ckpt_with_state('last_ckpt.pth.tar')
             logging.info(f"Training iteration {learner.train_iter}: Evaluation completed, stop condition: {stop}, current reward: {reward}")
             if stop:
                 logging.info("Stopping condition met, training ends!")
                 break
 
         if learner.train_iter == 0 and not did_initial_eval:
-            save_ckpt_with_state('iteration_0.pth.tar')       
+            save_ckpt_with_state('last_ckpt.pth.tar')       
             did_initial_eval = True
 
         # Collect new data
@@ -252,9 +253,6 @@ def train_unizero(
 
         policy.recompute_pos_emb_diff_and_clear_cache()
 
-        freq = getattr(getattr(cfg.policy.learn, 'learner', {}), 'hook', {}).get('save_ckpt_after_iter', None)
-        if isinstance(freq, int) and freq > 0 and learner.train_iter > 0 and learner.train_iter % freq == 0:
-            save_ckpt_with_state(f'last_ckpt.pth.tar')
 
         # Check stopping criteria
         if collector.envstep >= max_env_step or learner.train_iter >= max_train_iter:

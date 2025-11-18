@@ -51,7 +51,7 @@ shapes2d_muzero_config = dict(
         # eval_max_episode_steps=int(50),
     ),
     policy=dict(
-        learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=5e3,),),),
+        learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6,),),),
         model=dict(
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,

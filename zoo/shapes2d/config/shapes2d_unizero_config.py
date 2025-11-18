@@ -50,7 +50,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=5e3, ), ), ),  # default is 10000
+            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6, ), ), ),  # default is 10000
             model=dict(
                 observation_shape=(3, 64, 64),
                 action_space_size=action_space_size,
