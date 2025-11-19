@@ -7,10 +7,13 @@ causal_world==1.2
 robosuite==1.4.1
 mani-skill==3.0.0b3
 mujoco-py<2.2,>=2.1
+cython<3.0
 transformers==4.36.0
 #--index-url https://download.pytorch.org/whl/cu118
 torch==2.1.2
 torchvision==0.16.2
+torchtyping==0.1.4
+timm==0.6.13
 gym[accept-rom-license]
 vizdoom
 omegaconf
@@ -26,3 +29,4 @@ nltk
 pyecharts
 comet_ml
 torchvision
+colormath

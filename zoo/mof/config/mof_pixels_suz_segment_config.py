@@ -4,11 +4,8 @@ import comet_ml
 # begin of the most frequently changed config specified by the user
 # ==============================================================
 
-#from zoo.robosuite.config.robosuite_state_env_space_map import robosuite_state_env_action_space_map, robosuite_state_env_obs_space_map
 
 def main(seed):
-    #action_space_size = robosuite_state_env_action_space_map[env_id]
-    #obs_space_size = robosuite_state_env_obs_space_map[env_id]
     action_space_size = 4
 
     continuous_action_space = True
@@ -46,8 +43,11 @@ def main(seed):
     # end of the most frequently changed config specified by the user
     # ==============================================================
 
-    robosuite_pixels_cont_sampled_unizero_config = dict(
+    mof_pixels_cont_sampled_unizero_config = dict(
         env=dict(
+            env_id='ReachRed_0to4Distractors_Dense-v1',
+            max_episode_steps=50,
+            action_repeat=2,
             from_pixels=True,
             observation_shape=(3, 84, 84),
             continuous=True,
@@ -126,13 +126,13 @@ def main(seed):
         ),
     )
 
-    robosuite_pixels_cont_sampled_unizero_config = EasyDict(robosuite_pixels_cont_sampled_unizero_config)
-    main_config = robosuite_pixels_cont_sampled_unizero_config
+    mof_pixels_cont_sampled_unizero_config = EasyDict(mof_pixels_cont_sampled_unizero_config)
+    main_config = mof_pixels_cont_sampled_unizero_config
 
-    robosuite_pixels_cont_sampled_unizero_create_config = dict(
+    mof_pixels_cont_sampled_unizero_create_config = dict(
         env=dict(
-            type='robosuite_lightzero',
-            import_names=['zoo.robosuite.env.robosuite_lightzero_env'],
+            type='mof_lightzero',
+            import_names=['zoo.mof.env.mof_lightzero_env'],
         ),
         # env_manager=dict(type='subprocess'),
         env_manager=dict(type='base'),
@@ -141,12 +141,12 @@ def main(seed):
             import_names=['lzero.policy.sampled_unizero'],
         ),
     )
-    robosuite_pixels_cont_sampled_unizero_create_config = EasyDict(robosuite_pixels_cont_sampled_unizero_create_config)
-    create_config = robosuite_pixels_cont_sampled_unizero_create_config
+    mof_pixels_cont_sampled_unizero_create_config = EasyDict(mof_pixels_cont_sampled_unizero_create_config)
+    create_config = mof_pixels_cont_sampled_unizero_create_config
 
     # ============ use muzero_segment_collector instead of muzero_collector =============
     from lzero.entry import train_unizero_segment
-    main_config.exp_name=f'data_sampled_unizero/robosuite_Lift_brf{buffer_reanalyze_freq}_image_cont_suz_nlayer{num_layers}_numsegments-{num_segments}_gsl{game_segment_length}_K{K}_ns{num_simulations}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_{norm_type}_seed{seed}_learnsigma'
+    main_config.exp_name=f'data_sampled_unizero/mof_brf{buffer_reanalyze_freq}_image_cont_suz_nlayer{num_layers}_numsegments-{num_segments}_gsl{game_segment_length}_K{K}_ns{num_simulations}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_{norm_type}_seed{seed}_learnsigma'
     train_unizero_segment([main_config, create_config], model_path=main_config.policy.model_path, seed=seed, max_env_step=max_env_step)
 
 
