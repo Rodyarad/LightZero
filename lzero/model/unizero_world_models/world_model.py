@@ -66,6 +66,7 @@ class WorldModel(nn.Module):
             print(f"self.pos_emb.weight.device: {self.pos_emb.weight.device}")
 
         self.continuous_action_space = self.config.continuous_action_space
+        self.use_action_absraction = self.config.use_action_absraction
 
         # Initialize action embedding table
         if self.continuous_action_space:
@@ -89,6 +90,8 @@ class WorldModel(nn.Module):
             self.sigma_type = self.config.sigma_type
             self.bound_type = self.config.bound_type
             self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
+        elif self.use_action_absraction:
+            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_abstraction_space_size)
         else:
             self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
         self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)

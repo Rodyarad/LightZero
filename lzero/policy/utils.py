@@ -13,6 +13,8 @@ from torch.nn import functional as F
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
+EPS = 1e-17
+
 def compute_bleu(reference: str, prediction: str) -> float:
     """
     Compute sentence-level BLEU-4 score with smoothing and scale it to 0–1.
@@ -523,6 +525,20 @@ def get_max_entropy(action_space_size: int) -> np.float32:
     p = 1.0 / action_space_size
     return -action_space_size * p * np.log2(p)
 
+def straight_through_estimator(soft_sample, hard_sample):
+    return (hard_sample - soft_sample).detach() + soft_sample
+
+def gumbel_sample(shape, device=None):
+    """Sample Gumbel(0,1) noise."""
+    u = torch.rand(shape, device=device)
+    u = u.clamp(EPS, 1 - EPS)
+    return torch.log(u) - torch.log(1 - u)
+
+
+def gumbel_sigmoid(logits, temp=1.0, hard=True):
+    g = gumbel_sample(logits.shape, device=logits.device)
+    y = torch.sigmoid((logits + g) / temp)
+    return y
 
 def select_action(visit_counts: np.ndarray,
                   temperature: float = 1,
