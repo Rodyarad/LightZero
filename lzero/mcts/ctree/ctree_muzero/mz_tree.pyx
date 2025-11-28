@@ -73,13 +73,44 @@ cdef class Node:
 
 def batch_backpropagate(int current_latent_state_index, float discount_factor, list value_prefixs, list values, list policies,
                          MinMaxStatsList min_max_stats_lst, ResultsWrapper results, list to_play_batch):
-    cdef int i
     cdef vector[float] cvalue_prefixs = value_prefixs
     cdef vector[float] cvalues = values
     cdef vector[vector[float]] cpolicies = policies
 
-    cbatch_backpropagate(current_latent_state_index, discount_factor, cvalue_prefixs, cvalues, cpolicies,
-                          min_max_stats_lst.cmin_max_stats_lst, results.cresults, to_play_batch)
+    cbatch_backpropagate(
+        current_latent_state_index,
+        discount_factor,
+        cvalue_prefixs,
+        cvalues,
+        cpolicies,
+        min_max_stats_lst.cmin_max_stats_lst,
+        results.cresults,
+        to_play_batch,
+    )
+
+
+def batch_backpropagate_with_legal_actions(int current_latent_state_index, float discount_factor, list value_prefixs, list values, list policies,
+                         MinMaxStatsList min_max_stats_lst, ResultsWrapper results, list to_play_batch, list leaf_legal_actions_list):
+    """
+    Python wrapper around ``cbatch_backpropagate_with_legal_actions`` that
+    enables per-leaf overriding of legal_actions (for action masking).
+    """
+    cdef vector[float] cvalue_prefixs = value_prefixs
+    cdef vector[float] cvalues = values
+    cdef vector[vector[float]] cpolicies = policies
+    cdef vector[vector[int]] cleaf_legal_actions_list = leaf_legal_actions_list
+
+    cbatch_backpropagate_with_legal_actions(
+        current_latent_state_index,
+        discount_factor,
+        cvalue_prefixs,
+        cvalues,
+        cpolicies,
+        min_max_stats_lst.cmin_max_stats_lst,
+        results.cresults,
+        to_play_batch,
+        cleaf_legal_actions_list,
+    )
 
 def batch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, list value_prefixs, list values, list policies,
                          MinMaxStatsList min_max_stats_lst, ResultsWrapper results, list to_play_batch, list no_inference_lst, list reuse_lst, list reuse_value_lst):

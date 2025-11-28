@@ -499,6 +499,43 @@ namespace tree
         }
     }
 
+    void cbatch_backpropagate_with_legal_actions(
+        int current_latent_state_index,
+        float discount_factor,
+        const std::vector<float> &rewards,
+        const std::vector<float> &values,
+        const std::vector<std::vector<float> > &policies,
+        tools::CMinMaxStatsList *min_max_stats_lst,
+        CSearchResults &results,
+        std::vector<int> &to_play_batch,
+        const std::vector<std::vector<int> > &leaf_legal_actions_list
+    )
+    {
+        /*
+        Overview:
+            Variant of cbatch_backpropagate that allows overriding legal_actions
+            for each expanded leaf node. This is used to implement per-node
+            action masking (e.g., UniZero action abstraction).
+        */
+        bool use_mask = (leaf_legal_actions_list.size() == (size_t)results.num);
+        for (int i = 0; i < results.num; ++i)
+        {
+            if (use_mask && !leaf_legal_actions_list[i].empty())
+            {
+                // Override legal actions for this leaf before expansion.
+                results.nodes[i]->legal_actions = leaf_legal_actions_list[i];
+            }
+            results.nodes[i]->expand(to_play_batch[i], current_latent_state_index, i, rewards[i], policies[i]);
+            cbackpropagate(
+                results.search_paths[i],
+                min_max_stats_lst->stats_lst[i],
+                to_play_batch[i],
+                values[i],
+                discount_factor
+            );
+        }
+    }
+
     void cbatch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, const std::vector<float> &value_prefixs, const std::vector<float> &values, const std::vector<std::vector<float> > &policies, tools::CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, std::vector<int> &to_play_batch, std::vector<int> &no_inference_lst, std::vector<int> &reuse_lst, std::vector<float> &reuse_value_lst)
     {
         /*

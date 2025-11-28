@@ -14,7 +14,13 @@ from .kv_caching import KeysValues
 from .slicer import Head, PolicyHeadCont
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
-from .utils import LossWithIntermediateLosses, init_weights, WorldModelOutput, hash_state
+from .utils import (
+    LossWithIntermediateLosses,
+    init_weights,
+    WorldModelOutput,
+    hash_state,
+    apply_object_mask_to_policy_logits_with_gumbel,
+)
 
 logging.getLogger().setLevel(logging.DEBUG)
 
@@ -83,18 +89,26 @@ class WorldModel(nn.Module):
 
         # Head modules
         self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
-        self.head_observations = self._create_head(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
-                                                    self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-                                                   )
+        self.head_observations = self._create_head(
+            self.all_but_last_latent_state_pattern,
+            self.obs_per_embdding_dim,
+            self._get_final_norm(self.final_norm_option_in_obs_head),  # NOTE: using the specified normalization method for observations head
+        )
         if self.continuous_action_space:
             self.sigma_type = self.config.sigma_type
             self.bound_type = self.config.bound_type
             self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
-        elif self.use_action_absraction:
-            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_abstraction_space_size)
         else:
             self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
         self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
+
+        if self.use_action_absraction and not self.continuous_action_space:
+            self.head_mask = self._create_head(
+                self.value_policy_tokens_pattern,
+                self.num_objects,
+            )
+        else:
+            self.head_mask = None
 
         # Build the set of modules to skip during re-initialization.
         # This is compatible with cases where self.tokenizer.encoder does not have 'pretrained_model',
@@ -289,6 +303,7 @@ class WorldModel(nn.Module):
         self.perceptual_loss_weight = self.config.perceptual_loss_weight
         self.support_size = self.config.support_size
         self.action_space_size = self.config.action_space_size
+        self.num_objects = self.config.num_objects
         self.max_cache_size = self.config.max_cache_size
         self.env_num = self.config.env_num
         self.num_layers = self.config.num_layers
@@ -346,6 +361,9 @@ class WorldModel(nn.Module):
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
                 module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
+                # Also zero-init the optional mask head if it exists.
+                if self.use_action_absraction:
+                    module_to_initialize.append(self.head_mask)
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
@@ -630,9 +648,20 @@ class WorldModel(nn.Module):
         logits_rewards = self.head_rewards(x, num_steps=num_steps, prev_steps=prev_steps)
         logits_policy = self.head_policy(x, num_steps=num_steps, prev_steps=prev_steps)
         logits_value = self.head_value(x, num_steps=num_steps, prev_steps=prev_steps)
+        logits_mask = None
+        if self.use_action_absraction:
+            logits_mask = self.head_mask(x, num_steps=num_steps, prev_steps=prev_steps)
 
         # The 'logits_ends' is intentionally set to None.
-        return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
+        return WorldModelOutput(
+            x,
+            logits_observations,
+            logits_rewards,
+            None,
+            logits_policy,
+            logits_value,
+            logits_mask,
+        )
 
     def _add_position_embeddings(self, embeddings, prev_steps, num_steps, kvcache_independent, is_init_infer,
                                  valid_context_lengths):
@@ -939,8 +968,14 @@ class WorldModel(nn.Module):
         outputs_wm, latent_state = self.reset_for_initial_inference(obs_act_dict, start_pos)
         self.past_kv_cache_recurrent_infer.clear()
 
-        return (outputs_wm.output_sequence, latent_state, outputs_wm.logits_rewards,
-                outputs_wm.logits_policy, outputs_wm.logits_value)
+        return (
+            outputs_wm.output_sequence,
+            latent_state,
+            outputs_wm.logits_rewards,
+            outputs_wm.logits_policy,
+            outputs_wm.logits_value,
+            outputs_wm.logits_mask,
+        )
 
     @torch.no_grad()
     def forward_recurrent_inference(self, state_action_history, simulation_index=0,
@@ -1025,7 +1060,14 @@ class WorldModel(nn.Module):
             simulation_index=simulation_index,
         )
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
+        return (
+            outputs_wm.output_sequence,
+            self.latent_state,
+            reward,
+            outputs_wm.logits_policy,
+            outputs_wm.logits_value,
+            outputs_wm.logits_mask,
+        )
 
 
     def trim_and_pad_kv_cache(self, is_init_infer=True) -> list:
@@ -1555,6 +1597,25 @@ class WorldModel(nn.Module):
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
 
+        # Optional L1 sparsity loss on the object mask (self-supervised mask regularizer).
+        loss_mask_l1 = torch.tensor(0.0, device=loss_policy.device)
+        mask_l1_weight = getattr(self.config, 'mask_l1_weight', 0.0)
+        if (
+            (not self.continuous_action_space)
+            and self.num_objects is not None
+            and outputs.logits_mask is not None
+            and mask_l1_weight > 0.0
+        ):
+            # Use sigmoid(mask_logits) as a soft object-activation probability.
+            mask_probs = torch.sigmoid(outputs.logits_mask)  # (B, T, num_objects)
+            # Respect sequence padding mask.
+            mask_padding = batch['mask_padding'].unsqueeze(-1)  # (B, T, 1)
+            mask_probs = mask_probs * mask_padding
+            # Global L1 (mean) over batch, time and objects.
+            loss_mask_l1 = mask_probs.mean()
+            # Add sparsity regularizer into policy loss.
+            discounted_loss_policy = discounted_loss_policy + mask_l1_weight * loss_mask_l1
+
         if self.continuous_action_space:
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
@@ -1587,6 +1648,7 @@ class WorldModel(nn.Module):
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_mask_l1=loss_mask_l1,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
@@ -1740,6 +1802,26 @@ class WorldModel(nn.Module):
         # labels is a target tensor for comparison. batch is a dictionary with a mask indicating valid timesteps.
 
         logits = getattr(outputs, f'logits_{element}')
+
+        # === Object-level hard mask with Gumbel+STE for policy logits (training path) ===
+        # We apply this ONLY for discrete policy logits during training, BEFORE flattening.
+        if (
+            element == 'policy'
+            and not self.continuous_action_space
+            and self.num_objects is not None
+            and hasattr(outputs, 'logits_mask')
+            and outputs.logits_mask is not None
+        ):
+            mask_temp = self.config.mask_temp
+            mask_thres = self.config.mask_thres
+            logits, _ = apply_object_mask_to_policy_logits_with_gumbel(
+                logits_policy=logits,
+                mask_logits_obj=outputs.logits_mask,
+                num_objects=self.num_objects,
+                action_space_size=self.action_space_size,
+                mask_temp=mask_temp,
+                mask_thres=mask_thres,
+            )
 
         if torch.isnan(logits).any():
             raise ValueError(f"NaN detected in outputs for batch {batch} and element '{element}'")

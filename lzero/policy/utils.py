@@ -711,3 +711,182 @@ def mz_network_output_unpack(network_output: Dict) -> Tuple:
     value = network_output.value  # shape: (batch_size, support_support_size)
     policy_logits = network_output.policy_logits  # shape: (batch_size, action_space_size)
     return latent_state, reward, value, policy_logits
+
+
+def mz_network_output_unpack_with_mask(network_output: Dict) -> Tuple:
+    """
+    Overview:
+        Unpack the network output of MuZero, including an optional mask head.
+    Arguments:
+        - network_output (:obj:`Tuple`): the network output of muzero
+    Returns:
+        - latent_state
+        - reward
+        - value
+        - policy_logits
+        - mask_logits (or None if not present)
+    """
+    latent_state = network_output.latent_state  # shape:（batch_size, ...）
+    reward = network_output.reward  # shape: (batch_size, support_support_size)
+    value = network_output.value  # shape: (batch_size, support_support_size)
+    policy_logits = network_output.policy_logits  # shape: (batch_size, action_space_size)
+    mask_logits = network_output.mask_logits  # shape: (batch_size, num_action_variables)
+    return latent_state, reward, value, policy_logits, mask_logits
+
+
+
+
+
+
+  # disabled utilities
+
+    # def factorize_action_np(action: int, cardinalities: List[int]) -> List[int]:
+    # """
+    # Overview:
+    #     Factorize an integer action into a list of integers according to the given cardinalities.
+    # """
+    # factored = []
+    # for c in cardinalities:
+    #     factored.append(action % c)
+    #     action //= c
+    # return factored
+
+    # def product_action_influence_np(factored_action_influence: np.ndarray,
+    #                                 cardinalities: List[int]) -> np.ndarray:
+    #     """
+    #     Overview:
+    #         Analogous to product_action_influence_jax: builds a boolean mask over the entire action space
+    #         from a mask of influence over action variables.
+    #     Arguments:
+    #         - factored_action_influence (:obj:`np.ndarray`): shape (num_action_variables,), boolean mask over variables.
+    #         - cardinalities (:obj:`List[int]`): list of cardinalities for each variable.
+    #     Returns:
+    #         - action_influence (:obj:`np.ndarray`): shape (prod(cardinalities),) — boolean mask over the flat action space.
+    #     """
+    #     factored_action_influence = np.asarray(factored_action_influence, dtype=bool)
+    #     num_actions = int(np.prod(cardinalities))
+    #     action_influence = np.zeros(num_actions, dtype=bool)
+    #     for idx in range(num_actions):
+    #         factored_action = factorize_action_np(idx, cardinalities)
+    #         if all(
+    #             is_influencer or a == 0
+    #             for is_influencer, a in zip(factored_action_influence, factored_action)
+    #         ):
+    #             action_influence[idx] = True
+    #     return action_influence
+
+    # def divide_act_prob_no_influence_actions(p: np.ndarray,
+    #                                          action_influence: np.ndarray) -> np.ndarray:
+    #     """
+    #     Overview:
+    #         NumPy implementation of divide_act_prob_no_influence_actions from Efficient-MCTS (JAX code).
+    #         Distributes probability mass uniformly over the set of actions that have no influence.
+
+    #     Notes:
+    #         - ``p`` is an N-dimensional array whose shape matches ``action_cardinalities`` in the original code.
+    #         - ``action_influence`` is a boolean array of length N; False means "no influence" for that variable.
+    #     """
+
+    #     def distribute_prob(p_axis_last: np.ndarray) -> np.ndarray:
+    #         # p_axis_last: (..., H)
+    #         h = p_axis_last.shape[-1]
+    #         if h == 0:
+    #             return p_axis_last
+    #         distribute_mat = np.zeros((h, h), dtype=p_axis_last.dtype)
+    #         distribute_mat[0] = 1.0 / float(h)
+    #         # (..., H) @ (H, H) -> (..., H)
+    #         return p_axis_last @ distribute_mat
+
+    #     p_out = np.asarray(p, dtype=float)
+    #     ndim = p_out.ndim
+    #     assert ndim == len(action_influence), \
+    #         f"p.ndim ({ndim}) must equal len(action_influence) ({len(action_influence)})"
+
+    #     action_influence = np.asarray(action_influence, dtype=bool)
+
+    #     for i in range(len(action_influence)):
+    #         # Rotate axes so that axis 0 becomes the last one after transpose, matching the JAX code.
+    #         axes = list(range(1, ndim)) + [0]
+    #         p_out = np.transpose(p_out, axes)
+    #         if not action_influence[i]:
+    #             p_out = distribute_prob(p_out)
+    #         # After transpose, ndim is unchanged; next iteration rotates again.
+
+    #     return p_out
+
+    # def divide_act_prob_no_influence_actions_flat(
+    #     p_flat: np.ndarray,
+    #     action_influence: np.ndarray,
+    #     action_cardinalities: List[int],
+    # ) -> np.ndarray:
+    #     """
+    #     Overview:
+    #         Flat version of divide_act_prob_no_influence_actions.
+
+    #     Arguments:
+    #         - p_flat: 1D policy distribution over the flat action space.
+    #         - action_influence: boolean array over action variables.
+    #         - action_cardinalities: list of cardinalities for each variable.
+    #     Returns:
+    #         1D policy distribution after redistributing probability mass over non-influential actions.
+    #     """
+    #     action_cardinalities = list(action_cardinalities)
+    #     p_flat = np.asarray(p_flat, dtype=float)
+    #     # Same reshape convention as Efficient-MCTS: reversed(cardinalities).T
+    #     p_nd = p_flat.reshape(tuple(reversed(action_cardinalities))).T
+    #     p_nd = divide_act_prob_no_influence_actions(p_nd, np.asarray(action_influence, dtype=bool))
+    #     return p_nd.T.flatten()
+
+    # def marginalize_policy_dist(p: np.ndarray,
+    #                             action_influence: np.ndarray) -> np.ndarray:
+    #     """
+    #     Overview:
+    #         NumPy implementation of marginalize_policy_dist from Efficient-MCTS (JAX code).
+    #         Marginalizes the policy distribution over a subset of the action space.
+
+    #     Arguments:
+    #         - p: N-dimensional policy distribution tensor.
+    #         - action_influence: boolean array over action variables.
+    #     Returns:
+    #         N-dimensional policy distribution after marginalization.
+    #     """
+    #     p_out = np.asarray(p, dtype=float)
+    #     ndim = p_out.ndim
+    #     assert ndim == len(action_influence), \
+    #         f"p.ndim ({ndim}) must equal len(action_influence) ({len(action_influence)})"
+
+    #     action_influence = np.asarray(action_influence, dtype=bool)
+
+    #     for i in range(len(action_influence)):
+    #         axes = list(range(1, ndim)) + [0]
+    #         p_out = np.transpose(p_out, axes)
+    #         if not action_influence[i]:
+    #             h = p_out.shape[-1]
+    #             if h > 0:
+    #                 ones_mat = np.ones((h, h), dtype=p_out.dtype)
+    #                 # (..., H) @ (H, H) -> (..., H)
+    #                 p_out = p_out @ ones_mat
+
+    #     return p_out
+
+    # def marginalize_policy_dist_flat(
+    #     p_flat: np.ndarray,
+    #     action_influence: np.ndarray,
+    #     action_cardinalities: List[int],
+    # ) -> np.ndarray:
+    #     """
+    #     Overview:
+    #         Flat version of marginalize_policy_dist.
+
+    #     Arguments:
+    #         - p_flat: 1D policy distribution over the flat action space.
+    #         - action_influence: boolean array over action variables.
+    #         - action_cardinalities: list of cardinalities for each variable.
+    #     Returns:
+    #         1D policy distribution after marginalization.
+    #     """
+    #     action_cardinalities = list(action_cardinalities)
+    #     p_flat = np.asarray(p_flat, dtype=float)
+    #     p_nd = p_flat.reshape(tuple(reversed(action_cardinalities))).T
+    #     p_nd = marginalize_policy_dist(p_nd, np.asarray(action_influence, dtype=bool))
+    #     return p_nd.T.flatten()

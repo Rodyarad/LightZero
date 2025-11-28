@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn as nn
+from typing import Optional, Tuple
 import time
 from .kv_caching import KeysValues
 
@@ -199,6 +200,7 @@ class WorldModelOutput:
     logits_ends: torch.FloatTensor
     logits_policy: torch.FloatTensor
     logits_value: torch.FloatTensor
+    logits_mask: Optional[torch.FloatTensor] = None
 
 
 def init_weights(module, norm_type='BN'):
@@ -303,3 +305,103 @@ class LossWithIntermediateLosses:
             self.intermediate_losses[k] = v / value
         self.loss_total = self.loss_total / value
         return self
+
+
+def gumbel_sigmoid_torch(
+    logits: torch.Tensor,
+    temp: float = 1.0,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Overview:
+        Sample from a Gumbel-Sigmoid distribution, as in the JAX/Haiku reference.
+
+    Arguments:
+        - logits (:obj:`torch.Tensor`): Input logits.
+        - temp (:obj:`float`): Temperature parameter.
+        - eps (:obj:`float`): Numerical stability epsilon.
+    Returns:
+        - y (:obj:`torch.Tensor`): Sampled probabilities in (0, 1).
+    """
+    u = torch.rand_like(logits)
+    u = u.clamp(eps, 1.0 - eps)
+    g = torch.log(u) - torch.log(1.0 - u)
+    y = torch.sigmoid((logits + g) / temp)
+    return y
+
+
+def straight_through_estimator_torch(
+    soft: torch.Tensor,
+    hard: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Overview:
+        Straight-through estimator: forward uses ``hard``, backward uses ``soft``.
+    """
+    return (hard - soft).detach() + soft
+
+
+def apply_object_mask_to_policy_logits_with_gumbel(
+    logits_policy: torch.Tensor,
+    mask_logits_obj: torch.Tensor,
+    num_objects: int,
+    action_space_size: int,
+    mask_temp: float,
+    mask_thres: float,
+    eps: float = 1e-6,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Overview:
+        Apply an object-level hard mask to discrete policy logits using Gumbel-Sigmoid + STE.
+
+        - Sample Gumbel-Sigmoid over object logits.
+        - Apply a hard threshold with STE to obtain a binary object mask.
+        - Map the object mask to per-action mask via equal-sized contiguous groups.
+        - Mask policy logits in log-space as: logits + log(mask_action + eps).
+
+    Arguments:
+        - logits_policy (:obj:`torch.Tensor`): Shape (B, T, A), unnormalized logits over actions.
+        - mask_logits_obj (:obj:`torch.Tensor`): Shape (B, T, num_objects), logits over objects.
+        - num_objects (:obj:`int`): Number of objects.
+        - action_space_size (:obj:`int`): Number of discrete actions A.
+        - mask_temp (:obj:`float`): Temperature for Gumbel-Sigmoid.
+        - mask_thres (:obj:`float`): Threshold for hard mask (on Gumbel-Sigmoid outputs).
+        - eps (:obj:`float`): Numerical stability epsilon.
+
+    Returns:
+        - masked_logits (:obj:`torch.Tensor`): Shape (B, T, A), masked policy logits.
+        - mask_action (:obj:`torch.Tensor`): Shape (B, T, A), hard mask over actions (with STE gradient).
+    """
+    # Gumbel-Sigmoid over objects
+    mask_soft = gumbel_sigmoid_torch(mask_logits_obj, temp=mask_temp, eps=eps)  # (B, T, num_objects)
+
+    # Straight-through hard threshold
+    mask_hard = (mask_soft > mask_thres).float()
+    mask_obj = straight_through_estimator_torch(mask_soft, mask_hard)  # (B, T, num_objects)
+
+    # Equal-size grouping: actions_per_obj actions per object.
+    actions_per_obj = action_space_size // num_objects
+    if actions_per_obj * num_objects != action_space_size:
+        # If grouping is inconsistent, return original logits and a mask of ones.
+        mask_action = torch.ones_like(logits_policy)
+        return logits_policy, mask_action
+
+    obj_of_action = (
+        torch.arange(action_space_size, device=logits_policy.device) // actions_per_obj
+    )  # (A,)
+
+    # Broadcast object mask to actions: mask_action[b, t, a] = mask_obj[b, t, obj_of_action[a]]
+    mask_action = mask_obj[..., obj_of_action]  # (B, T, A)
+
+    # Fallback: if an entire (b, t) row is zero, disable masking for that row.
+    summed = mask_action.sum(dim=-1, keepdim=True)  # (B, T, 1)
+    all_zero = (summed <= eps)
+    if all_zero.any():
+        mask_action = torch.where(
+            all_zero.expand_as(mask_action),
+            torch.ones_like(mask_action),
+            mask_action,
+        )
+
+    masked_logits = logits_policy + torch.log(mask_action + eps)
+    return masked_logits, mask_action

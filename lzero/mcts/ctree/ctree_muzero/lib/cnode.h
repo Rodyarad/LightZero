@@ -83,6 +83,18 @@ namespace tree {
     void update_tree_q(CNode* root, tools::CMinMaxStats &min_max_stats, float discount_factor, int players);
     void cbackpropagate(std::vector<CNode*> &search_path, tools::CMinMaxStats &min_max_stats, int to_play, float value, float discount_factor);
     void cbatch_backpropagate(int current_latent_state_index, float discount_factor, const std::vector<float> &rewards, const std::vector<float> &values, const std::vector<std::vector<float> > &policies, tools::CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, std::vector<int> &to_play_batch);
+    // Variant that allows overriding legal_actions for each expanded leaf node (for action masking).
+    void cbatch_backpropagate_with_legal_actions(
+        int current_latent_state_index,
+        float discount_factor,
+        const std::vector<float> &rewards,
+        const std::vector<float> &values,
+        const std::vector<std::vector<float> > &policies,
+        tools::CMinMaxStatsList *min_max_stats_lst,
+        CSearchResults &results,
+        std::vector<int> &to_play_batch,
+        const std::vector<std::vector<int> > &leaf_legal_actions_list
+    );
     void cbatch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, const std::vector<float> &value_prefixs, const std::vector<float> &values, const std::vector<std::vector<float> > &policies, tools::CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, std::vector<int> &to_play_batch, std::vector<int> &no_inference_lst, std::vector<int> &reuse_lst, std::vector<int> &reuse_value_lst);
     int cselect_child(CNode* root, tools::CMinMaxStats &min_max_stats, int pb_c_base, float pb_c_init, float discount_factor, float mean_q, int players);
     int cselect_root_child(CNode *root, tools::CMinMaxStats &min_max_stats, int pb_c_base, float pb_c_init, float discount_factor, float mean_q, int players, int true_action, float reuse_value);

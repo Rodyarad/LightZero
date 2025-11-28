@@ -138,6 +138,7 @@ class MZNetworkOutput:
     reward: torch.Tensor
     policy_logits: torch.Tensor
     latent_state: torch.Tensor
+    mask_logits: Optional[torch.Tensor] = None
 
 
 class SimNorm(nn.Module):
