@@ -47,7 +47,7 @@ def main(seed):
         env=dict(
             env_id='ReachRed_0to4Distractors_Dense-v1',
             max_episode_steps=50,
-            action_repeat=2,
+            action_repeat=1,
             from_pixels=True,
             observation_shape=(3, 84, 84),
             continuous=True,
