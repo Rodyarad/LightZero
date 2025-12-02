@@ -382,9 +382,14 @@ def apply_object_mask_to_policy_logits_with_gumbel(
     # Equal-size grouping: actions_per_obj actions per object.
     actions_per_obj = action_space_size // num_objects
     if actions_per_obj * num_objects != action_space_size:
-        # If grouping is inconsistent, return original logits and a mask of ones.
-        mask_action = torch.ones_like(logits_policy)
-        return logits_policy, mask_action
+        # If grouping is inconsistent, this indicates a configuration error between
+        # `action_space_size` and `num_objects`. Fail fast instead of silently
+        # disabling masking, so that experiments cannot accidentally run without
+        # the intended abstraction.
+        raise ValueError(
+            "apply_object_mask_to_policy_logits_with_gumbel: action_space_size "
+            f"({action_space_size}) must be divisible by num_objects ({num_objects})."
+        )
 
     obj_of_action = (
         torch.arange(action_space_size, device=logits_policy.device) // actions_per_obj

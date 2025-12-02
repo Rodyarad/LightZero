@@ -15,7 +15,7 @@ from lzero.policy import scalar_transform, InverseScalarTransform, phi_transform
     DiscreteSupport, to_torch_float_tensor, mz_network_output_unpack_with_mask, select_action, prepare_obs, \
     prepare_obs_stack_for_unizero
 from lzero.policy.muzero import MuZeroPolicy
-from .utils import configure_optimizers_nanogpt, gumbel_sigmoid, straight_through_estimator
+from .utils import configure_optimizers_nanogpt
 
 
 @POLICY_REGISTRY.register('unizero')
@@ -85,7 +85,6 @@ class UniZeroPolicy(MuZeroPolicy):
                 analysis_dormant_ratio=False,
                 # (int) The shape of the action space.
                 action_space_size=16,
-                action_cardinalities=[4,4],
                 # (int) The size of the group, related to simulation normalization.
                 group_size=8,  # NOTE: sim_norm
                 # (str) The type of attention mechanism used. Options could be ['causal'].
@@ -932,7 +931,7 @@ class UniZeroPolicy(MuZeroPolicy):
                 )
                 # NOTE: Convert the ``action_index_in_legal_action_set`` to the corresponding ``action`` in the
                 # entire action set.
-                action = np.where(action_mask[i] == 1.0)[0][action_index_in_legal_action_set]
+                action = legal_actions[i][action_index_in_legal_action_set]
 
                 # Predict the next latent state based on the selected action and policy
                 next_latent_state = next_latent_state_with_env[i][action]

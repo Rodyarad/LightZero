@@ -74,6 +74,24 @@ class WorldModel(nn.Module):
         self.continuous_action_space = self.config.continuous_action_space
         self.use_action_absraction = self.config.use_action_absraction
 
+        # When object-level action abstraction is enabled, enforce a consistent configuration
+        # up-front so that we cannot accidentally run experiments where the mask has no effect.
+        if self.use_action_absraction:
+            if self.continuous_action_space:
+                raise ValueError(
+                    "WorldModel: use_action_absraction=True is only supported for discrete action spaces "
+                    "(continuous_action_space must be False)."
+                )
+            if getattr(self.config, 'num_objects', None) is None:
+                raise ValueError(
+                    "WorldModel: use_action_absraction=True requires `config.num_objects` to be set."
+                )
+            if self.config.action_space_size % self.config.num_objects != 0:
+                raise ValueError(
+                    f"WorldModel: action_space_size ({self.config.action_space_size}) must be divisible by "
+                    f"num_objects ({self.config.num_objects}) when use_action_absraction=True."
+                )
+
         # Initialize action embedding table
         if self.continuous_action_space:
             # TODO: check the effect of SimNorm
@@ -1600,6 +1618,25 @@ class WorldModel(nn.Module):
         # Optional L1 sparsity loss on the object mask (self-supervised mask regularizer).
         loss_mask_l1 = torch.tensor(0.0, device=loss_policy.device)
         mask_l1_weight = getattr(self.config, 'mask_l1_weight', 0.0)
+
+        # If abstraction is enabled and L1 regularization weight is positive, we expect to
+        # have a valid discrete mask head. If not, fail fast instead of silently skipping.
+        if self.use_action_absraction and mask_l1_weight > 0.0:
+            if self.continuous_action_space:
+                raise RuntimeError(
+                    "WorldModel: mask_l1_weight>0 with continuous_action_space=True is inconsistent "
+                    "with use_action_absraction=True."
+                )
+            if self.num_objects is None:
+                raise RuntimeError(
+                    "WorldModel: mask_l1_weight>0 and use_action_absraction=True but num_objects is None."
+                )
+            if getattr(outputs, 'logits_mask', None) is None:
+                raise RuntimeError(
+                    "WorldModel: mask_l1_weight>0 and use_action_absraction=True but outputs.logits_mask is None. "
+                    "The mask head must be present when using object-level abstraction with L1 regularization."
+                )
+
         if (
             (not self.continuous_action_space)
             and self.num_objects is not None
@@ -1805,6 +1842,7 @@ class WorldModel(nn.Module):
 
         # === Object-level hard mask with Gumbel+STE for policy logits (training path) ===
         # We apply this ONLY for discrete policy logits during training, BEFORE flattening.
+        mask_applied = False
         if (
             element == 'policy'
             and not self.continuous_action_space
@@ -1821,6 +1859,17 @@ class WorldModel(nn.Module):
                 action_space_size=self.action_space_size,
                 mask_temp=mask_temp,
                 mask_thres=mask_thres,
+            )
+            mask_applied = True
+
+        # If abstraction is enabled at config-level, but for some reason the mask
+        # was not applied to policy logits, fail fast instead of silently degrading
+        # to the unmasked policy.
+        if element == 'policy' and self.use_action_absraction and not mask_applied:
+            raise RuntimeError(
+                "WorldModel: use_action_absraction=True but policy logits were computed without "
+                "applying the object-level mask. Check that logits_mask is produced and that "
+                "num_objects and action_space_size are configured correctly."
             )
 
         if torch.isnan(logits).any():

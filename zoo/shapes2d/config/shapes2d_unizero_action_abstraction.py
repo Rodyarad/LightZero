@@ -85,7 +85,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     mask_temp=1.0,
                     mask_thres=0.5,
                     # L1 sparsity weight on sigmoid(mask_logits) for self-supervised mask regularization.
-                    mask_l1_weight=1e-3,
+                    mask_l1_weight=0,
                 ),
             ),
             model_path=None,

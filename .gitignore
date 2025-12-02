@@ -1455,3 +1455,4 @@ zoo/jericho/envs/z-machine-games-master
 train.sh
 test.py
 _vizdoom.ini
+vis_mask.py
