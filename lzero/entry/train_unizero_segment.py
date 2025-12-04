@@ -2,7 +2,7 @@ import logging
 import os
 from functools import partial
 from typing import Tuple, Optional
-
+import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
@@ -13,7 +13,6 @@ from ding.rl_utils import get_epsilon_greedy_fn
 from ding.utils import EasyTimer
 from ding.utils import set_pkg_seed, get_rank, get_world_size
 from ding.worker import BaseLearner
-from tensorboardX import SummaryWriter
 from torch.utils.tensorboard import SummaryWriter
 
 from lzero.entry.utils import log_buffer_memory_usage
@@ -89,7 +88,16 @@ def train_unizero_segment(
         logging.info(f'Loading model from {model_path} end!')
 
     # Create worker components: learner, collector, evaluator, replay buffer, commander
-    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    if model_path is not None:
+        comet_ml.login()
+        exp = comet_ml.start(mode="get", experiment_key=cfg.run_id_comet_ml)
+        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    else:
+        experiment = comet_ml.start(
+            project_name="lightzero"
+        )
+        experiment.log_parameters(vars(cfg))
+        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
     learner = BaseLearner(cfg.policy.learn.learner, policy.learn_mode, tb_logger, exp_name=cfg.exp_name)
 
     # MCTS+RL algorithms related core code

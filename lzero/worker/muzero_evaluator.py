@@ -362,6 +362,8 @@ class MuZeroEvaluator(ISerialEvaluator):
                             saved_info = {'eval_episode_return': episode_timestep.info['eval_episode_return']}
                             if 'episode_info' in episode_timestep.info:
                                 saved_info.update(episode_timestep.info['episode_info'])
+                            if 'is_success' in episode_timestep.info:
+                                saved_info['eval_success'] = episode_timestep.info['is_success']
                             eval_monitor.update_info(env_id, saved_info)
                             eval_monitor.update_reward(env_id, reward)
                             self._logger.info(

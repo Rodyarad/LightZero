@@ -20,7 +20,7 @@ from tqdm import tqdm
 # 这会告诉 PyTorch 将所有通过 torch.hub 下载的模型（包括 torchvision.models 中的预训练模型）
 # 存放到您指定的目录下。
 # PyTorch 会自动在此目录下创建 'hub/checkpoints' 子文件夹。
-custom_torch_home = "/mnt/shared-storage-user/puyuan/code/LightZero/tokenizer_pretrained_vgg"
+custom_torch_home = os.path.expanduser("~/.cache/lightzero/tokenizer_pretrained_vgg")
 os.environ['TORCH_HOME'] = custom_torch_home
 # 确保目录存在，虽然 torch.hub 也会尝试创建，但提前创建更稳妥
 os.makedirs(os.path.join(custom_torch_home, 'hub', 'checkpoints'), exist_ok=True)
