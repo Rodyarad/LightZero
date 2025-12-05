@@ -1,4 +1,5 @@
 import copy
+import os
 import time
 from collections import namedtuple
 from typing import Optional, Callable, Tuple, Dict, Any
@@ -6,6 +7,7 @@ from typing import Optional, Callable, Tuple, Dict, Any
 import numpy as np
 import torch
 import wandb
+from PIL import Image, ImageDraw, ImageFont
 from ding.envs import BaseEnvManager
 from ding.torch_utils import to_ndarray, to_item, to_tensor
 from ding.utils import build_logger, EasyTimer
@@ -15,6 +17,7 @@ from easydict import EasyDict
 
 from lzero.mcts.buffer.game_segment import GameSegment
 from lzero.mcts.utils import prepare_observation
+from ding.utils.compression_helper import jpeg_data_decompressor
 
 
 class MuZeroEvaluator(ISerialEvaluator):
@@ -56,6 +59,8 @@ class MuZeroEvaluator(ISerialEvaluator):
             exp_name: Optional[str] = 'default_experiment',
             instance_name: Optional[str] = 'evaluator',
             policy_config: 'policy_config' = None,  # noqa
+            visualize: bool = False,
+            visualize_dir: Optional[str] = None,
     ) -> None:
         """
         Overview:
@@ -100,6 +105,16 @@ class MuZeroEvaluator(ISerialEvaluator):
         # MCTS+RL related core code
         # ==============================================================
         self.policy_config = policy_config
+        
+        # Visualization settings
+        self._visualize = visualize
+        self._visualize_dir = visualize_dir
+        if self._visualize:
+            if self._visualize_dir is None:
+                self._visualize_dir = os.path.join('./{}/visualizations'.format(self._exp_name))
+            os.makedirs(self._visualize_dir, exist_ok=True)
+            self._episode_counter = 0
+            self._step_counter = {}
 
     def reset_env(self, _env: Optional[BaseEnvManager] = None) -> None:
         """
@@ -152,6 +167,113 @@ class MuZeroEvaluator(ISerialEvaluator):
         self._last_eval_iter = 0
         self._end_flag = False
         
+
+    def _save_observation_with_mask(self, obs: np.ndarray, mask: Optional[list], env_id: int, step: int) -> None:
+        """
+        Overview:
+            Save observation image with mask annotation below it.
+        Arguments:
+            - obs (:obj:`np.ndarray`): Observation array, shape (C, H, W) or (H, W, C)
+            - mask (:obj:`Optional[list]`): Object-level soft mask as list [0.95, 0.23, 0.01, 0.87] or None
+            - env_id (:obj:`int`): Environment ID
+            - step (:obj:`int`): Step number in episode
+        """
+        if not self._visualize:
+            return
+        
+        # Create episode directory if needed (only for first episode)
+        if self._episode_counter == 0:
+            if env_id not in self._step_counter:
+                self._step_counter[env_id] = 0
+        
+        # Only save for first episode
+        if self._episode_counter > 0:
+            return
+        
+        episode_dir = os.path.join(self._visualize_dir, f'episode_0')
+        os.makedirs(episode_dir, exist_ok=True)
+        
+        # Convert observation to image format
+        # obs shape is typically (C, H, W) for channel-first
+        if len(obs.shape) == 3 and obs.shape[0] == 3:  # (C, H, W)
+            obs_img = np.transpose(obs, (1, 2, 0))  # Convert to (H, W, C)
+        elif len(obs.shape) == 3 and obs.shape[2] == 3:  # (H, W, C)
+            obs_img = obs
+        else:
+            # Handle other formats or grayscale
+            if len(obs.shape) == 2:
+                obs_img = np.stack([obs] * 3, axis=-1)
+            else:
+                obs_img = obs
+        
+        # Normalize to [0, 255] if needed
+        if obs_img.dtype != np.uint8:
+            if obs_img.max() <= 1.0:
+                obs_img = (obs_img * 255).astype(np.uint8)
+            elif obs_img.max() > 255:
+                obs_img = np.clip(obs_img, 0, 255).astype(np.uint8)
+            else:
+                obs_img = obs_img.astype(np.uint8)
+        
+        # Create PIL Image and scale it up for better visibility
+        scale_factor = 8  # Scale up image 8x (increased from 6x)
+        img = Image.fromarray(obs_img)
+        img = img.resize((img.width * scale_factor, img.height * scale_factor), Image.NEAREST)
+        
+        if mask is not None:
+            mask_str = str(mask)
+        
+        # Create a new image with extra space for text
+        # Increase text height significantly to accommodate longer text
+        text_height = 200  # Increased from 150
+        new_img = Image.new('RGB', (img.width, img.height + text_height), color='white')
+        new_img.paste(img, (0, 0))
+        
+        # Draw mask text with smaller font
+        draw = ImageDraw.Draw(new_img)
+        try:
+            # Use a smaller font size
+            font_size = 20  # Reduced from 40
+            try:
+                # Try to load a TrueType font
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
+            except:
+                try:
+                    # Try default system font
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", font_size)
+                except:
+                    # Fallback to default font
+                    font = ImageFont.load_default()
+        except:
+            font = ImageFont.load_default()
+        
+        text_y = img.height + 20
+        text_x = 20
+        
+        # Format mask string with proper line breaks - one value per line for clarity
+        if mask is not None and len(mask) > 0:
+            # Format as multiple lines - put each value on a new line for maximum readability
+            mask_lines = []
+            mask_lines.append("[")  # Opening bracket
+            for i, val in enumerate(mask):
+                val_str = f"  {round(val, 4):.4f}"
+                if i < len(mask) - 1:
+                    val_str += ","
+                mask_lines.append(val_str)
+            mask_lines.append("]")  # Closing bracket
+            
+            # Draw each line with spacing
+            line_spacing = 25  # Reduced spacing between lines
+            for i, line in enumerate(mask_lines):
+                draw.text((text_x, text_y + i * line_spacing), line, fill='black', font=font)
+        else:
+            draw.text((text_x, text_y), mask_str, fill='black', font=font)
+        
+        # Save image
+        filename = os.path.join(episode_dir, f'step_{step:04d}.png')
+        new_img.save(filename)
+        
+        self._step_counter[env_id] = step
 
     def close(self) -> None:
         """
@@ -273,6 +395,11 @@ class MuZeroEvaluator(ISerialEvaluator):
             remain_episode = n_episode
             eps_steps_lst = np.zeros(env_nums)
             
+            # Reset visualization counters
+            if self._visualize:
+                self._episode_counter = 0
+                self._step_counter = {}
+            
             with self._timer:
                 while not eval_monitor.is_finished():
                     # Get current ready env obs.
@@ -312,6 +439,43 @@ class MuZeroEvaluator(ISerialEvaluator):
                     # policy forward
                     # ==============================================================
                     policy_output = self._policy.forward(stack_obs, action_mask, to_play, ready_env_id=ready_env_id, timestep=timestep)
+                    
+                    # Save observations with masks for visualization (only for first episode of first env)
+                    if self._visualize and self._episode_counter < 1 and len(ready_env_id) > 0:
+                        # Only visualize the first environment in the batch
+                        first_env_id = min(ready_env_id)
+                        # Get the current observation from game_segments (most recent)
+                        if len(game_segments[first_env_id].obs_segment) > 0:
+                            current_obs = game_segments[first_env_id].obs_segment[-1]
+                            # Handle compressed observations
+                            if self.policy_config.transform2string and isinstance(current_obs, (str, bytes)):
+                                current_obs = jpeg_data_decompressor(current_obs)
+                            # Ensure it's a numpy array
+                            if not isinstance(current_obs, np.ndarray):
+                                current_obs = np.array(current_obs)
+                        else:
+                            # Fallback: use the last frame from stack_obs
+                            idx = list(ready_env_id).index(first_env_id)
+                            obs_for_save = stack_obs[idx].cpu().numpy()
+                            # Extract last frame if stacked (shape: C*stack, H, W)
+                            if len(obs_for_save.shape) == 3 and obs_for_save.shape[0] > 3:
+                                C = 3  # Assuming RGB
+                                H, W = obs_for_save.shape[1], obs_for_save.shape[2]
+                                last_frame = obs_for_save[-C:, :, :]
+                                current_obs = last_frame
+                            else:
+                                current_obs = obs_for_save
+                        
+                        # Get mask from policy output
+                        mask = policy_output[first_env_id].get('predicted_mask', None)
+                        
+                        # Debug: print mask to see what we're getting
+                        if mask is not None:
+                            print(f"Step {int(eps_steps_lst[first_env_id])}: mask = {mask}")
+                        
+                        # Save image with mask
+                        step_num = int(eps_steps_lst[first_env_id])
+                        self._save_observation_with_mask(current_obs, mask, first_env_id, step_num)
                     
                     actions_with_env_id = {k: v['action'] for k, v in policy_output.items()}
                     distributions_dict_with_env_id = {k: v['visit_count_distributions'] for k, v in policy_output.items()}
@@ -404,6 +568,10 @@ class MuZeroEvaluator(ISerialEvaluator):
                                     env_id, eval_monitor.get_latest_reward(env_id), eval_monitor.get_current_episode()
                                 )
                             )
+                            
+                            # Reset step counter for this env when episode ends
+                            if self._visualize and env_id in self._step_counter:
+                                del self._step_counter[env_id]
 
                             # reset the finished env and init game_segments
                             if n_episode > self._env_num:

@@ -825,14 +825,26 @@ class UniZeroPolicy(MuZeroPolicy):
             self._mcts_eval = MCTSPtree(self._cfg)
         self.evaluator_env_num = self._cfg.evaluator_env_num
 
+        # Object-grouping for action masking at the root (same as in _init_collect)
+        self._num_objects = self._cfg.model.num_objects
+        self._action_space_size = self._cfg.model.action_space_size
+        if self._num_objects is not None and self._num_objects > 0:
+            actions_per_obj = self._action_space_size // self._num_objects
+            if actions_per_obj * self._num_objects == self._action_space_size:
+                self._obj_of_action = np.arange(self._cfg.model.action_space_size, dtype=np.int64) // actions_per_obj
+            else:
+                self._obj_of_action = None
+        else:
+            self._obj_of_action = None
+
         if self._cfg.model.model_type == 'conv':
-            self.last_batch_obs = torch.zeros([self.collector_env_num, self._cfg.model.observation_shape[0], 64, 64]).to(self._cfg.device)
-            self.last_batch_action = [-1 for i in range(self.collector_env_num)]
+            self.last_batch_obs = torch.zeros([self.evaluator_env_num, self._cfg.model.observation_shape[0], 64, 64]).to(self._cfg.device)
+            self.last_batch_action = [-1 for i in range(self.evaluator_env_num)]
         elif self._cfg.model.model_type == 'mlp':
             self.last_batch_obs = torch.full(
-                [self.collector_env_num, self._cfg.model.observation_shape], fill_value=self.pad_token_id,
+                [self.evaluator_env_num, self._cfg.model.observation_shape], fill_value=self.pad_token_id,
             ).to(self._cfg.device)
-            self.last_batch_action = [-1 for i in range(self.collector_env_num)]
+            self.last_batch_action = [-1 for i in range(self.evaluator_env_num)]
 
     def _forward_eval(self, data: torch.Tensor, action_mask: list, to_play: List = [-1],
                       ready_env_id: np.array = None, timestep: List = [0]) -> Dict:
@@ -878,6 +890,11 @@ class UniZeroPolicy(MuZeroPolicy):
             # Decide whether to use causal mask in MCTS based on train_iter.
             train_iter = getattr(self, 'train_iter', 0)
             use_causal_mask = train_iter >= self._cfg.causal_puct_start_step and mask_logits is not None
+
+            # Always compute soft mask for visualization (after sigmoid, before threshold)
+            soft_mask_obj = None
+            if mask_logits is not None:
+                soft_mask_obj = torch.sigmoid(mask_logits).detach().cpu().numpy().astype(np.float32)
 
             if use_causal_mask:
                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
@@ -942,6 +959,10 @@ class UniZeroPolicy(MuZeroPolicy):
                 else:
                     predicted_next = None
 
+  
+                if soft_mask_obj is not None:
+                    soft_obj_mask = soft_mask_obj[i].tolist()
+
                 output[env_id] = {
                     'action': action,
                     'visit_count_distributions': distributions,
@@ -951,6 +972,7 @@ class UniZeroPolicy(MuZeroPolicy):
                     'predicted_policy_logits': policy_logits[i],
                     'timestep': timestep[i],
                     'predicted_next_text': predicted_next,
+                    'predicted_mask': soft_obj_mask,  # Soft mask (after sigmoid, before threshold) as list
                 }
                 batch_action.append(action)
 

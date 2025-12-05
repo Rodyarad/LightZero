@@ -1,40 +1,33 @@
+import os
 from easydict import EasyDict
 from zoo.shapes2d.config.shapes2d_env_action_space_map import shapes2d_env_action_space_map
-import comet_ml
+from lzero.entry.eval_muzero import eval_muzero
 
 
-def main(env_id='Navigation5x5-v0', seed=0):
+def main(env_id='Navigation5x5-v0', seed=0, model_path=None):
+    """
+    Run inference for unizero action abstraction model.
+    
+    Args:
+        env_id: Environment ID
+        seed: Random seed
+        model_path: Path to the model checkpoint
+    """
     action_space_size = shapes2d_env_action_space_map[env_id]
     num_objects = action_space_size // 4
 
-    # ==============================================================
-    # begin of the most frequently changed config specified by the user
-    # ==============================================================
+    # Config parameters (matching training config)
     collector_env_num = 8
     game_segment_length = 20
-    evaluator_env_num = 30
+    evaluator_env_num = 1  # For inference, we only need 1 environment
     num_simulations = 50
-    max_env_step = int(5e5)
     batch_size = 64
     num_unroll_steps = 10
     infer_context_length = 4
     num_layers = 2
     replay_ratio = 0.25
 
-    # TODO: only for debug
-    # collector_env_num = 2
-    # game_segment_length = 20
-    # evaluator_env_num = 2
-    # num_simulations = 2
-    # max_env_step = int(5e5)
-    # batch_size = 10
-    # num_unroll_steps = 5
-    # infer_context_length = 2
-    # num_layers = 1
-    # replay_ratio = 0.1
-    # ==============================================================
-    # end of the most frequently changed config specified by the user
-    # ==============================================================
+    # Main config
     shapes2d_unizero_config = dict(
         env=dict(
             stop_value=int(1e6),
@@ -45,27 +38,21 @@ def main(env_id='Navigation5x5-v0', seed=0):
             evaluator_env_num=evaluator_env_num,
             n_evaluator_episode=evaluator_env_num,
             manager=dict(shared_memory=False, ),
-            # TODO: only for debug
-            # collect_max_episode_steps=int(50),
-            # eval_max_episode_steps=int(50),
         ),
         run_id_comet_ml=None,
         policy=dict(
-            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6, ), ), ),  # default is 10000
+            cuda=True,
+            learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6, ), ), ),
             model=dict(
                 observation_shape=(3, 64, 64),
                 action_space_size=action_space_size,
-                # Mirror num_objects at the top model level so that MCTS config
-                # (which reads cfg.model.num_objects) can access it.
                 num_objects=num_objects,
-                # Hard threshold for converting object mask logits to binary mask in MCTS.
-                # Used in both Python policy (root) and C++ MCTS tree for per-node masking.
                 mcts_mask_thres=0.5,
                 world_model_cfg=dict(
                     policy_entropy_weight=1e-4,
                     continuous_action_space=False,
                     max_blocks=num_unroll_steps,
-                    max_tokens=2 * num_unroll_steps,  # NOTE: each timestep has 2 tokens: obs and action
+                    max_tokens=2 * num_unroll_steps,
                     context_length=2 * infer_context_length,
                     device='cuda',
                     action_space_size=action_space_size,
@@ -75,19 +62,10 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     obs_type='image',
                     env_num=max(collector_env_num, evaluator_env_num),
                     rotary_emb=False,
-                    # ===== Object-level action abstraction & mask head =====
-                    # Enable separate object-mask head in the world model.
                     use_action_absraction=True,
-                    # Number of objects for object-level masking; actions are split into
-                    # contiguous groups via actions_per_obj = action_space_size // num_objects.
                     num_objects=num_objects,
-                    # Gumbel-Sigmoid + STE hyperparameters for training-time hard mask.
                     mask_temp=1.0,
                     mask_thres=0.5,
-                    # Final activation for policy head to ensure non-negative logits for multiplicative masking.
-                    # Options: 'relu' (hard threshold at 0), 'softplus' (smooth, always > 0), or None (no activation).
-                    policy_head_activation='relu',
-                    # L1 sparsity weight on sigmoid(mask_logits) for self-supervised mask regularization.
                     mask_l1_weight=0,
                 ),
             ),
@@ -98,21 +76,18 @@ def main(env_id='Navigation5x5-v0', seed=0):
             learning_rate=0.0001,
             num_simulations=num_simulations,
             train_start_after_envsteps=2000,
-            # train_start_after_envsteps=0, # TODO: only for debug
             game_segment_length=game_segment_length,
             replay_buffer_size=int(1e6),
             eval_freq=int(5e3),
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
-            # Global train_iter step from which object-based masking starts to influence
-            # MCTS branching and target formation. Before this step, MCTS ignores the
-            # learned object mask and relies only on env_action_mask.
             causal_puct_start_step=0,
         ),
     )
     shapes2d_unizero_config = EasyDict(shapes2d_unizero_config)
     main_config = shapes2d_unizero_config
 
+    # Create config
     shapes2d_unizero_create_config = dict(
         env=dict(
             type='shapes2d_lightzero',
@@ -127,17 +102,48 @@ def main(env_id='Navigation5x5-v0', seed=0):
     shapes2d_unizero_create_config = EasyDict(shapes2d_unizero_create_config)
     create_config = shapes2d_unizero_create_config
 
-    main_config.exp_name = f'data_lz/data_unizero/shapes2d_uz_nlayer{num_layers}_gsl{game_segment_length}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
-    from lzero.entry import train_unizero
-    train_unizero([main_config, create_config], seed=seed, model_path=main_config.policy.model_path, max_env_step=max_env_step)
+    main_config.exp_name = f'inference_unizero_action_abstraction_{env_id}_seed{seed}'
+
+    # Default model path if not provided
+    if model_path is None:
+        model_path = 'weights/ckpt_best_mask_unizero.pth.tar'
+    
+    # Convert to absolute path if relative
+    if not os.path.isabs(model_path):
+        model_path = os.path.join(os.path.dirname(__file__), model_path)
+    
+    print(f"Loading model from: {model_path}")
+    print(f"Running inference for 1 episode in environment: {env_id}")
+    
+    # Create visualization directory
+    visualize_dir = os.path.join(os.path.dirname(__file__), 'visualizations')
+    
+    # Run inference with visualization
+    mean_return, returns = eval_muzero(
+        input_cfg=[main_config, create_config],
+        seed=seed,
+        model_path=model_path,
+        num_episodes_each_seed=1,
+        print_seed_details=True,
+        visualize=True,
+        visualize_dir=visualize_dir,
+    )
+    
+    print(f"\n{'='*50}")
+    print(f"Inference completed!")
+    print(f"Mean return: {mean_return}")
+    print(f"Returns: {returns}")
+    print(f"Visualizations saved to: {visualize_dir}")
+    print(f"{'='*50}")
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Process some environment.')
+    parser = argparse.ArgumentParser(description='Run inference for unizero action abstraction')
     parser.add_argument('--env', type=str, help='The environment to use', default='Navigation5x5-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
+    parser.add_argument('--model_path', type=str, help='Path to model checkpoint', default=None)
     args = parser.parse_args()
 
-    main(args.env, args.seed)
+    main(args.env, args.seed, args.model_path)
 

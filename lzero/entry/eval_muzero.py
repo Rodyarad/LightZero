@@ -24,6 +24,8 @@ def eval_muzero(
         model_path: Optional[str] = None,
         num_episodes_each_seed: int = 1,
         print_seed_details: int = False,
+        visualize: bool = False,
+        visualize_dir: Optional[str] = None,
 ) -> 'Policy':  # noqa
     """
     Overview:
@@ -82,7 +84,9 @@ def eval_muzero(
         policy=policy.eval_mode,
         tb_logger=tb_logger,
         exp_name=cfg.exp_name,
-        policy_config=policy_config
+        policy_config=policy_config,
+        visualize=visualize,
+        visualize_dir=visualize_dir,
     )
 
     # ==========

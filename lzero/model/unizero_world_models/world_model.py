@@ -117,7 +117,11 @@ class WorldModel(nn.Module):
             self.bound_type = self.config.bound_type
             self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
         else:
-            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
+            # Apply final activation to policy head when using action abstraction to ensure non-negative logits
+            # for multiplicative masking to work correctly.
+            # Options: 'relu', 'softplus', or None (no activation).
+            final_activation = getattr(self.config, 'policy_head_activation', None) if self.use_action_absraction else None
+            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size, final_activation=final_activation)
         self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
         if self.use_action_absraction and not self.continuous_action_space:
@@ -337,8 +341,15 @@ class WorldModel(nn.Module):
         self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
         self.value_policy_tokens_pattern[-2] = 1
 
-    def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
-        """Create head modules for the transformer."""
+    def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None, final_activation=None) -> Head:
+        """
+        Create head modules for the transformer.
+        
+        Arguments:
+            - final_activation (:obj:`str` or None): Type of final activation to apply.
+                Options: 'relu', 'softplus', or None (no activation).
+                Used for policy head when action abstraction is enabled to ensure non-negative logits.
+        """
         modules = [
             nn.Linear(self.config.embed_dim, self.config.embed_dim),
             nn.GELU(approximate='tanh'),
@@ -346,6 +357,13 @@ class WorldModel(nn.Module):
         ]
         if norm_layer:
             modules.append(norm_layer)
+        # Apply final activation if specified (for policy head with action abstraction).
+        if final_activation == 'relu':
+            modules.append(nn.ReLU())
+        elif final_activation == 'softplus':
+            modules.append(nn.Softplus())
+        elif final_activation is not None:
+            raise ValueError(f"Unknown final_activation: {final_activation}. Must be 'relu', 'softplus', or None.")
         return Head(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
@@ -385,9 +403,18 @@ class WorldModel(nn.Module):
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
-                        nn.init.zeros_(layer.weight)
-                        if layer.bias is not None:
-                            nn.init.zeros_(layer.bias)
+                        if head == self.head_mask and self.use_action_absraction:
+                            # Initialize weights with small random values (std=0.01) and bias to ~0.4
+                            # so that sigmoid(bias) ≈ 0.6, giving a slightly open mask initially
+                            nn.init.normal_(layer.weight, mean=0.0, std=0.01)
+                            if layer.bias is not None:
+                                # Initialize bias to ~0.4 so sigmoid(0.4) ≈ 0.6 (slightly above threshold 0.5)
+                                nn.init.constant_(layer.bias, 0.4)
+                        else:
+                            # Standard zero initialization for other heads
+                            nn.init.zeros_(layer.weight)
+                            if layer.bias is not None:
+                                nn.init.zeros_(layer.bias)
                         break
 
     def _initialize_cache_structures(self) -> None:
