@@ -408,7 +408,5 @@ def apply_object_mask_to_policy_logits_with_gumbel(
             mask_action,
         )
 
-    import ipdb
-    ipdb.set_trace()
     masked_logits = logits_policy * mask_action
     return masked_logits, mask_action

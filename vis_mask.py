@@ -66,6 +66,7 @@ def main(env_id='Navigation5x5-v0', seed=0, model_path=None):
                     num_objects=num_objects,
                     mask_temp=1.0,
                     mask_thres=0.5,
+                    policy_head_activation=None,
                     mask_l1_weight=0,
                 ),
             ),
