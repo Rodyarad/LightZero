@@ -1,10 +1,9 @@
 from easydict import EasyDict
-from zoo.shapes2d.config.shapes2d_env_action_space_map import shapes2d_env_action_space_map
 import comet_ml
 
 
-def main(env_id='Navigation5x5-v0', seed=0):
-    action_space_size = shapes2d_env_action_space_map[env_id]
+def main(env_id, seed):
+    action_space_size = 4
 
     # ==============================================================
     # begin of the most frequently changed config specified by the user
@@ -16,50 +15,48 @@ def main(env_id='Navigation5x5-v0', seed=0):
     infer_context_length = 4
     evaluator_env_num = 30
     num_simulations = 50
-    max_env_step = int(1.5e6)
+    max_env_step = int(1e6)
     batch_size = 128
     replay_ratio = 0.25
     num_layers = 2
-    buffer_reanalyze_freq = 1 / 5000000000
-    reanalyze_batch_size = 160
-    reanalyze_partition = 0.75
     norm_type = "LN"
 
-    # TODO: only for debug
+    # Defines the frequency of reanalysis. E.g., 1 means reanalyze once per epoch, 2 means reanalyze once every two epochs.
+    buffer_reanalyze_freq = 1 / 5000000000
+    # Each reanalyze process will reanalyze <reanalyze_batch_size> sequences (<cfg.policy.num_unroll_steps> transitions per sequence)
+    reanalyze_batch_size = 160
+    # The partition of reanalyze. E.g., 1 means reanalyze_batch samples from the whole buffer, 0.5 means samples from the first half of the buffer.
+    reanalyze_partition = 0.75
+
+    # ====== only for debug =====
     # collector_env_num = 2
-    # game_segment_length = 20
+    # num_segments = 2
     # evaluator_env_num = 2
-    # num_simulations = 2
-    # max_env_step = int(5e5)
-    # batch_size = 10
-    # num_unroll_steps = 5
-    # infer_context_length = 2
-    # num_layers = 1
-    # replay_ratio = 0.1
+    # num_simulations = 10
+    # batch_size = 5
     # ==============================================================
     # end of the most frequently changed config specified by the user
     # ==============================================================
-    shapes2d_unizero_config = dict(
+
+    vizdoom_unizero_config = dict(
         env=dict(
-            frame_skip=1,
             stop_value=int(1e6),
             env_id=env_id,
-            observation_shape=(3, 64, 64),
+            observation_shape=(3, 84, 84),
             gray_scale=False,
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
             n_evaluator_episode=evaluator_env_num,
             manager=dict(shared_memory=False, ),
-            collect_max_episode_steps=int(100),
-            eval_max_episode_steps=int(100),
-            # collect_max_episode_steps=int(5e3),
-            # eval_max_episode_steps=int(5e3),
+            # TODO: only for debug
+            # collect_max_episode_steps=int(50),
+            # eval_max_episode_steps=int(50),
         ),
         run_id_comet_ml=None,
         policy=dict(
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6, ), ), ),  # default is 10000
             model=dict(
-                observation_shape=(3, 64, 64),
+                observation_shape=(3, 84, 84),
                 action_space_size=action_space_size,
                 reward_support_range=(-300., 301., 1.),
                 value_support_range=(-300., 301., 1.),
@@ -118,10 +115,11 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     continuous_ls_eps=0.05,
                 ),
             ),
+            # (str) The path of the pretrained model. If None, the model will be initialized by the default model.
+            model_path=None,
             optim_type='AdamW_mix_lr_wdecay',
             weight_decay=1e-2,
             learning_rate=0.0001,
-            model_path=None,
             # Adaptive entropy weight
             use_adaptive_entropy_weight=True,
             adaptive_entropy_alpha_lr=1e-3,
@@ -172,7 +170,6 @@ def main(env_id='Navigation5x5-v0', seed=0):
             num_simulations=num_simulations,
             num_segments=num_segments,
             td_steps=5,
-            target_update_theta=0.05,
             train_start_after_envsteps=0,
             game_segment_length=game_segment_length,
             grad_clip_value=5,
@@ -180,18 +177,22 @@ def main(env_id='Navigation5x5-v0', seed=0):
             eval_freq=int(5e3),
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
+            # ============= The key different params for reanalyze =============
+            # Defines the frequency of reanalysis. E.g., 1 means reanalyze once per epoch, 2 means reanalyze once every two epochs.
             buffer_reanalyze_freq=buffer_reanalyze_freq,
+            # Each reanalyze process will reanalyze <reanalyze_batch_size> sequences (<cfg.policy.num_unroll_steps> transitions per sequence)
             reanalyze_batch_size=reanalyze_batch_size,
+            # The partition of reanalyze. E.g., 1 means reanalyze_batch samples from the whole buffer, 0.5 means samples from the first half of the buffer.
             reanalyze_partition=reanalyze_partition,
         ),
     )
-    shapes2d_unizero_config = EasyDict(shapes2d_unizero_config)
-    main_config = shapes2d_unizero_config
+    vizdoom_unizero_config = EasyDict(vizdoom_unizero_config)
+    main_config = vizdoom_unizero_config
 
-    shapes2d_unizero_create_config = dict(
+    vizdoom_unizero_create_config = dict(
         env=dict(
-            type='shapes2d_lightzero',
-            import_names=['zoo.shapes2d.env.shapes2d_lightzero_env'],
+            type='vizdoom_lightzero',
+            import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
         ),
         env_manager=dict(type='subprocess'),
         policy=dict(
@@ -199,20 +200,20 @@ def main(env_id='Navigation5x5-v0', seed=0):
             import_names=['lzero.policy.unizero'],
         ),
     )
-    shapes2d_unizero_create_config = EasyDict(shapes2d_unizero_create_config)
-    create_config = shapes2d_unizero_create_config
+    vizdoom_unizero_create_config = EasyDict(vizdoom_unizero_create_config)
+    create_config = vizdoom_unizero_create_config
 
-    main_config.exp_name = f'data_lz/data_unizero/shapes2d_uz_nlayer{num_layers}_gsl{game_segment_length}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
+    # ============ use muzero_segment_collector instead of muzero_collector =============
     from lzero.entry import train_unizero_segment
+    main_config.exp_name = f'data_lz/data_unizero/{env_id[:-14]}/{env_id[:-14]}_uz_brf{buffer_reanalyze_freq}-rbs{reanalyze_batch_size}-rp{reanalyze_partition}_nlayer{num_layers}_numsegments-{num_segments}_gsl{game_segment_length}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
     train_unizero_segment([main_config, create_config], seed=seed, model_path=main_config.policy.model_path, max_env_step=max_env_step)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Process some environment.')
-    parser.add_argument('--env', type=str, help='The environment to use', default='Navigation5x5-v0')
+    parser = argparse.ArgumentParser(description='Process different environments and seeds.')
+    parser.add_argument('--env', type=str, help='The environment to use', default='VizdoomDefendLine-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
     args = parser.parse_args()
 
     main(args.env, args.seed)
-

@@ -1,0 +1,185 @@
+# Adapted from openai baselines: https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
+from datetime import datetime
+from typing import Optional
+
+import cv2
+# import gymnasium as gym
+import gym
+import numpy as np
+from ding.envs import ScaledFloatFrameWrapper
+from ding.utils.compression_helper import jpeg_data_compressor
+from easydict import EasyDict
+# from gymnasium.wrappers import RecordVideo
+from gym.wrappers import RecordVideo
+
+from omegaconf import OmegaConf
+from zoo.maniskill.env.maniskill3 import ManiSkill
+
+
+def wrap_lightzero(config: EasyDict) -> gym.Env:
+    """
+    Overview:
+        Configure environment for MuZero-style Shapes2d. The observation is
+        channel-first: (c, h, w) instead of (h, w, c).
+    Arguments:
+        - config (:obj:`Dict`): Dict containing configuration parameters for the environment.
+        - episode_life (:obj:`bool`): If True, the agent starts with a set number of lives and loses them during the game.
+        - clip_rewards (:obj:`bool`): If True, the rewards are clipped to a certain range.
+    Return:
+        - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
+    """
+    env = ManiSkill(reward_mode='normalized_dense', pose_reward_coef=0.01, place_reward_coef=0.1, image_size=config.observation_shape[2])
+
+    if hasattr(config, 'save_replay') and config.save_replay \
+            and hasattr(config, 'replay_path') and config.replay_path is not None:
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        video_name = f'{env.spec.id}-video-{timestamp}'
+        env = RecordVideo(
+            env,
+            video_folder=config.replay_path,
+            episode_trigger=lambda episode_id: True,
+            name_prefix=video_name
+        )
+
+    env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
+    env = FailOnTimelimitWrapper(env)
+    if config.from_pixels:
+        if config.warp_frame:
+            # we must set WarpFrame before ScaledFloatFrameWrapper
+            env = WarpFrame(env, width=config.observation_shape[1], height=config.observation_shape[2], grayscale=config.gray_scale,)
+    if config.scale:
+        env = ScaledFloatFrameWrapper(env)
+    if config.from_pixels:
+        env = JpegWrapper(env, transform2string=config.transform2string)
+    return env
+
+
+class TimeLimit(gym.Wrapper):
+    """
+    Overview:
+        A wrapper that limits the maximum number of steps in an episode.
+    """
+
+    def __init__(self, env: gym.Env, max_episode_steps: Optional[int] = None):
+        """
+        Arguments:
+            - env (:obj:`gym.Env`): The environment to wrap.
+            - max_episode_steps (:obj:`Optional[int]`): Maximum number of steps per episode. If None, no limit is applied.
+        """
+        super(TimeLimit, self).__init__(env)
+        self._max_episode_steps = max_episode_steps
+        self._elapsed_steps = 0
+
+    def step(self, ac):
+        observation, reward, done, info = self.env.step(ac)
+        self._elapsed_steps += 1
+        if self._elapsed_steps >= self._max_episode_steps:
+            done = True
+            info['TimeLimit.truncated'] = True
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        self._elapsed_steps = 0
+        return self.env.reset(**kwargs)
+
+
+class WarpFrame(gym.ObservationWrapper):
+    """
+    Overview:
+        A wrapper that warps frames to 84x84 as done in the Nature paper and later work.
+    """
+
+    def __init__(self, env: gym.Env, width: int = 84, height: int = 84, grayscale: bool = True,
+                 dict_space_key: Optional[str] = None):
+        """
+        Arguments:
+            - env (:obj:`gym.Env`): The environment to wrap.
+            - width (:obj:`int`): The width to which the frames are resized.
+            - height (:obj:`int`): The height to which the frames are resized.
+            - grayscale (:obj:`bool`): If True, convert frames to grayscale.
+            - dict_space_key (:obj:`Optional[str]`): If specified, indicates which observation should be warped.
+        """
+        super().__init__(env)
+        self._width = width
+        self._height = height
+        self._grayscale = grayscale
+        self._key = dict_space_key
+        if self._grayscale:
+            num_colors = 1
+        else:
+            num_colors = 3
+
+        new_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(self._height, self._width, num_colors),
+            dtype=np.uint8,
+        )
+        if self._key is None:
+            original_space = self.observation_space
+            self.observation_space = new_space
+        else:
+            original_space = self.observation_space.spaces[self._key]
+            self.observation_space.spaces[self._key] = new_space
+        assert original_space.dtype == np.uint8 and len(original_space.shape) == 3
+
+    def observation(self, obs):
+        if self._key is None:
+            frame = obs
+        else:
+            frame = obs[self._key]
+
+        if self._grayscale:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_AREA)
+        if self._grayscale:
+            frame = np.expand_dims(frame, -1)
+
+        if self._key is None:
+            obs = frame
+        else:
+            obs = obs.copy()
+            obs[self._key] = frame
+        return obs
+
+class JpegWrapper(gym.Wrapper):
+    """
+    Overview:
+        A wrapper that converts the observation into a string to save memory.
+    """
+
+    def __init__(self, env: gym.Env, transform2string: bool = True):
+        """
+        Arguments:
+            - env (:obj:`gym.Env`): The environment to wrap.
+            - transform2string (:obj:`bool`): If True, transform the observations to string.
+        """
+        super().__init__(env)
+        self.transform2string = transform2string
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+
+        if self.transform2string:
+            observation = jpeg_data_compressor(observation)
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        observation = self.env.reset(**kwargs)
+
+        if self.transform2string:
+            observation = jpeg_data_compressor(observation)
+
+        return observation
+
+class FailOnTimelimitWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def step(self, action):
+        observation, reward, done, info = super().step(action)
+        if done and 'is_success' not in info:
+            info['is_success'] = False
+
+        return observation, reward, done, info
