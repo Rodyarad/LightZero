@@ -16,7 +16,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
     infer_context_length = 4
     evaluator_env_num = 30
     num_simulations = 50
-    max_env_step = int(1.5e6)
+    max_env_step = int(5e5)
     batch_size = 128
     replay_ratio = 0.25
     num_layers = 2
@@ -176,7 +176,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
             train_start_after_envsteps=0,
             game_segment_length=game_segment_length,
             grad_clip_value=5,
-            replay_buffer_size=int(1.5e6),
+            replay_buffer_size=int(5e5),
             eval_freq=int(5e3),
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
