@@ -86,13 +86,9 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     mask_thres=0.5,
                     # Final activation for policy head to ensure non-negative logits for multiplicative masking.
                     # Options: 'relu' (hard threshold at 0), 'softplus' (smooth, always > 0), or None (no activation).
-                    policy_head_activation=None,
+                    policy_head_activation='relu',
                     # L1 sparsity weight on sigmoid(mask_logits) for self-supervised mask regularization.
                     mask_l1_weight=0,
-                    # Policy masking mode: 'additive' or 'multiplicative'
-                    # 'additive': masked_logits = logits_policy + (mask_action - 1) * 1e9
-                    # 'multiplicative': masked_logits = logits_policy * mask_action + (mask_action - 1) * 1e9
-                    policy_mask_mode='additive',
                 ),
             ),
             model_path=None,

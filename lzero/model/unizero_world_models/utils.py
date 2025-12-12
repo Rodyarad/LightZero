@@ -349,7 +349,6 @@ def apply_object_mask_to_policy_logits_with_gumbel(
     mask_temp: float,
     mask_thres: float,
     eps: float = 1e-6,
-    policy_mask_mode: str = 'additive',
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Overview:
@@ -368,7 +367,6 @@ def apply_object_mask_to_policy_logits_with_gumbel(
         - mask_temp (:obj:`float`): Temperature for Gumbel-Sigmoid.
         - mask_thres (:obj:`float`): Threshold for hard mask (on Gumbel-Sigmoid outputs).
         - eps (:obj:`float`): Numerical stability epsilon.
-        - policy_mask_mode (:obj:`str`): Masking mode - 'additive' or 'multiplicative'.
 
     Returns:
         - masked_logits (:obj:`torch.Tensor`): Shape (B, T, A), masked policy logits.
@@ -400,12 +398,6 @@ def apply_object_mask_to_policy_logits_with_gumbel(
     # Broadcast object mask to actions: mask_action[b, t, a] = mask_obj[b, t, obj_of_action[a]]
     mask_action = mask_obj[..., obj_of_action]  # (B, T, A)
 
-    # Apply masking based on the configured mode
-    if policy_mask_mode == 'additive':
-        masked_logits = logits_policy + (mask_action - 1) * 1e9
-    elif policy_mask_mode == 'multiplicative':
-        masked_logits = logits_policy * mask_action + (mask_action - 1) * 1e9
-    else:
-        raise ValueError(f"Invalid policy_mask_mode: {policy_mask_mode}. Must be 'additive' or 'multiplicative'.")
-    
+    masked_logits = logits_policy + (mask_action - 1) * 1e9
+    #masked_logits = logits_policy * mask_action + (mask_action - 1) * 1e9
     return masked_logits, mask_action
