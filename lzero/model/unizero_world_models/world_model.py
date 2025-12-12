@@ -1876,6 +1876,7 @@ class WorldModel(nn.Module):
         ):
             mask_temp = self.config.mask_temp
             mask_thres = self.config.mask_thres
+            policy_mask_mode = self.config.policy_mask_mode
             logits, _ = apply_object_mask_to_policy_logits_with_gumbel(
                 logits_policy=logits,
                 mask_logits_obj=outputs.logits_mask,
@@ -1883,6 +1884,7 @@ class WorldModel(nn.Module):
                 action_space_size=self.action_space_size,
                 mask_temp=mask_temp,
                 mask_thres=mask_thres,
+                policy_mask_mode=policy_mask_mode,
             )
             mask_applied = True
 
