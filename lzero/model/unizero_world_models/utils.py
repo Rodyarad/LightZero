@@ -398,15 +398,6 @@ def apply_object_mask_to_policy_logits_with_gumbel(
     # Broadcast object mask to actions: mask_action[b, t, a] = mask_obj[b, t, obj_of_action[a]]
     mask_action = mask_obj[..., obj_of_action]  # (B, T, A)
 
-    # Fallback: if an entire (b, t) row is zero, disable masking for that row.
-    summed = mask_action.sum(dim=-1, keepdim=True)  # (B, T, 1)
-    all_zero = (summed <= eps)
-    if all_zero.any():
-        mask_action = torch.where(
-            all_zero.expand_as(mask_action),
-            torch.ones_like(mask_action),
-            mask_action,
-        )
-
-    masked_logits = logits_policy * mask_action
+    masked_logits = logits_policy + (mask_action - 1) * 1e9
+    #masked_logits = logits_policy * mask_action + (mask_action - 1) * 1e9
     return masked_logits, mask_action

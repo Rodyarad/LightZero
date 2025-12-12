@@ -404,12 +404,9 @@ class WorldModel(nn.Module):
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
                         if head == self.head_mask and self.use_action_absraction:
-                            # Initialize weights with small random values (std=0.01) and bias to ~0.4
-                            # so that sigmoid(bias) ≈ 0.6, giving a slightly open mask initially
-                            nn.init.normal_(layer.weight, mean=0.0, std=0.01)
+                            nn.init.xavier_uniform_(layer.weight)
                             if layer.bias is not None:
-                                # Initialize bias to ~0.4 so sigmoid(0.4) ≈ 0.6 (slightly above threshold 0.5)
-                                nn.init.constant_(layer.bias, 0.4)
+                                nn.init.zeros_(layer.bias)
                         else:
                             # Standard zero initialization for other heads
                             nn.init.zeros_(layer.weight)

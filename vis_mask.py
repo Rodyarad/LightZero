@@ -107,7 +107,7 @@ def main(env_id='Navigation5x5-v0', seed=0, model_path=None):
 
     # Default model path if not provided
     if model_path is None:
-        model_path = 'weights/ckpt_best_mask_unizero.pth.tar'
+        model_path = 'weights/ckpt_best_soft.pth.tar'
     
     # Convert to absolute path if relative
     if not os.path.isabs(model_path):
