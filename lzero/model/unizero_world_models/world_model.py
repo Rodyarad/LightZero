@@ -1569,9 +1569,41 @@ class WorldModel(nn.Module):
         loss_rewards = self.compute_cross_entropy_loss(outputs, labels_rewards, batch, element='rewards')
 
         if not self.continuous_action_space:
-            loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(outputs, labels_policy,
-                                                                                            batch,
-                                                                                            element='policy')
+            loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(
+                outputs,
+                labels_policy,
+                batch,
+                element='policy',
+            )
+
+            mask_policy_loss_weight = float(getattr(self.config, 'mask_policy_loss_weight', 0.0))
+            if (
+                mask_policy_loss_weight > 0.0
+                and bool(getattr(self, 'use_action_absraction', False))
+                and getattr(outputs, 'logits_mask', None) is not None
+            ):
+                masked_policy_logits, _ = apply_object_mask_to_policy_logits_with_gumbel(
+                    logits_policy=outputs.logits_policy.detach(),
+                    mask_logits_obj=outputs.logits_mask,
+                    num_objects=self.num_objects,
+                    action_space_size=self.action_space_size,
+                    mask_temp=self.config.mask_temp,
+                    mask_thres=self.config.mask_thres,
+                    mask_application_mode=self.config.mask_application_mode,
+                )
+                masked_policy_logits = rearrange(masked_policy_logits, 'b t e -> (b t) e')
+                labels_policy_flat = labels_policy.reshape(-1, labels_policy.shape[-1])
+                mask_padding_flat = rearrange(batch['mask_padding'], 'b t -> (b t)')
+
+                orig_mask_policy_loss = -(torch.log_softmax(masked_policy_logits, dim=1) * labels_policy_flat).sum(1)
+                orig_mask_policy_loss = orig_mask_policy_loss * mask_padding_flat
+                mask_policy_entropy = self.compute_policy_entropy_loss(masked_policy_logits, mask_padding_flat)
+                loss_mask_policy = orig_mask_policy_loss - self.policy_entropy_weight * mask_policy_entropy
+            else:
+                # Keep shapes consistent (vector of per-(B*T) losses).
+                loss_mask_policy = torch.zeros_like(loss_policy)
+                orig_mask_policy_loss = torch.zeros_like(orig_policy_loss)
+                mask_policy_entropy = torch.zeros_like(policy_entropy)
         else:
             # NOTE: for continuous action space
             if self.config.policy_loss_type == 'simple':
@@ -1638,6 +1670,10 @@ class WorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
+        if not self.continuous_action_space:
+            discounted_loss_mask_policy = (loss_mask_policy.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
+            discounted_orig_mask_policy_loss = (orig_mask_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
+            discounted_mask_policy_entropy = (mask_policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
 
         # Optional L1 sparsity loss on the object mask (self-supervised mask regularizer).
         loss_mask_l1 = torch.tensor(0.0, device=loss_policy.device)
@@ -1674,8 +1710,9 @@ class WorldModel(nn.Module):
             mask_probs = mask_probs * mask_padding
             # Global L1 (mean) over batch, time and objects.
             loss_mask_l1 = mask_probs.mean()
-            # Add sparsity regularizer into policy loss.
-            discounted_loss_policy = discounted_loss_policy + mask_l1_weight * loss_mask_l1
+            # Add sparsity regularizer into the mask loss if it is enabled, otherwise fall back to policy loss.
+            if float(getattr(self.config, 'mask_policy_loss_weight', 0.0)) > 0.0:
+                discounted_loss_mask_policy = discounted_loss_mask_policy + mask_l1_weight * loss_mask_l1
 
         if self.continuous_action_space:
             return LossWithIntermediateLosses(
@@ -1704,16 +1741,20 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
+                mask_policy_loss_weight=float(getattr(self.config, 'mask_policy_loss_weight', 0.0)),
                 continuous_action_space=False,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_mask_policy=discounted_loss_mask_policy,
                 loss_mask_l1=loss_mask_l1,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
                 policy_entropy=discounted_policy_entropy,
+                orig_mask_policy_loss=discounted_orig_mask_policy_loss,
+                mask_policy_entropy=discounted_mask_policy_entropy,
                 first_step_losses=first_step_losses,
                 middle_step_losses=middle_step_losses,
                 last_step_losses=last_step_losses,
@@ -1863,40 +1904,6 @@ class WorldModel(nn.Module):
         # labels is a target tensor for comparison. batch is a dictionary with a mask indicating valid timesteps.
 
         logits = getattr(outputs, f'logits_{element}')
-
-        # === Object-level hard mask with Gumbel+STE for policy logits (training path) ===
-        # We apply this ONLY for discrete policy logits during training, BEFORE flattening.
-        mask_applied = False
-        if (
-            element == 'policy'
-            and not self.continuous_action_space
-            and self.num_objects is not None
-            and hasattr(outputs, 'logits_mask')
-            and outputs.logits_mask is not None
-        ):
-            mask_temp = self.config.mask_temp
-            mask_thres = self.config.mask_thres
-            mask_application_mode = self.config.mask_application_mode
-            logits, _ = apply_object_mask_to_policy_logits_with_gumbel(
-                logits_policy=logits,
-                mask_logits_obj=outputs.logits_mask,
-                num_objects=self.num_objects,
-                action_space_size=self.action_space_size,
-                mask_temp=mask_temp,
-                mask_thres=mask_thres,
-                mask_application_mode=mask_application_mode,
-            )
-            mask_applied = True
-
-        # If abstraction is enabled at config-level, but for some reason the mask
-        # was not applied to policy logits, fail fast instead of silently degrading
-        # to the unmasked policy.
-        if element == 'policy' and self.use_action_absraction and not mask_applied:
-            raise RuntimeError(
-                "WorldModel: use_action_absraction=True but policy logits were computed without "
-                "applying the object-level mask. Check that logits_mask is produced and that "
-                "num_objects and action_space_size are configured correctly."
-            )
 
         if torch.isnan(logits).any():
             raise ValueError(f"NaN detected in outputs for batch {batch} and element '{element}'")

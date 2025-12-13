@@ -468,11 +468,14 @@ class UniZeroPolicy(MuZeroPolicy):
         obs_loss = self.intermediate_losses['loss_obs']
         reward_loss = self.intermediate_losses['loss_rewards']
         policy_loss = self.intermediate_losses['loss_policy']
+        mask_policy_loss = self.intermediate_losses.get('loss_mask_policy', torch.tensor(0.0, device=policy_loss.device))
         value_loss = self.intermediate_losses['loss_value']
         latent_recon_loss = self.intermediate_losses['latent_recon_loss']
         perceptual_loss = self.intermediate_losses['perceptual_loss']
         orig_policy_loss = self.intermediate_losses['orig_policy_loss']
         policy_entropy = self.intermediate_losses['policy_entropy']
+        orig_mask_policy_loss = self.intermediate_losses.get('orig_mask_policy_loss', torch.tensor(0.0, device=policy_loss.device))
+        mask_policy_entropy = self.intermediate_losses.get('mask_policy_entropy', torch.tensor(0.0, device=policy_loss.device))
         first_step_losses = self.intermediate_losses['first_step_losses']
         middle_step_losses = self.intermediate_losses['middle_step_losses']
         last_step_losses = self.intermediate_losses['last_step_losses']
@@ -567,8 +570,11 @@ class UniZeroPolicy(MuZeroPolicy):
             'latent_recon_loss': latent_recon_loss.item(),
             'perceptual_loss': perceptual_loss.item(),
             'policy_loss': policy_loss.item(),
+            'mask_policy_loss': mask_policy_loss.item() if isinstance(mask_policy_loss, torch.Tensor) else float(mask_policy_loss),
             'orig_policy_loss': orig_policy_loss.item(),
             'policy_entropy': policy_entropy.item(),
+            'orig_mask_policy_loss': orig_mask_policy_loss.item() if isinstance(orig_mask_policy_loss, torch.Tensor) else float(orig_mask_policy_loss),
+            'mask_policy_entropy': mask_policy_entropy.item() if isinstance(mask_policy_entropy, torch.Tensor) else float(mask_policy_entropy),
             'target_policy_entropy': average_target_policy_entropy.item(),
             'reward_loss': reward_loss.item(),
             'value_loss': value_loss.item(),
@@ -1132,10 +1138,13 @@ class UniZeroPolicy(MuZeroPolicy):
             'policy_loss',
             'orig_policy_loss',
             'policy_entropy',
+            'mask_policy_loss',
             'latent_recon_loss',
             'target_policy_entropy',
             'reward_loss',
             'value_loss',
+            'orig_mask_policy_loss',
+            'mask_policy_entropy',
             'consistency_loss',
             'value_priority',
             'target_reward',

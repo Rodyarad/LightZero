@@ -91,8 +91,8 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     # Final activation for policy head to ensure non-negative logits for multiplicative masking.
                     # Options: 'relu' (hard threshold at 0), 'softplus' (smooth, always > 0), or None (no activation).
                     policy_head_activation=None,
-                    # L1 sparsity weight on sigmoid(mask_logits) for self-supervised mask regularization.
                     mask_l1_weight=0,
+                    mask_policy_loss_weight=1.0,
                 ),
             ),
             model_path=None,
@@ -111,7 +111,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
             # Global train_iter step from which object-based masking starts to influence
             # MCTS branching and target formation. Before this step, MCTS ignores the
             # learned object mask and relies only on env_action_mask.
-            causal_puct_start_step=0,
+            causal_puct_start_step=25_000,
         ),
     )
     shapes2d_unizero_config = EasyDict(shapes2d_unizero_config)
