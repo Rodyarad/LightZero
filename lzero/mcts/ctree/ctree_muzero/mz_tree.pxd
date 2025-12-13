@@ -37,6 +37,7 @@ cdef extern from "lib/cnode.h" namespace "tree":
         float value_prefixs, prior, value_sum, parent_value_prefix
 
         void expand(int to_play, int current_latent_state_index, int batch_index, float value_prefixs, vector[float] policy_logits)
+        void expand_with_action_mask(int to_play, int current_latent_state_index, int batch_index, float value_prefixs, vector[float] policy_logits, vector[float] action_mask)
         void add_exploration_noise(float exploration_fraction, vector[float] noises)
         float compute_mean_q(int isRoot, float parent_q, float discount_factor)
 
@@ -54,6 +55,8 @@ cdef extern from "lib/cnode.h" namespace "tree":
 
         void prepare(float root_noise_weight, const vector[vector[float]] &noises, const vector[float] &value_prefixs, const vector[vector[float]] &policies, vector[int] to_play_batch)
         void prepare_no_noise(const vector[float] &value_prefixs, const vector[vector[float]] &policies, vector[int] to_play_batch)
+        void prepare_with_action_masks(float root_noise_weight, const vector[vector[float]] &noises, const vector[float] &value_prefixs, const vector[vector[float]] &policies, const vector[vector[float]] &action_masks, vector[int] to_play_batch)
+        void prepare_no_noise_with_action_masks(const vector[float] &value_prefixs, const vector[vector[float]] &policies, const vector[vector[float]] &action_masks, vector[int] to_play_batch)
         void clear()
         vector[vector[int]] get_trajectories()
         vector[vector[int]] get_distributions()
@@ -70,8 +73,8 @@ cdef extern from "lib/cnode.h" namespace "tree":
     cdef void cbackpropagate(vector[CNode*] &search_path, CMinMaxStats &min_max_stats, int to_play, float value, float discount_factor)
     void cbatch_backpropagate(int current_latent_state_index, float discount_factor, vector[float] value_prefixs, vector[float] values, vector[vector[float]] policies,
                                CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, vector[int] &to_play_batch)
-    void cbatch_backpropagate_with_legal_actions(int current_latent_state_index, float discount_factor, vector[float] value_prefixs, vector[float] values, vector[vector[float]] policies,
-                               CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, vector[int] &to_play_batch, vector[vector[int]] leaf_legal_actions_list)
+    void cbatch_backpropagate_with_action_masks(int current_latent_state_index, float discount_factor, vector[float] value_prefixs, vector[float] values, vector[vector[float]] policies, vector[vector[float]] action_masks,
+                               CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, vector[int] &to_play_batch)
     void cbatch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, vector[float] value_prefixs, vector[float] values, vector[vector[float]] policies,
                                CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, vector[int] &to_play_batch, vector[int] &no_inference_lst, vector[int] &reuse_lst, vector[float] &reuse_value_lst)
     void cbatch_traverse(CRoots *roots, int pb_c_base, float pb_c_init, float discount_factor, CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, vector[int] &virtual_to_play_batch)

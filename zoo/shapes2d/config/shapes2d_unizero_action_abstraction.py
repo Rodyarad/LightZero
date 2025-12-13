@@ -84,9 +84,13 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     # Gumbel-Sigmoid + STE hyperparameters for training-time hard mask.
                     mask_temp=1.0,
                     mask_thres=0.5,
+                    # How to apply mask to policy logits during training.
+                    # Options: 'additive' (logits + (mask - 1) * mask_invalid_value) or
+                    #          'multiplicative' (logits * mask + (mask - 1) * mask_invalid_value).
+                    mask_application_mode='additive',
                     # Final activation for policy head to ensure non-negative logits for multiplicative masking.
                     # Options: 'relu' (hard threshold at 0), 'softplus' (smooth, always > 0), or None (no activation).
-                    policy_head_activation='relu',
+                    policy_head_activation=None,
                     # L1 sparsity weight on sigmoid(mask_logits) for self-supervised mask regularization.
                     mask_l1_weight=0,
                 ),

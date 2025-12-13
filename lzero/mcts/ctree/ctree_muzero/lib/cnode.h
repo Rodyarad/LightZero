@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <cmath>
+#include <cstdint>
 #include <sys/timeb.h>
 #include <time.h>
 #include <map>
@@ -26,12 +27,23 @@ namespace tree {
             std::map<int, CNode> children;
 
             std::vector<int> legal_actions;
+            // Per-node action validity mask (0/1) indexed by action id.
+            // When empty, all actions are treated as valid.
+            std::vector<uint8_t> action_valid;
 
             CNode();
             CNode(float prior, std::vector<int> &legal_actions);
             ~CNode();
 
             void expand(int to_play, int current_latent_state_index, int batch_index, float reward, const std::vector<float> &policy_logits);
+            void expand_with_action_mask(
+                int to_play,
+                int current_latent_state_index,
+                int batch_index,
+                float reward,
+                const std::vector<float> &policy_logits,
+                const std::vector<float> &action_mask
+            );
             void add_exploration_noise(float exploration_fraction, const std::vector<float> &noises);
             float compute_mean_q(int isRoot, float parent_q, float discount_factor);
             void print_out();
@@ -57,6 +69,20 @@ namespace tree {
 
             void prepare(float root_noise_weight, const std::vector<std::vector<float> > &noises, const std::vector<float> &rewards, const std::vector<std::vector<float> > &policies, std::vector<int> &to_play_batch);
             void prepare_no_noise(const std::vector<float> &rewards, const std::vector<std::vector<float> > &policies, std::vector<int> &to_play_batch);
+            void prepare_with_action_masks(
+                float root_noise_weight,
+                const std::vector<std::vector<float> > &noises,
+                const std::vector<float> &rewards,
+                const std::vector<std::vector<float> > &policies,
+                const std::vector<std::vector<float> > &action_masks,
+                std::vector<int> &to_play_batch
+            );
+            void prepare_no_noise_with_action_masks(
+                const std::vector<float> &rewards,
+                const std::vector<std::vector<float> > &policies,
+                const std::vector<std::vector<float> > &action_masks,
+                std::vector<int> &to_play_batch
+            );
             void clear();
             std::vector<std::vector<int> > get_trajectories();
             std::vector<std::vector<int> > get_distributions();
@@ -83,17 +109,16 @@ namespace tree {
     void update_tree_q(CNode* root, tools::CMinMaxStats &min_max_stats, float discount_factor, int players);
     void cbackpropagate(std::vector<CNode*> &search_path, tools::CMinMaxStats &min_max_stats, int to_play, float value, float discount_factor);
     void cbatch_backpropagate(int current_latent_state_index, float discount_factor, const std::vector<float> &rewards, const std::vector<float> &values, const std::vector<std::vector<float> > &policies, tools::CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, std::vector<int> &to_play_batch);
-    // Variant that allows overriding legal_actions for each expanded leaf node (for action masking).
-    void cbatch_backpropagate_with_legal_actions(
+    void cbatch_backpropagate_with_action_masks(
         int current_latent_state_index,
         float discount_factor,
         const std::vector<float> &rewards,
         const std::vector<float> &values,
         const std::vector<std::vector<float> > &policies,
+        const std::vector<std::vector<float> > &action_masks,
         tools::CMinMaxStatsList *min_max_stats_lst,
         CSearchResults &results,
-        std::vector<int> &to_play_batch,
-        const std::vector<std::vector<int> > &leaf_legal_actions_list
+        std::vector<int> &to_play_batch
     );
     void cbatch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, const std::vector<float> &value_prefixs, const std::vector<float> &values, const std::vector<std::vector<float> > &policies, tools::CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, std::vector<int> &to_play_batch, std::vector<int> &no_inference_lst, std::vector<int> &reuse_lst, std::vector<int> &reuse_value_lst);
     int cselect_child(CNode* root, tools::CMinMaxStats &min_max_stats, int pb_c_base, float pb_c_init, float discount_factor, float mean_q, int players);

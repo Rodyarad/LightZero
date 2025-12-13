@@ -349,6 +349,8 @@ def apply_object_mask_to_policy_logits_with_gumbel(
     mask_temp: float,
     mask_thres: float,
     eps: float = 1e-6,
+    mask_application_mode: str = 'additive',
+    mask_invalid_value: float = 1e9,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Overview:
@@ -357,7 +359,7 @@ def apply_object_mask_to_policy_logits_with_gumbel(
         - Sample Gumbel-Sigmoid over object logits.
         - Apply a hard threshold with STE to obtain a binary object mask.
         - Map the object mask to per-action mask via equal-sized contiguous groups.
-        - Mask policy logits in log-space as: logits + log(mask_action + eps).
+        - Mask policy logits according to mask_application_mode.
 
     Arguments:
         - logits_policy (:obj:`torch.Tensor`): Shape (B, T, A), unnormalized logits over actions.
@@ -367,6 +369,10 @@ def apply_object_mask_to_policy_logits_with_gumbel(
         - mask_temp (:obj:`float`): Temperature for Gumbel-Sigmoid.
         - mask_thres (:obj:`float`): Threshold for hard mask (on Gumbel-Sigmoid outputs).
         - eps (:obj:`float`): Numerical stability epsilon.
+        - mask_application_mode (:obj:`str`): How to apply mask to logits. Options:
+            - 'additive': masked_logits = logits + (mask - 1) * mask_invalid_value
+            - 'multiplicative': masked_logits = logits * mask + (mask - 1) * mask_invalid_value
+        - mask_invalid_value (:obj:`float`): Large negative value to assign to invalid actions.
 
     Returns:
         - masked_logits (:obj:`torch.Tensor`): Shape (B, T, A), masked policy logits.
@@ -398,6 +404,15 @@ def apply_object_mask_to_policy_logits_with_gumbel(
     # Broadcast object mask to actions: mask_action[b, t, a] = mask_obj[b, t, obj_of_action[a]]
     mask_action = mask_obj[..., obj_of_action]  # (B, T, A)
 
-    masked_logits = logits_policy + (mask_action - 1) * 1e9
-    #masked_logits = logits_policy * mask_action + (mask_action - 1) * 1e9
+    # Apply mask to logits according to configured mode
+    if mask_application_mode == 'additive':
+        masked_logits = logits_policy + (mask_action - 1) * mask_invalid_value
+    elif mask_application_mode == 'multiplicative':
+        masked_logits = logits_policy * mask_action + (mask_action - 1) * mask_invalid_value
+    else:
+        raise ValueError(
+            f"apply_object_mask_to_policy_logits_with_gumbel: mask_application_mode must be "
+            f"'additive' or 'multiplicative', got '{mask_application_mode}'"
+        )
+    
     return masked_logits, mask_action

@@ -9,7 +9,7 @@ from ding.model import model_wrap
 from ding.utils import POLICY_REGISTRY
 
 from lzero.entry.utils import initialize_zeros_batch, initialize_pad_batch
-from lzero.mcts import UniZeroActionAbstractionMCTSCtree as MCTSCtree
+from lzero.mcts import UniZeroMCTSCtree as MCTSCtree
 from lzero.model import ImageTransforms
 from lzero.policy import scalar_transform, InverseScalarTransform, phi_transform, \
     DiscreteSupport, to_torch_float_tensor, mz_network_output_unpack_with_mask, select_action, prepare_obs, \
@@ -707,22 +707,28 @@ class UniZeroPolicy(MuZeroPolicy):
                 mcts_mask_obj = (torch.sigmoid(mask_logits) > mcts_mask_thres)  # (B, N_obj)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
-                mcts_action_mask = mcts_mask_obj[:, obj_of_action]  # (B, A)
-                combined_mask = env_action_mask * mcts_action_mask
+                mcts_action_mask = mcts_mask_obj[:, obj_of_action]  # (B, A) in {0,1}
             else:
                 # Before causal_puct_start_step, ignore model-based mask in MCTS.
-                combined_mask = env_action_mask
+                mcts_action_mask = np.ones_like(env_action_mask, dtype=np.float32)
 
 
             legal_actions = []
             dirichlet_sizes = []
+            action_masks = []
             for j in range(active_collect_env_num):
-                legal = [i for i, x in enumerate(combined_mask[j]) if x == 1.0]
-                # fallback: если модель \"забаррикадировала\" всё, используем только env‑маску
+                # Root legality is determined by the env action mask.
+                legal = [i for i, x in enumerate(env_action_mask[j]) if x == 1.0]
                 if len(legal) == 0:
-                    legal = [i for i, x in enumerate(env_action_mask[j]) if x == 1.0]
+                    legal = list(range(self._cfg.model.action_space_size))
                 legal_actions.append(legal)
                 dirichlet_sizes.append(len(legal))
+
+                # Per-action validity mask used inside MCTS selection (invalid -> score=-inf).
+                m = mcts_action_mask[j].copy()
+                if use_causal_mask and float(np.sum(m[legal])) <= 0.0:
+                    m[:] = 1.0
+                action_masks.append(m.astype(np.float32).tolist())
 
             # the only difference between collect and eval is the dirichlet noise
             noises = [
@@ -739,7 +745,12 @@ class UniZeroPolicy(MuZeroPolicy):
                 # python mcts_tree
                 roots = MCTSPtree.roots(active_collect_env_num, legal_actions)
 
-            roots.prepare(self._cfg.root_noise_weight, noises, reward_roots, policy_logits, to_play)
+            if self._cfg.mcts_ctree:
+                roots.prepare_with_action_masks(
+                    self._cfg.root_noise_weight, noises, reward_roots, policy_logits, action_masks, to_play
+                )
+            else:
+                roots.prepare(self._cfg.root_noise_weight, noises, reward_roots, policy_logits, to_play)
 
             # Propagate current train_iter into C++ MCTS for per-node masking schedule.
             self._mcts_collect.train_iter = train_iter
@@ -902,9 +913,8 @@ class UniZeroPolicy(MuZeroPolicy):
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]
-                combined_mask = env_action_mask * mcts_action_mask
             else:
-                combined_mask = env_action_mask
+                mcts_action_mask = np.ones_like(env_action_mask, dtype=np.float32)
 
             # if not in training, obtain the scalars of the value/reward
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()  # shape（B, 1）
@@ -912,11 +922,17 @@ class UniZeroPolicy(MuZeroPolicy):
             policy_logits = policy_logits.detach().cpu().numpy().tolist()  # list shape（B, A）
 
             legal_actions = []
+            action_masks = []
             for j in range(active_eval_env_num):
-                legal = [i for i, x in enumerate(combined_mask[j]) if x == 1.0]
+                legal = [i for i, x in enumerate(env_action_mask[j]) if x == 1.0]
                 if len(legal) == 0:
-                    legal = [i for i, x in enumerate(env_action_mask[j]) if x == 1.0]
+                    legal = list(range(self._cfg.model.action_space_size))
                 legal_actions.append(legal)
+
+                m = mcts_action_mask[j].copy()
+                if use_causal_mask and float(np.sum(m[legal])) <= 0.0:
+                    m[:] = 1.0
+                action_masks.append(m.astype(np.float32).tolist())
 
             if self._cfg.mcts_ctree:
                 # cpp mcts_tree
@@ -924,7 +940,10 @@ class UniZeroPolicy(MuZeroPolicy):
             else:
                 # python mcts_tree
                 roots = MCTSPtree.roots(active_eval_env_num, legal_actions)
-            roots.prepare_no_noise(reward_roots, policy_logits, to_play)
+            if self._cfg.mcts_ctree:
+                roots.prepare_no_noise_with_action_masks(reward_roots, policy_logits, action_masks, to_play)
+            else:
+                roots.prepare_no_noise(reward_roots, policy_logits, to_play)
             # Propagate current train_iter into C++ MCTS for per-node masking schedule.
             self._mcts_eval.train_iter = train_iter
             next_latent_state_with_env = self._mcts_eval.search(roots, self._eval_model, latent_state_roots, to_play, timestep)
