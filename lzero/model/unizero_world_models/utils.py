@@ -317,7 +317,7 @@ class LossWithIntermediateLosses:
         return self
 
 
-def gumbel_sigmoid_torch(
+def gumbel_sigmoid(
     logits: torch.Tensor,
     temp: float = 1.0,
     eps: float = 1e-6,
@@ -340,7 +340,7 @@ def gumbel_sigmoid_torch(
     return y
 
 
-def straight_through_estimator_torch(
+def straight_through_estimator(
     soft: torch.Tensor,
     hard: torch.Tensor,
 ) -> torch.Tensor:
@@ -351,78 +351,78 @@ def straight_through_estimator_torch(
     return (hard - soft).detach() + soft
 
 
-def apply_object_mask_to_policy_logits_with_gumbel(
-    logits_policy: torch.Tensor,
-    mask_logits_obj: torch.Tensor,
-    num_objects: int,
-    action_space_size: int,
-    mask_temp: float,
-    mask_thres: float,
-    eps: float = 1e-6,
-    mask_application_mode: str = 'additive',
-    mask_invalid_value: float = 1e9,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Overview:
-        Apply an object-level hard mask to discrete policy logits using Gumbel-Sigmoid + STE.
-
-        - Sample Gumbel-Sigmoid over object logits.
-        - Apply a hard threshold with STE to obtain a binary object mask.
-        - Map the object mask to per-action mask via equal-sized contiguous groups.
-        - Mask policy logits according to mask_application_mode.
-
-    Arguments:
-        - logits_policy (:obj:`torch.Tensor`): Shape (B, T, A), unnormalized logits over actions.
-        - mask_logits_obj (:obj:`torch.Tensor`): Shape (B, T, num_objects), logits over objects.
-        - num_objects (:obj:`int`): Number of objects.
-        - action_space_size (:obj:`int`): Number of discrete actions A.
-        - mask_temp (:obj:`float`): Temperature for Gumbel-Sigmoid.
-        - mask_thres (:obj:`float`): Threshold for hard mask (on Gumbel-Sigmoid outputs).
-        - eps (:obj:`float`): Numerical stability epsilon.
-        - mask_application_mode (:obj:`str`): How to apply mask to logits. Options:
-            - 'additive': masked_logits = logits + (mask - 1) * mask_invalid_value
-            - 'multiplicative': masked_logits = logits * mask + (mask - 1) * mask_invalid_value
-        - mask_invalid_value (:obj:`float`): Large negative value to assign to invalid actions.
-
-    Returns:
-        - masked_logits (:obj:`torch.Tensor`): Shape (B, T, A), masked policy logits.
-        - mask_action (:obj:`torch.Tensor`): Shape (B, T, A), hard mask over actions (with STE gradient).
-    """
-    # Gumbel-Sigmoid over objects
-    mask_soft = gumbel_sigmoid_torch(mask_logits_obj, temp=mask_temp, eps=eps)  # (B, T, num_objects)
-
-    # Straight-through hard threshold
-    mask_hard = (mask_soft > mask_thres).float()
-    mask_obj = straight_through_estimator_torch(mask_soft, mask_hard)  # (B, T, num_objects)
-
-    # Equal-size grouping: actions_per_obj actions per object.
-    actions_per_obj = action_space_size // num_objects
-    if actions_per_obj * num_objects != action_space_size:
-        # If grouping is inconsistent, this indicates a configuration error between
-        # `action_space_size` and `num_objects`. Fail fast instead of silently
-        # disabling masking, so that experiments cannot accidentally run without
-        # the intended abstraction.
-        raise ValueError(
-            "apply_object_mask_to_policy_logits_with_gumbel: action_space_size "
-            f"({action_space_size}) must be divisible by num_objects ({num_objects})."
-        )
-
-    obj_of_action = (
-        torch.arange(action_space_size, device=logits_policy.device) // actions_per_obj
-    )  # (A,)
-
-    # Broadcast object mask to actions: mask_action[b, t, a] = mask_obj[b, t, obj_of_action[a]]
-    mask_action = mask_obj[..., obj_of_action]  # (B, T, A)
-
-    # Apply mask to logits according to configured mode
-    if mask_application_mode == 'additive':
-        masked_logits = logits_policy + (mask_action - 1) * mask_invalid_value
-    elif mask_application_mode == 'multiplicative':
-        masked_logits = logits_policy * mask_action + (mask_action - 1) * mask_invalid_value
-    else:
-        raise ValueError(
-            f"apply_object_mask_to_policy_logits_with_gumbel: mask_application_mode must be "
-            f"'additive' or 'multiplicative', got '{mask_application_mode}'"
-        )
-    
-    return masked_logits, mask_action
+# def apply_object_mask_to_policy_logits_with_gumbel(
+#     logits_policy: torch.Tensor,
+#     mask_logits_obj: torch.Tensor,
+#     num_objects: int,
+#     action_space_size: int,
+#     mask_temp: float,
+#     mask_thres: float,
+#     eps: float = 1e-6,
+#     mask_application_mode: str = 'additive',
+#     mask_invalid_value: float = 1e9,
+# ) -> Tuple[torch.Tensor, torch.Tensor]:
+#     """
+#     Overview:
+#         Apply an object-level hard mask to discrete policy logits using Gumbel-Sigmoid + STE.
+#
+#         - Sample Gumbel-Sigmoid over object logits.
+#         - Apply a hard threshold with STE to obtain a binary object mask.
+#         - Map the object mask to per-action mask via equal-sized contiguous groups.
+#         - Mask policy logits according to mask_application_mode.
+#
+#     Arguments:
+#         - logits_policy (:obj:`torch.Tensor`): Shape (B, T, A), unnormalized logits over actions.
+#         - mask_logits_obj (:obj:`torch.Tensor`): Shape (B, T, num_objects), logits over objects.
+#         - num_objects (:obj:`int`): Number of objects.
+#         - action_space_size (:obj:`int`): Number of discrete actions A.
+#         - mask_temp (:obj:`float`): Temperature for Gumbel-Sigmoid.
+#         - mask_thres (:obj:`float`): Threshold for hard mask (on Gumbel-Sigmoid outputs).
+#         - eps (:obj:`float`): Numerical stability epsilon.
+#         - mask_application_mode (:obj:`str`): How to apply mask to logits. Options:
+#             - 'additive': masked_logits = logits + (mask - 1) * mask_invalid_value
+#             - 'multiplicative': masked_logits = logits * mask + (mask - 1) * mask_invalid_value
+#         - mask_invalid_value (:obj:`float`): Large negative value to assign to invalid actions.
+#
+#     Returns:
+#         - masked_logits (:obj:`torch.Tensor`): Shape (B, T, A), masked policy logits.
+#         - mask_action (:obj:`torch.Tensor`): Shape (B, T, A), hard mask over actions (with STE gradient).
+#     """
+#     # Gumbel-Sigmoid over objects
+#     mask_soft = gumbel_sigmoid_torch(mask_logits_obj, temp=mask_temp, eps=eps)  # (B, T, num_objects)
+#
+#     # Straight-through hard threshold
+#     mask_hard = (mask_soft > mask_thres).float()
+#     mask_obj = straight_through_estimator_torch(mask_soft, mask_hard)  # (B, T, num_objects)
+#
+#     # Equal-size grouping: actions_per_obj actions per object.
+#     actions_per_obj = action_space_size // num_objects
+#     if actions_per_obj * num_objects != action_space_size:
+#         # If grouping is inconsistent, this indicates a configuration error between
+#         # `action_space_size` and `num_objects`. Fail fast instead of silently
+#         # disabling masking, so that experiments cannot accidentally run without
+#         # the intended abstraction.
+#         raise ValueError(
+#             "apply_object_mask_to_policy_logits_with_gumbel: action_space_size "
+#             f"({action_space_size}) must be divisible by num_objects ({num_objects})."
+#         )
+#
+#     obj_of_action = (
+#         torch.arange(action_space_size, device=logits_policy.device) // actions_per_obj
+#     )  # (A,)
+#
+#     # Broadcast object mask to actions: mask_action[b, t, a] = mask_obj[b, t, obj_of_action[a]]
+#     mask_action = mask_obj[..., obj_of_action]  # (B, T, A)
+#
+#     # Apply mask to logits according to configured mode
+#     if mask_application_mode == 'additive':
+#         masked_logits = logits_policy + (mask_action - 1) * mask_invalid_value
+#     elif mask_application_mode == 'multiplicative':
+#         masked_logits = logits_policy * mask_action + (mask_action - 1) * mask_invalid_value
+#     else:
+#         raise ValueError(
+#             f"apply_object_mask_to_policy_logits_with_gumbel: mask_application_mode must be "
+#             f"'additive' or 'multiplicative', got '{mask_application_mode}'"
+#         )
+#
+#     return masked_logits, mask_action
