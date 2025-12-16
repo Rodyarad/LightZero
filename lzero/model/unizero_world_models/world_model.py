@@ -19,7 +19,6 @@ from .utils import (
     init_weights,
     WorldModelOutput,
     hash_state,
-    apply_object_mask_to_policy_logits_with_gumbel,
 )
 
 logging.getLogger().setLevel(logging.DEBUG)
@@ -117,11 +116,7 @@ class WorldModel(nn.Module):
             self.bound_type = self.config.bound_type
             self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
         else:
-            # Apply final activation to policy head when using action abstraction to ensure non-negative logits
-            # for multiplicative masking to work correctly.
-            # Options: 'relu', 'softplus', or None (no activation).
-            final_activation = getattr(self.config, 'policy_head_activation', None) if self.use_action_absraction else None
-            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size, final_activation=final_activation)
+            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
         self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
         if self.use_action_absraction and not self.continuous_action_space:
@@ -342,14 +337,7 @@ class WorldModel(nn.Module):
         self.value_policy_tokens_pattern[-2] = 1
 
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None, final_activation=None) -> Head:
-        """
-        Create head modules for the transformer.
-        
-        Arguments:
-            - final_activation (:obj:`str` or None): Type of final activation to apply.
-                Options: 'relu', 'softplus', or None (no activation).
-                Used for policy head when action abstraction is enabled to ensure non-negative logits.
-        """
+        """Create head modules for the transformer."""
         modules = [
             nn.Linear(self.config.embed_dim, self.config.embed_dim),
             nn.GELU(approximate='tanh'),
@@ -357,13 +345,6 @@ class WorldModel(nn.Module):
         ]
         if norm_layer:
             modules.append(norm_layer)
-        # Apply final activation if specified (for policy head with action abstraction).
-        if final_activation == 'relu':
-            modules.append(nn.ReLU())
-        elif final_activation == 'softplus':
-            modules.append(nn.Softplus())
-        elif final_activation is not None:
-            raise ValueError(f"Unknown final_activation: {final_activation}. Must be 'relu', 'softplus', or None.")
         return Head(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
@@ -1569,41 +1550,9 @@ class WorldModel(nn.Module):
         loss_rewards = self.compute_cross_entropy_loss(outputs, labels_rewards, batch, element='rewards')
 
         if not self.continuous_action_space:
-            loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(
-                outputs,
-                labels_policy,
-                batch,
-                element='policy',
-            )
-
-            mask_policy_loss_weight = float(getattr(self.config, 'mask_policy_loss_weight', 0.0))
-            if (
-                mask_policy_loss_weight > 0.0
-                and bool(getattr(self, 'use_action_absraction', False))
-                and getattr(outputs, 'logits_mask', None) is not None
-            ):
-                masked_policy_logits, _ = apply_object_mask_to_policy_logits_with_gumbel(
-                    logits_policy=outputs.logits_policy.detach(),
-                    mask_logits_obj=outputs.logits_mask,
-                    num_objects=self.num_objects,
-                    action_space_size=self.action_space_size,
-                    mask_temp=self.config.mask_temp,
-                    mask_thres=self.config.mask_thres,
-                    mask_application_mode=self.config.mask_application_mode,
-                )
-                masked_policy_logits = rearrange(masked_policy_logits, 'b t e -> (b t) e')
-                labels_policy_flat = labels_policy.reshape(-1, labels_policy.shape[-1])
-                mask_padding_flat = rearrange(batch['mask_padding'], 'b t -> (b t)')
-
-                orig_mask_policy_loss = -(torch.log_softmax(masked_policy_logits, dim=1) * labels_policy_flat).sum(1)
-                orig_mask_policy_loss = orig_mask_policy_loss * mask_padding_flat
-                mask_policy_entropy = self.compute_policy_entropy_loss(masked_policy_logits, mask_padding_flat)
-                loss_mask_policy = orig_mask_policy_loss - self.policy_entropy_weight * mask_policy_entropy
-            else:
-                # Keep shapes consistent (vector of per-(B*T) losses).
-                loss_mask_policy = torch.zeros_like(loss_policy)
-                orig_mask_policy_loss = torch.zeros_like(orig_policy_loss)
-                mask_policy_entropy = torch.zeros_like(policy_entropy)
+            loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(outputs, labels_policy,
+                                                                                            batch,
+                                                                                            element='policy')
         else:
             # NOTE: for continuous action space
             if self.config.policy_loss_type == 'simple':
@@ -1670,49 +1619,6 @@ class WorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
-        if not self.continuous_action_space:
-            discounted_loss_mask_policy = (loss_mask_policy.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
-            discounted_orig_mask_policy_loss = (orig_mask_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
-            discounted_mask_policy_entropy = (mask_policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
-
-        # Optional L1 sparsity loss on the object mask (self-supervised mask regularizer).
-        loss_mask_l1 = torch.tensor(0.0, device=loss_policy.device)
-        mask_l1_weight = getattr(self.config, 'mask_l1_weight', 0.0)
-
-        # If abstraction is enabled and L1 regularization weight is positive, we expect to
-        # have a valid discrete mask head. If not, fail fast instead of silently skipping.
-        if self.use_action_absraction and mask_l1_weight > 0.0:
-            if self.continuous_action_space:
-                raise RuntimeError(
-                    "WorldModel: mask_l1_weight>0 with continuous_action_space=True is inconsistent "
-                    "with use_action_absraction=True."
-                )
-            if self.num_objects is None:
-                raise RuntimeError(
-                    "WorldModel: mask_l1_weight>0 and use_action_absraction=True but num_objects is None."
-                )
-            if getattr(outputs, 'logits_mask', None) is None:
-                raise RuntimeError(
-                    "WorldModel: mask_l1_weight>0 and use_action_absraction=True but outputs.logits_mask is None. "
-                    "The mask head must be present when using object-level abstraction with L1 regularization."
-                )
-
-        if (
-            (not self.continuous_action_space)
-            and self.num_objects is not None
-            and outputs.logits_mask is not None
-            and mask_l1_weight > 0.0
-        ):
-            # Use sigmoid(mask_logits) as a soft object-activation probability.
-            mask_probs = torch.sigmoid(outputs.logits_mask)  # (B, T, num_objects)
-            # Respect sequence padding mask.
-            mask_padding = batch['mask_padding'].unsqueeze(-1)  # (B, T, 1)
-            mask_probs = mask_probs * mask_padding
-            # Global L1 (mean) over batch, time and objects.
-            loss_mask_l1 = mask_probs.mean()
-            # Add sparsity regularizer into the mask loss if it is enabled, otherwise fall back to policy loss.
-            if float(getattr(self.config, 'mask_policy_loss_weight', 0.0)) > 0.0:
-                discounted_loss_mask_policy = discounted_loss_mask_policy + mask_l1_weight * loss_mask_l1
 
         if self.continuous_action_space:
             return LossWithIntermediateLosses(
@@ -1747,14 +1653,10 @@ class WorldModel(nn.Module):
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
-                loss_mask_policy=discounted_loss_mask_policy,
-                loss_mask_l1=loss_mask_l1,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
                 policy_entropy=discounted_policy_entropy,
-                orig_mask_policy_loss=discounted_orig_mask_policy_loss,
-                mask_policy_entropy=discounted_mask_policy_entropy,
                 first_step_losses=first_step_losses,
                 middle_step_losses=middle_step_losses,
                 last_step_losses=last_step_losses,

@@ -288,7 +288,7 @@ class UniZeroPolicy(MuZeroPolicy):
         # (int) Global train_iter after which to start using object-based masks in MCTS
         #       for branching and target formation. Before this step, MCTS ignores model
         #       masks and uses only env_action_mask.
-        causal_puct_start_step=0,
+        causal_puct_start_step=25_000,
 
         # ****** Explore by eps greedy ******
         eps=dict(
@@ -474,8 +474,6 @@ class UniZeroPolicy(MuZeroPolicy):
         perceptual_loss = self.intermediate_losses['perceptual_loss']
         orig_policy_loss = self.intermediate_losses['orig_policy_loss']
         policy_entropy = self.intermediate_losses['policy_entropy']
-        orig_mask_policy_loss = self.intermediate_losses.get('orig_mask_policy_loss', torch.tensor(0.0, device=policy_loss.device))
-        mask_policy_entropy = self.intermediate_losses.get('mask_policy_entropy', torch.tensor(0.0, device=policy_loss.device))
         first_step_losses = self.intermediate_losses['first_step_losses']
         middle_step_losses = self.intermediate_losses['middle_step_losses']
         last_step_losses = self.intermediate_losses['last_step_losses']
@@ -539,11 +537,6 @@ class UniZeroPolicy(MuZeroPolicy):
             current_memory_allocated_gb = 0.
             max_memory_allocated_gb = 0.
 
-        # Optional: mask sparsity loss for object-level mask (if present in world model losses).
-        loss_mask_l1 = self.intermediate_losses.get('loss_mask_l1', 0.0)
-        if isinstance(loss_mask_l1, torch.Tensor):
-            loss_mask_l1 = loss_mask_l1.item()
-
         return_log_dict = {
             'analysis/first_step_loss_value': first_step_losses['loss_value'].item(),
             'analysis/first_step_loss_policy': first_step_losses['loss_policy'].item(),
@@ -573,8 +566,6 @@ class UniZeroPolicy(MuZeroPolicy):
             'mask_policy_loss': mask_policy_loss.item() if isinstance(mask_policy_loss, torch.Tensor) else float(mask_policy_loss),
             'orig_policy_loss': orig_policy_loss.item(),
             'policy_entropy': policy_entropy.item(),
-            'orig_mask_policy_loss': orig_mask_policy_loss.item() if isinstance(orig_mask_policy_loss, torch.Tensor) else float(orig_mask_policy_loss),
-            'mask_policy_entropy': mask_policy_entropy.item() if isinstance(mask_policy_entropy, torch.Tensor) else float(mask_policy_entropy),
             'target_policy_entropy': average_target_policy_entropy.item(),
             'reward_loss': reward_loss.item(),
             'value_loss': value_loss.item(),
@@ -591,8 +582,6 @@ class UniZeroPolicy(MuZeroPolicy):
             'analysis/l2_norm_after': self.l2_norm_after,
             'analysis/grad_norm_before': self.grad_norm_before,
             'analysis/grad_norm_after': self.grad_norm_after,
-            # Object-level mask regularizer (L1 sparsity), useful to monitor mask learning dynamics.
-            'loss_mask_l1': loss_mask_l1,
         }
         
         if self._cfg.use_wandb:
@@ -1143,15 +1132,11 @@ class UniZeroPolicy(MuZeroPolicy):
             'target_policy_entropy',
             'reward_loss',
             'value_loss',
-            'orig_mask_policy_loss',
-            'mask_policy_entropy',
             'consistency_loss',
             'value_priority',
             'target_reward',
             'target_value',
             'total_grad_norm_before_clip_wm',
-            # Object-level mask regularizer
-            'loss_mask_l1',
             # tokenizer
             'commitment_loss',
             'reconstruction_loss',
