@@ -19,6 +19,7 @@ from .utils import (
     init_weights,
     WorldModelOutput,
     hash_state,
+    apply_object_mask_to_policy_logits_with_gumbel,
 )
 
 logging.getLogger().setLevel(logging.DEBUG)
@@ -1565,6 +1566,34 @@ class WorldModel(nn.Module):
 
         loss_value = self.compute_cross_entropy_loss(outputs, labels_value, batch, element='value')
 
+        # Optional: additional policy loss that trains the object mask head using masked logits.
+        # The gradient for this loss flows only through the mask head because policy logits are detached.
+        loss_mask_policy = None
+        if (not self.continuous_action_space) and self.use_action_absraction and (outputs.logits_mask is not None):
+            masked_policy_logits, _ = apply_object_mask_to_policy_logits_with_gumbel(
+                logits_policy=outputs.logits_policy.detach(),  # do not backprop into policy head
+                mask_logits_obj=outputs.logits_mask,
+                num_objects=self.config.num_objects,
+                action_space_size=self.config.action_space_size,
+                mask_temp=getattr(self.config, 'mask_temp', 1.0),
+                mask_thres=getattr(self.config, 'mask_thres', 0.5),
+                mask_invalid_value=1e9,
+            )
+
+            # Reuse the same CE+entropy formulation as the main policy loss.
+            outputs_masked = WorldModelOutput(
+                outputs.output_sequence,
+                outputs.logits_observations,
+                outputs.logits_rewards,
+                outputs.logits_ends,
+                masked_policy_logits,
+                outputs.logits_value,
+                outputs.logits_mask,
+            )
+            loss_mask_policy, _, _ = self.compute_cross_entropy_loss(
+                outputs_masked, labels_policy, batch, element='policy'
+            )
+
         # ==== TODO: calculate the new priorities for each transition. ====
         # value_priority = L1Loss(reduction='none')(labels_value.squeeze(-1), outputs['logits_value'][:, 0])
         # value_priority = value_priority.data.cpu().numpy() + 1e-6
@@ -1580,10 +1609,13 @@ class WorldModel(nn.Module):
         last_step_losses = {}
         # batch['mask_padding'] indicates mask status for future H steps, exclude masked losses to maintain accurate mean statistics
         # Group losses for each loss item
-        for loss_name, loss_tmp in zip(
-                ['loss_obs', 'loss_rewards', 'loss_value', 'loss_policy', 'orig_policy_loss', 'policy_entropy'],
-                [loss_obs, loss_rewards, loss_value, loss_policy, orig_policy_loss, policy_entropy]
-        ):
+        loss_names = ['loss_obs', 'loss_rewards', 'loss_value', 'loss_policy', 'orig_policy_loss', 'policy_entropy']
+        loss_tensors = [loss_obs, loss_rewards, loss_value, loss_policy, orig_policy_loss, policy_entropy]
+        if loss_mask_policy is not None:
+            loss_names.append('loss_mask_policy')
+            loss_tensors.append(loss_mask_policy)
+
+        for loss_name, loss_tmp in zip(loss_names, loss_tensors):
             if loss_name == 'loss_obs':
                 seq_len = batch['actions'].shape[1] - 1
                 # Get the corresponding mask_padding
@@ -1619,6 +1651,8 @@ class WorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
+        if loss_mask_policy is not None:
+            discounted_loss_mask_policy = (loss_mask_policy.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
 
         if self.continuous_action_space:
             return LossWithIntermediateLosses(
@@ -1644,11 +1678,8 @@ class WorldModel(nn.Module):
                 target_sampled_actions=target_sampled_actions,
             )
         else:
-            return LossWithIntermediateLosses(
-                latent_recon_loss_weight=self.latent_recon_loss_weight,
-                perceptual_loss_weight=self.perceptual_loss_weight,
-                mask_policy_loss_weight=float(getattr(self.config, 'mask_policy_loss_weight', 0.0)),
-                continuous_action_space=False,
+            # Prepare kwargs for LossWithIntermediateLosses, optionally including mask-policy loss.
+            loss_kwargs = dict(
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
@@ -1663,6 +1694,16 @@ class WorldModel(nn.Module):
                 dormant_ratio_encoder=dormant_ratio_encoder,
                 dormant_ratio_world_model=dormant_ratio_world_model,
                 latent_state_l2_norms=latent_state_l2_norms,
+            )
+            if loss_mask_policy is not None:
+                loss_kwargs['loss_mask_policy'] = discounted_loss_mask_policy
+
+            return LossWithIntermediateLosses(
+                latent_recon_loss_weight=self.latent_recon_loss_weight,
+                perceptual_loss_weight=self.perceptual_loss_weight,
+                mask_policy_loss_weight=float(getattr(self.config, 'mask_policy_loss_weight', 0.0)),
+                continuous_action_space=False,
+                **loss_kwargs,
             )
 
     
