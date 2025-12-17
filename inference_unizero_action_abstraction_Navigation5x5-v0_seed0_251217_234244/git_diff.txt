@@ -1,0 +1,37 @@
+diff --git a/lzero/policy/unizero_action_abstraction.py b/lzero/policy/unizero_action_abstraction.py
+index c4a16e83..8abe9e96 100644
+--- a/lzero/policy/unizero_action_abstraction.py
++++ b/lzero/policy/unizero_action_abstraction.py
+@@ -900,7 +900,7 @@ class UniZeroPolicy(MuZeroPolicy):
+             # Always compute soft mask for visualization (after sigmoid, before threshold)
+             soft_mask_obj = None
+             if mask_logits is not None:
+-                soft_mask_obj = torch.sigmoid(mask_logits).detach().cpu().numpy().astype(np.float32)
++                soft_mask_obj = torch.softmax(mask_logits, dim=-1).detach().cpu().numpy().astype(np.float32)
+ 
+             if use_causal_mask:
+                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
+diff --git a/vis_mask.py b/vis_mask.py
+index 18014dc1..6daf94c8 100644
+--- a/vis_mask.py
++++ b/vis_mask.py
+@@ -65,9 +65,8 @@ def main(env_id='Navigation5x5-v0', seed=0, model_path=None):
+                     use_action_absraction=True,
+                     num_objects=num_objects,
+                     mask_temp=1.0,
+-                    mask_thres=0.5,
++                    mask_thres=0.15,
+                     policy_head_activation=None,
+-                    mask_l1_weight=0,
+                 ),
+             ),
+             model_path=None,
+@@ -107,7 +106,7 @@ def main(env_id='Navigation5x5-v0', seed=0, model_path=None):
+ 
+     # Default model path if not provided
+     if model_path is None:
+-        model_path = 'weights/ckpt_best_soft.pth.tar'
++        model_path = 'weights/ckpt_best.pth.tar'
+     
+     # Convert to absolute path if relative
+     if not os.path.isabs(model_path):

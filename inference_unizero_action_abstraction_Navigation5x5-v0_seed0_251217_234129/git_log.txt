@@ -1,0 +1,51 @@
+v0.2.0-66-gc96ed546
+
+commit c96ed54628293e2d588f86db729c9a62756d79cc
+Author: Rodyarad <r.vakhitov2018@gmail.com>
+Date:   Wed Dec 17 16:49:13 2025 +0300
+
+    fix computing loss
+
+ lzero/model/unizero_world_models/world_model.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+commit 3574a34af3744ff746a971c621b9fbc4bc7bd1a8
+Author: Rodyarad <r.vakhitov2018@gmail.com>
+Date:   Wed Dec 17 16:08:32 2025 +0300
+
+    another small fix
+
+ ...2d_unizero_mask_poicy_loss.py => shapes2d_unizero_mask_policy_loss.py} | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+commit 29adc0b183a103fb7f87593fd522dd0d38030336
+Author: Rodyarad <r.vakhitov2018@gmail.com>
+Date:   Wed Dec 17 16:06:29 2025 +0300
+
+    small fix
+
+ ...2d_unizero_mask_mcts_loss.py.py => shapes2d_unizero_mask_mcts_loss.py} | 0
+ ..._unizero_mask_poicy_loss.py.py => shapes2d_unizero_mask_poicy_loss.py} | 0
+ 2 files changed, 0 insertions(+), 0 deletions(-)
+
+commit fb7ae8048b2db53166e0d2a8bbd4a66ba3de2fa8
+Author: Rodyarad <r.vakhitov2018@gmail.com>
+Date:   Wed Dec 17 15:58:33 2025 +0300
+
+    add mask head loss without suppress logits
+
+ lzero/model/unizero_world_models/utils.py          |   2 +-
+ lzero/model/unizero_world_models/world_model.py    |  73 +++++++----
+ .../config/shapes2d_unizero_mask_mcts_loss.py.py   | 142 +++++++++++++++++++++
+ ...n.py => shapes2d_unizero_mask_poicy_loss.py.py} |   3 +
+ 4 files changed, 195 insertions(+), 25 deletions(-)
+
+commit 624382df48847bbbc6b93c235fb54cdd26ddf12f
+Author: Rodyarad <r.vakhitov2018@gmail.com>
+Date:   Wed Dec 17 15:20:35 2025 +0300
+
+    add loss for mask head through policy loss
+
+ lzero/model/unizero_world_models/utils.py       | 139 +++++++++++-------------
+ lzero/model/unizero_world_models/world_model.py |  59 ++++++++--
+ 2 files changed, 114 insertions(+), 84 deletions(-)

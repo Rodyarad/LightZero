@@ -900,7 +900,7 @@ class UniZeroPolicy(MuZeroPolicy):
             # Always compute soft mask for visualization (after sigmoid, before threshold)
             soft_mask_obj = None
             if mask_logits is not None:
-                soft_mask_obj = torch.sigmoid(mask_logits).detach().cpu().numpy().astype(np.float32)
+                soft_mask_obj = torch.softmax(mask_logits, dim=-1).detach().cpu().numpy().astype(np.float32)
 
             if use_causal_mask:
                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
