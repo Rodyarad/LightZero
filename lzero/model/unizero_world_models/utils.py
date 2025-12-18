@@ -294,7 +294,7 @@ class LossWithIntermediateLosses:
                 self.loss_total += self.reward_loss_weight * v
             elif k == 'loss_policy':
                 self.loss_total += self.policy_loss_weight * v
-            elif k == 'loss_mask_policy':
+            elif k == 'loss_mask':
                 self.loss_total += self.mask_policy_loss_weight * v
             elif k == 'loss_value':
                 self.loss_total += self.value_loss_weight * v

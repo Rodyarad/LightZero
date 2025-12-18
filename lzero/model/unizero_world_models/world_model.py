@@ -1565,6 +1565,27 @@ class WorldModel(nn.Module):
 
         loss_value = self.compute_cross_entropy_loss(outputs, labels_value, batch, element='value')
 
+        if self.use_action_absraction and not self.continuous_action_space and outputs.logits_mask is not None:
+            logits_mask = outputs.logits_mask
+            target_policy_full = batch['target_policy']
+
+            B, T, A = target_policy_full.shape
+            num_objects = self.num_objects
+            actions_per_obj = A // num_objects
+
+            target_policy_obj = target_policy_full.view(B, T, num_objects, actions_per_obj).sum(dim=-1)
+
+            logits_flat = logits_mask.view(B * T, num_objects)
+            targets_flat = target_policy_obj.view(B * T, num_objects)
+
+            mask_padding_flat = batch['mask_padding'].contiguous().view(-1).float()
+
+            log_probs_mask = torch.log_softmax(logits_flat, dim=1)
+            mask_loss = -(log_probs_mask * targets_flat).sum(dim=1)
+            mask_loss = mask_loss * mask_padding_flat
+        else:
+            mask_loss = torch.zeros_like(loss_value)
+
         # ==== TODO: calculate the new priorities for each transition. ====
         # value_priority = L1Loss(reduction='none')(labels_value.squeeze(-1), outputs['logits_value'][:, 0])
         # value_priority = value_priority.data.cpu().numpy() + 1e-6
@@ -1613,10 +1634,15 @@ class WorldModel(nn.Module):
         discounted_latent_recon_loss = latent_recon_loss
         discounted_perceptual_loss = perceptual_loss
         # Calculate overall discounted loss
-        discounted_loss_obs = (loss_obs.view(-1, batch['actions'].shape[1] - 1) * discounts[1:]).sum()/ batch['mask_padding'][:,1:].sum()
-        discounted_loss_rewards = (loss_rewards.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
-        discounted_loss_value = (loss_value.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
-        discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
+        discounted_loss_obs = (loss_obs.view(-1, batch['actions'].shape[1] - 1) * discounts[1:]).sum() / batch['mask_padding'][:, 1:].sum()
+        discounted_loss_rewards = (loss_rewards.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
+        discounted_loss_value = (loss_value.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
+        discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum() / batch['mask_padding'].sum()
+
+        # Discounted mask loss over timesteps (same discount schedule).
+        discounted_mask_loss = (
+            mask_loss.view(-1, batch['actions'].shape[1]) * discounts
+        ).sum() / batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
 
@@ -1653,6 +1679,7 @@ class WorldModel(nn.Module):
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_mask=discounted_mask_loss,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,

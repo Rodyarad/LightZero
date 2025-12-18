@@ -468,7 +468,7 @@ class UniZeroPolicy(MuZeroPolicy):
         obs_loss = self.intermediate_losses['loss_obs']
         reward_loss = self.intermediate_losses['loss_rewards']
         policy_loss = self.intermediate_losses['loss_policy']
-        mask_policy_loss = self.intermediate_losses.get('loss_mask_policy', torch.tensor(0.0, device=policy_loss.device))
+        mask_loss = self.intermediate_losses.get('loss_mask', torch.tensor(0.0, device=policy_loss.device))
         value_loss = self.intermediate_losses['loss_value']
         latent_recon_loss = self.intermediate_losses['latent_recon_loss']
         perceptual_loss = self.intermediate_losses['perceptual_loss']
@@ -563,7 +563,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'latent_recon_loss': latent_recon_loss.item(),
             'perceptual_loss': perceptual_loss.item(),
             'policy_loss': policy_loss.item(),
-            'mask_policy_loss': mask_policy_loss.item() if isinstance(mask_policy_loss, torch.Tensor) else float(mask_policy_loss),
+            'mask_loss': mask_loss.item() if isinstance(mask_loss, torch.Tensor) else float(mask_loss),
             'orig_policy_loss': orig_policy_loss.item(),
             'policy_entropy': policy_entropy.item(),
             'target_policy_entropy': average_target_policy_entropy.item(),
@@ -899,7 +899,7 @@ class UniZeroPolicy(MuZeroPolicy):
 
             if use_causal_mask:
                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
-                mcts_mask_obj = (torch.sigmoid(mask_logits) > mcts_mask_thres)
+                mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]
@@ -1119,7 +1119,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'policy_loss',
             'orig_policy_loss',
             'policy_entropy',
-            'mask_policy_loss',
+            'mask_loss',
             'latent_recon_loss',
             'target_policy_entropy',
             'reward_loss',
