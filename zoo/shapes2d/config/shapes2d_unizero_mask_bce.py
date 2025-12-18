@@ -84,7 +84,8 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     # Gumbel-Sigmoid + STE hyperparameters for training-time hard mask.
                     mask_temp=1.0,
                     mask_thres=0.5,
-                    mask_policy_loss_weight=1.0,
+                    mask_loss_type='bce',
+                    mask_loss_weight=1.0,
                 ),
             ),
             model_path=None,

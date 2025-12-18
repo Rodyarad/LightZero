@@ -197,7 +197,15 @@ class UniZeroMCTSCtree(object):
                 )
                 if use_causal_mask:
                     mcts_mask_thres = float(self._cfg.model.mcts_mask_thres)
-                    mask_obj = (1.0 / (1.0 + np.exp(-network_output.mask_logits)) > mcts_mask_thres).astype(np.float32)  # (B, N_obj)
+                    mask_loss_type = str(getattr(getattr(self._cfg.model, 'world_model_cfg', {}), 'mask_loss_type', 'ce'))
+                    if mask_loss_type == 'bce':
+                        probs_obj = 1.0 / (1.0 + np.exp(-network_output.mask_logits))
+                    else:
+                        x = network_output.mask_logits
+                        x = x - np.max(x, axis=-1, keepdims=True)
+                        e = np.exp(x)
+                        probs_obj = e / (np.sum(e, axis=-1, keepdims=True) + 1e-12)
+                    mask_obj = (probs_obj > mcts_mask_thres).astype(np.float32)  # (B, N_obj)
                     action_masks = mask_obj[:, self._obj_of_action].tolist()  # (B, A)
                 else:
                     if self._action_space_size is None and len(policy_logits_batch) > 0:

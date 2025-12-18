@@ -1580,9 +1580,14 @@ class WorldModel(nn.Module):
 
             mask_padding_flat = batch['mask_padding'].contiguous().view(-1).float()
 
-            log_probs_mask = torch.log_softmax(logits_flat, dim=1)
-            mask_loss = -(log_probs_mask * targets_flat).sum(dim=1)
-            mask_loss = mask_loss * mask_padding_flat
+            mask_loss_type = str(getattr(self.config, 'mask_loss_type', 'ce')).lower()
+            if mask_loss_type == 'bce':
+                mask_loss = F.binary_cross_entropy_with_logits(logits_flat, targets_flat, reduction='none').mean(dim=1)
+                mask_loss = mask_loss * mask_padding_flat
+            else:
+                log_probs_mask = torch.log_softmax(logits_flat, dim=1)
+                mask_loss = -(log_probs_mask * targets_flat).sum(dim=1)
+                mask_loss = mask_loss * mask_padding_flat
         else:
             mask_loss = torch.zeros_like(loss_value)
 
@@ -1673,7 +1678,7 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
-                mask_policy_loss_weight=float(getattr(self.config, 'mask_policy_loss_weight', 0.0)),
+                mask_loss_weight=float(getattr(self.config, 'mask_loss_weight', 0.0)),
                 continuous_action_space=False,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,

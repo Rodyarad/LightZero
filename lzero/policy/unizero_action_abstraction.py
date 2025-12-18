@@ -699,7 +699,11 @@ class UniZeroPolicy(MuZeroPolicy):
 
             if use_causal_mask:
                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
-                mcts_mask_obj = (torch.sigmoid(mask_logits) > mcts_mask_thres)  # (B, N_obj)
+                mask_loss_type = str(getattr(self._cfg.model.world_model_cfg, 'mask_loss_type', 'ce'))
+                if mask_loss_type == 'bce':
+                    mcts_mask_obj = (torch.sigmoid(mask_logits) > mcts_mask_thres)  # (B, N_obj)
+                else:
+                    mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)  # (B, N_obj)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]  # (B, A) in {0,1}
@@ -899,7 +903,11 @@ class UniZeroPolicy(MuZeroPolicy):
 
             if use_causal_mask:
                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
-                mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)
+                mask_loss_type = str(getattr(self._cfg.model.world_model_cfg, 'mask_loss_type', 'ce')).lower()
+                if mask_loss_type == 'bce':
+                    mcts_mask_obj = (torch.sigmoid(mask_logits) > mcts_mask_thres)
+                else:
+                    mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]

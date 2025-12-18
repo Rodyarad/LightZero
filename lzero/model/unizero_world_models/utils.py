@@ -254,7 +254,7 @@ class LossWithIntermediateLosses:
         self,
         latent_recon_loss_weight=0,
         perceptual_loss_weight=0,
-        mask_policy_loss_weight: float = 0.0,
+        mask_loss_weight: float = 0.0,
         continuous_action_space: bool = False,
         **kwargs
     ):
@@ -283,7 +283,7 @@ class LossWithIntermediateLosses:
 
         self.latent_recon_loss_weight = latent_recon_loss_weight
         self.perceptual_loss_weight = perceptual_loss_weight
-        self.mask_policy_loss_weight = mask_policy_loss_weight
+        self.mask_loss_weight = mask_loss_weight
 
         # Initialize the total loss tensor on the correct device
         self.loss_total = torch.tensor(0., device=device)
@@ -295,7 +295,7 @@ class LossWithIntermediateLosses:
             elif k == 'loss_policy':
                 self.loss_total += self.policy_loss_weight * v
             elif k == 'loss_mask':
-                self.loss_total += self.mask_policy_loss_weight * v
+                self.loss_total += self.mask_loss_weight * v
             elif k == 'loss_value':
                 self.loss_total += self.value_loss_weight * v
             elif k == 'loss_ends':
