@@ -1456,3 +1456,5 @@ train.sh
 test.py
 _vizdoom.ini
 weights/
+vis_test/
+vis_test.py

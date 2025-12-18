@@ -897,11 +897,6 @@ class UniZeroPolicy(MuZeroPolicy):
             train_iter = getattr(self, 'train_iter', 0)
             use_causal_mask = train_iter >= self._cfg.causal_puct_start_step and mask_logits is not None
 
-            # Always compute soft mask for visualization (after sigmoid, before threshold)
-            soft_mask_obj = None
-            if mask_logits is not None:
-                soft_mask_obj = torch.softmax(mask_logits, dim=-1).detach().cpu().numpy().astype(np.float32)
-
             if use_causal_mask:
                 # Object-level mask over N_obj; convert to per-action mask via obj_of_action mapping.
                 mcts_mask_obj = (torch.sigmoid(mask_logits) > mcts_mask_thres)
@@ -973,9 +968,6 @@ class UniZeroPolicy(MuZeroPolicy):
                 else:
                     predicted_next = None
 
-  
-                if soft_mask_obj is not None:
-                    soft_obj_mask = soft_mask_obj[i].tolist()
 
                 output[env_id] = {
                     'action': action,
@@ -986,7 +978,7 @@ class UniZeroPolicy(MuZeroPolicy):
                     'predicted_policy_logits': policy_logits[i],
                     'timestep': timestep[i],
                     'predicted_next_text': predicted_next,
-                    'predicted_mask': soft_obj_mask,  # Soft mask (after sigmoid, before threshold) as list
+                    'predicted_mask': mask_logits,
                 }
                 batch_action.append(action)
 
