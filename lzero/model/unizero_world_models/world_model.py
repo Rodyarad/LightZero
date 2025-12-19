@@ -1582,7 +1582,10 @@ class WorldModel(nn.Module):
 
             mask_loss_type = str(getattr(self.config, 'mask_loss_type', 'ce')).lower()
             if mask_loss_type == 'bce':
-                mask_loss = F.binary_cross_entropy_with_logits(logits_flat, targets_flat, reduction='none').mean(dim=1)
+                alpha = float(getattr(self.config, 'mask_alpha', 0.5))
+                targets_max = targets_flat.max(dim=1, keepdim=True).values
+                targets_bin = (targets_flat >= (alpha * targets_max)).float()
+                mask_loss = F.binary_cross_entropy_with_logits(logits_flat, targets_bin, reduction='none').mean(dim=1)
                 mask_loss = mask_loss * mask_padding_flat
             else:
                 log_probs_mask = torch.log_softmax(logits_flat, dim=1)
