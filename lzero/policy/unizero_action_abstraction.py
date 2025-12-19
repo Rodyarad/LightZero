@@ -987,6 +987,7 @@ class UniZeroPolicy(MuZeroPolicy):
                     'timestep': timestep[i],
                     'predicted_next_text': predicted_next,
                     'predicted_mask': mask_logits,
+                    'mcts_action_mask': mcts_action_mask
                 }
                 batch_action.append(action)
 

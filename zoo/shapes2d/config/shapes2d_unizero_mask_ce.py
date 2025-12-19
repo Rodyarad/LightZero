@@ -81,9 +81,6 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     # Number of objects for object-level masking; actions are split into
                     # contiguous groups via actions_per_obj = action_space_size // num_objects.
                     num_objects=num_objects,
-                    # Gumbel-Sigmoid + STE hyperparameters for training-time hard mask.
-                    mask_temp=1.0,
-                    mask_thres=0.5,
                     mask_loss_type='ce',
                     mask_loss_weight=1.0,
                 ),
