@@ -707,7 +707,10 @@ class UniZeroPolicy(MuZeroPolicy):
                     # mcts_mask_obj = (probs_obj >= thres)  # (B, N_obj)
                     mcts_mask_obj = (probs_obj >= alpha)  # (B, N_obj)
                 else:
-                    mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)  # (B, N_obj)
+                    alpha = float(getattr(self._cfg.model.world_model_cfg, 'mask_alpha', 0.5))
+                    probs_obj = torch.softmax(mask_logits, dim=-1)
+                    thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
+                    mcts_mask_obj = (probs_obj >= thres)  # (B, N_obj)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]  # (B, A) in {0,1}
@@ -915,7 +918,10 @@ class UniZeroPolicy(MuZeroPolicy):
                     # mcts_mask_obj = (probs_obj >= thres)
                     mcts_mask_obj = (probs_obj >= alpha)
                 else:
-                    mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)
+                    alpha = float(getattr(self._cfg.model.world_model_cfg, 'mask_alpha', 0.5))
+                    probs_obj = torch.softmax(mask_logits, dim=-1)
+                    thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
+                    mcts_mask_obj = (probs_obj >= thres)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]
