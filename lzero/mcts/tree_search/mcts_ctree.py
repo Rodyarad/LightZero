@@ -211,9 +211,7 @@ class UniZeroMCTSCtree(object):
                         # mask_obj = (probs_obj >= thres).astype(np.float32)  # (B, N_obj)
                         mask_obj = (probs_obj >= alpha).astype(np.float32)  # (B, N_obj)
                     else:
-                        alpha = float(getattr(getattr(self._cfg.model, 'world_model_cfg', {}), 'mask_alpha', 0.5))
-                        thres = alpha * np.max(probs_obj, axis=-1, keepdims=True)
-                        mask_obj = (probs_obj >= thres).astype(np.float32)  # (B, N_obj)
+                        mask_obj = (probs_obj > mcts_mask_thres).astype(np.float32)  # (B, N_obj)
                     action_masks = mask_obj[:, self._obj_of_action].tolist()  # (B, A)
                 else:
                     if self._action_space_size is None and len(policy_logits_batch) > 0:
