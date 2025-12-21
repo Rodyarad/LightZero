@@ -60,7 +60,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
                 num_objects=num_objects,
                 # Hard threshold for converting object mask logits to binary mask in MCTS.
                 # Used in both Python policy (root) and C++ MCTS tree for per-node masking.
-                mcts_mask_thres=0.5,
+                # mcts_mask_thres=0.5,
                 world_model_cfg=dict(
                     policy_entropy_weight=1e-4,
                     continuous_action_space=False,

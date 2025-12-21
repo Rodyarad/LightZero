@@ -1588,8 +1588,8 @@ class WorldModel(nn.Module):
                 mask_loss = F.binary_cross_entropy_with_logits(logits_flat, targets_bin, reduction='none').mean(dim=1)
                 mask_loss = mask_loss * mask_padding_flat
             else:
-                log_probs_mask = torch.log_softmax(logits_flat, dim=1)
-                mask_loss = -(log_probs_mask * targets_flat).sum(dim=1)
+                targets_idx = targets_flat.argmax(dim=1)
+                mask_loss = F.cross_entropy(logits_flat, targets_idx, reduction='none')
                 mask_loss = mask_loss * mask_padding_flat
         else:
             mask_loss = torch.zeros_like(loss_value)

@@ -190,13 +190,13 @@ class UniZeroMCTSCtree(object):
                 train_iter = getattr(self, 'train_iter', 0)
                 use_causal_mask = (
                     train_iter >= getattr(self._cfg, 'causal_puct_start_step', 0)
-                    and getattr(self._cfg.model, 'mcts_mask_thres', None) is not None
+                    #and getattr(self._cfg.model, 'mcts_mask_thres', None) is not None
                     and getattr(network_output, 'mask_logits', None) is not None
                     and self._obj_of_action is not None
                     and self._num_objects is not None
                 )
                 if use_causal_mask:
-                    mcts_mask_thres = float(self._cfg.model.mcts_mask_thres)
+                    #mcts_mask_thres = float(self._cfg.model.mcts_mask_thres)
                     mask_loss_type = str(getattr(getattr(self._cfg.model, 'world_model_cfg', {}), 'mask_loss_type', 'ce'))
                     if mask_loss_type == 'bce':
                         probs_obj = 1.0 / (1.0 + np.exp(-network_output.mask_logits))
@@ -210,7 +210,9 @@ class UniZeroMCTSCtree(object):
                         thres = alpha * np.max(probs_obj, axis=-1, keepdims=True)
                         mask_obj = (probs_obj >= thres).astype(np.float32)  # (B, N_obj)
                     else:
-                        mask_obj = (probs_obj > mcts_mask_thres).astype(np.float32)  # (B, N_obj)
+                        idx = np.argmax(probs_obj, axis=-1)
+                        mask_obj = np.zeros_like(probs_obj, dtype=np.float32)
+                        mask_obj[np.arange(mask_obj.shape[0]), idx] = 1.0
                     action_masks = mask_obj[:, self._obj_of_action].tolist()  # (B, A)
                 else:
                     if self._action_space_size is None and len(policy_logits_batch) > 0:

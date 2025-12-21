@@ -685,7 +685,7 @@ class UniZeroPolicy(MuZeroPolicy):
                 network_output
             )
 
-            mcts_mask_thres = self._cfg.model.mcts_mask_thres
+            #mcts_mask_thres = self._cfg.model.mcts_mask_thres
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
             latent_state_roots = latent_state_roots.detach().cpu().numpy()
@@ -706,7 +706,9 @@ class UniZeroPolicy(MuZeroPolicy):
                     thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
                     mcts_mask_obj = (probs_obj >= thres)  # (B, N_obj)
                 else:
-                    mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)  # (B, N_obj)
+                    probs_obj = torch.softmax(mask_logits, dim=-1)
+                    idx = probs_obj.argmax(dim=-1, keepdim=True)
+                    mcts_mask_obj = torch.zeros_like(probs_obj, dtype=torch.bool).scatter_(-1, idx, True)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]  # (B, A) in {0,1}
@@ -896,7 +898,7 @@ class UniZeroPolicy(MuZeroPolicy):
                 network_output
             )
 
-            mcts_mask_thres = self._cfg.model.mcts_mask_thres
+            #mcts_mask_thres = self._cfg.model.mcts_mask_thres
 
             env_action_mask = np.asarray(action_mask, dtype=np.float32)
 
@@ -913,7 +915,9 @@ class UniZeroPolicy(MuZeroPolicy):
                     thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
                     mcts_mask_obj = (probs_obj >= thres)
                 else:
-                    mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)
+                    probs_obj = torch.softmax(mask_logits, dim=-1)
+                    idx = probs_obj.argmax(dim=-1, keepdim=True)
+                    mcts_mask_obj = torch.zeros_like(probs_obj, dtype=torch.bool).scatter_(-1, idx, True)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
                 obj_of_action = self._obj_of_action
                 mcts_action_mask = mcts_mask_obj[:, obj_of_action]
