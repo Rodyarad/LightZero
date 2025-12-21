@@ -703,8 +703,9 @@ class UniZeroPolicy(MuZeroPolicy):
                 if mask_loss_type == 'bce':
                     alpha = float(getattr(self._cfg.model.world_model_cfg, 'mask_alpha', 0.5))
                     probs_obj = torch.sigmoid(mask_logits)
-                    thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
-                    mcts_mask_obj = (probs_obj >= thres)  # (B, N_obj)
+                    # thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
+                    # mcts_mask_obj = (probs_obj >= thres)  # (B, N_obj)
+                    mcts_mask_obj = (probs_obj >= alpha)  # (B, N_obj)
                 else:
                     mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)  # (B, N_obj)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
@@ -910,8 +911,9 @@ class UniZeroPolicy(MuZeroPolicy):
                 if mask_loss_type == 'bce':
                     alpha = float(getattr(self._cfg.model.world_model_cfg, 'mask_alpha', 0.5))
                     probs_obj = torch.sigmoid(mask_logits)
-                    thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
-                    mcts_mask_obj = (probs_obj >= thres)
+                    # thres = alpha * probs_obj.max(dim=-1, keepdim=True).values
+                    # mcts_mask_obj = (probs_obj >= thres)
+                    mcts_mask_obj = (probs_obj >= alpha)
                 else:
                     mcts_mask_obj = (torch.softmax(mask_logits, dim=-1) > mcts_mask_thres)
                 mcts_mask_obj = mcts_mask_obj.detach().cpu().numpy().astype(np.float32)
