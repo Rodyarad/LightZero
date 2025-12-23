@@ -108,21 +108,11 @@ class SampledUniZeroModel(nn.Module):
                 self.encoder_hook = FeatureAndGradientHook()
                 self.encoder_hook.setup_hooks(self.representation_network)
 
-            # LPIPS is expensive and not always desired; allow disabling via config.
-            with_lpips = getattr(world_model_cfg, 'with_lpips', True)
-            self.tokenizer = Tokenizer(
-                encoder=self.representation_network,
-                decoder=self.decoder_network,
-                with_lpips=with_lpips,
-                obs_type=world_model_cfg.obs_type,
-            )
+            self.tokenizer = Tokenizer(encoder=self.representation_network,
+                                       decoder=self.decoder_network, with_lpips=True, obs_type=world_model_cfg.obs_type)
             self.world_model = WorldModel(config=world_model_cfg, tokenizer=self.tokenizer)
             print(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
-            lpips_params = sum(p.numel() for p in self.tokenizer.lpips.parameters()) if getattr(self.tokenizer, 'lpips', None) is not None else 0
-            print(
-                f'{sum(p.numel() for p in self.world_model.parameters()) - sum(p.numel() for p in self.tokenizer.decoder_network.parameters()) - lpips_params} '
-                f'parameters in agent.world_model - (decoder_network and lpips)'
-            )
+            print(f'{sum(p.numel() for p in self.world_model.parameters()) - sum(p.numel() for p in self.tokenizer.decoder_network.parameters()) - sum(p.numel() for p in self.tokenizer.lpips.parameters())} parameters in agent.world_model - (decoder_network and lpips)')
 
             print('==' * 20)
             print(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')

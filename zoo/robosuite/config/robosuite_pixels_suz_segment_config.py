@@ -69,81 +69,26 @@ def main(seed):
                 num_of_sampled_actions=K,
                 model_type='conv',
                 world_model_cfg=dict(
-                    # ======== minimal "vanilla" sampled unizero world model config ========
-                    # NOTE: This config must contain all fields used by Transformer/WorldModel.
-                    # We keep it close to lzero.policy.sampled_unizero default_config, but:
-                    # - disable LPIPS (with_lpips=False)
-                    # - disable entropy regularization (policy_entropy_weight=0.0)
-                    tokens_per_block=2,  # each timestep: [obs_token, action_token]
-                    max_blocks=num_unroll_steps,
-                    max_tokens=2 * num_unroll_steps,
-                    context_length=2 * infer_context_length,
-                    attention='causal',
-                    embed_pdrop=0.1,
-                    resid_pdrop=0.1,
-                    attn_pdrop=0.1,
-                    gru_gating=False,
-                    device='cuda',
-
-                    # --- task embedding (multitask-only; keep disabled for single-task robosuite) ---
-                    task_embed_option='none',
-                    register_token_num=4,
-                    register_token_shared=True,
-
-                    # --- LoRA / curriculum (disabled) ---
-                    lora_r=0,
-                    lora_alpha=1,
-                    lora_dropout=0.0,
-                    lora_target_modules=[],
-                    curriculum_stage_num=1,
-                    min_stage0_iters=10_000,
-                    max_stage_iters=20_000,
-                    lora_scale_init=1.0,
-
-                    # --- MoE (disabled) ---
-                    moe_in_transformer=False,
-                    multiplication_moe_in_transformer=False,
-                    num_experts_of_moe_in_transformer=1,
-                    num_experts_per_tok=1,
-
-                    # --- core settings ---
-                    obs_type='image',
-                    continuous_action_space=continuous_action_space,
-                    action_space_size=action_space_size,
-                    env_num=max(collector_env_num, evaluator_env_num),
-                    num_layers=num_layers,
-                    num_heads=8,
-                    embed_dim=768,
-                    group_size=8,  # SimNorm group size (must divide embed_dim)
-
-                    # --- RL / loss settings ---
-                    gamma=1,
-                    support_size=101,
                     policy_loss_type='kl',
-                    policy_entropy_weight=0.0,
-                    predict_latent_loss_type='group_kl',
-                    dormant_threshold=0.025,
-                    analysis_dormant_ratio_weight_rank=False,
-
-                    # --- tokenizer losses ---
-                    latent_recon_loss_weight=0.0,
-                    perceptual_loss_weight=0.0,
-                    with_lpips=False,
-
-                    # --- KV cache / rollout settings ---
-                    max_cache_size=5000,
-                    num_simulations=num_simulations,
-                    game_segment_length=game_segment_length,
-
-                    # --- continuous policy head settings ---
+                    obs_type='image',
+                    num_unroll_steps=num_unroll_steps,
+                    policy_entropy_weight=5e-2,
+                    continuous_action_space=continuous_action_space,
+                    num_of_sampled_actions=K,
                     sigma_type='conditioned',
                     fixed_sigma_value=0.5,
                     bound_type=None,
-
-                    # --- position encoding ---
-                    rotary_emb=False,
-                    rope_theta=10000,
-                    max_seq_len=8192,
+                    model_type='conv',
+                    norm_type=norm_type,
+                    max_blocks=num_unroll_steps,
+                    max_tokens=2 * num_unroll_steps,  # NOTE: each timestep has 2 tokens: obs and action
+                    context_length=2 * infer_context_length,
+                    device='cuda',
+                    action_space_size=action_space_size,
+                    num_layers=num_layers,
+                    num_heads=8,
+                    embed_dim=768,
+                    env_num=max(collector_env_num, evaluator_env_num),
                 ),
             ),
             # (str) The path of the pretrained model. If None, the model will be initialized by the default model.
