@@ -56,7 +56,7 @@ def train_unizero(
     cfg, create_cfg = input_cfg
 
     # Ensure the specified policy type is supported
-    assert create_cfg.policy.type in ['unizero', 'sampled_unizero'], "train_unizero only supports the following algorithms: 'unizero', 'sampled_unizero'"
+    assert create_cfg.policy.type in ['unizero', 'sampled_unizero', 'objectzero'], "train_unizero only supports the following algorithms: 'unizero', 'sampled_unizero','objectzero'"
     logging.info(f"Using policy type: {create_cfg.policy.type}")
 
     # Import the appropriate GameBuffer class based on the policy type

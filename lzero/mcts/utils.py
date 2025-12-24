@@ -97,7 +97,7 @@ def prepare_observation(observation_list, model_type='conv'):
     Returns:
         - np.ndarray: Reshaped array of observations.
     """
-    assert model_type in ['conv', 'mlp', 'conv_context', 'mlp_context'], "model_type must be either 'conv' or 'mlp'"
+    assert model_type in ['conv', 'mlp', 'conv_context', 'mlp_context', 'slot'], "model_type must be either 'conv' or 'mlp'"
     observation_array = np.array(observation_list)
     batch_size = observation_array.shape[0]
 
@@ -116,6 +116,9 @@ def prepare_observation(observation_list, model_type='conv'):
             observation_array = observation_array.reshape(batch_size, -1)
         else:
             raise ValueError("For 'mlp' model_type, the observation must have 3 dimensions [B, S, O]")
+    elif model_type == 'slot':
+        if observation_array.ndim == 4 and observation_array.shape[1] == 1:
+            observation_array = observation_array.squeeze(1)
 
     return observation_array
 

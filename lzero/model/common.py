@@ -1243,3 +1243,359 @@ class PredictionNetworkMLP(nn.Module):
         value = self.fc_value_head(x)
         policy_logits = self.fc_policy_head(x)
         return policy_logits, value
+
+
+def get_act_fn(act_fn):
+    if act_fn == 'relu':
+        return nn.ReLU()
+    elif act_fn == 'leaky_relu':
+        return nn.LeakyReLU()
+    elif act_fn == 'elu':
+        return nn.ELU()
+    elif act_fn == 'sigmoid':
+        return nn.Sigmoid()
+    elif act_fn == 'softplus':
+        return nn.Softplus()
+    else:
+        raise ValueError('Invalid argument for `act_fn`.')
+
+def unsorted_segment_sum(tensor, segment_ids, num_segments):
+    """Custom PyTorch op to replicate TensorFlow's `unsorted_segment_sum`."""
+    result_shape = (num_segments, tensor.size(1))
+    result = tensor.new_full(result_shape, 0)  # Init empty result tensor.
+    segment_ids = segment_ids.unsqueeze(-1).expand(-1, tensor.size(1))
+    result.scatter_add_(0, segment_ids, tensor)
+    return result
+
+def to_one_hot(indices, max_index):
+    """Get one-hot encoding of index tensors."""
+    zeros = torch.zeros(
+        indices.size()[0], max_index, dtype=torch.float32,
+        device=indices.device)
+    return zeros.scatter_(1, indices.unsqueeze(1), 1)
+
+def make_node_mlp_layers(num_layers, input_dim, hidden_dim, output_dim, act_fn, layer_norm):
+    layers = []
+
+    for idx in range(num_layers):
+
+        if idx == 0:
+            # first layer, input_dim => hidden_dim
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(get_act_fn(act_fn))
+        elif idx == num_layers - 2:
+            # layer before the last, add layer norm
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            if layer_norm:
+                layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(get_act_fn(act_fn))
+        elif idx == num_layers - 1:
+            # last layer, hidden_dim => output_dim and no activation
+            layers.append(nn.Linear(hidden_dim, output_dim))
+        else:
+            # all other layers, hidden_dim => hidden_dim
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(get_act_fn(act_fn))
+
+    return layers
+
+class GNN(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, action_dim, num_objects, ignore_action=False, copy_action=False,
+                 act_fn='relu', layer_norm=True, num_layers=3, use_interactions=True, edge_actions=False,
+                 output_dim=None):
+        super(GNN, self).__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        if self.output_dim is None:
+            self.output_dim = self.input_dim
+
+        self.num_objects = num_objects
+        self.ignore_action = ignore_action
+        self.copy_action = copy_action
+        self.use_interactions = use_interactions
+        self.edge_actions = edge_actions
+        self.num_layers = num_layers
+
+        if self.ignore_action:
+            self.action_dim = 0
+        else:
+            self.action_dim = action_dim
+
+        tmp_action_dim = self.action_dim
+        edge_mlp_input_size = self.input_dim * 2 + int(self.edge_actions) * tmp_action_dim
+
+        self.edge_mlp = nn.Sequential(*self.make_node_mlp_layers_(
+            edge_mlp_input_size, self.hidden_dim, act_fn, layer_norm
+        ))
+
+        if self.num_objects == 1 or not self.use_interactions:
+            node_input_dim = self.input_dim + tmp_action_dim
+        else:
+            node_input_dim = hidden_dim + self.input_dim + tmp_action_dim
+
+        self.node_mlp = nn.Sequential(*self.make_node_mlp_layers_(
+            node_input_dim, self.output_dim, act_fn, layer_norm
+        ))
+
+        self.edge_list = None
+        self.batch_size = 0
+
+    def _edge_model(self, source, target, action=None):
+        if action is None:
+            x = [source, target]
+        else:
+            x = [source, target, action]
+
+        out = torch.cat(x, dim=1)
+        return self.edge_mlp(out)
+
+    def _node_model(self, node_attr, edge_index, edge_attr):
+        if edge_attr is not None:
+            row, col = edge_index
+            agg = unsorted_segment_sum(
+                edge_attr, row, num_segments=node_attr.size(0))
+            out = torch.cat([node_attr, agg], dim=1)
+        else:
+            out = node_attr
+        return self.node_mlp(out)
+
+    def _get_edge_list_fully_connected(self, batch_size, num_objects, device):
+        # Only re-evaluate if necessary (e.g. if batch size changed).
+        if self.edge_list is None or self.batch_size != batch_size:
+            self.batch_size = batch_size
+
+            # Create fully-connected adjacency matrix for single sample.
+            adj_full = torch.ones(num_objects, num_objects)
+
+            # Remove diagonal.
+            adj_full -= torch.eye(num_objects)
+            self.edge_list = adj_full.nonzero()
+
+            # Copy `batch_size` times and add offset.
+            self.edge_list = self.edge_list.repeat(batch_size, 1)
+            offset = torch.arange(
+                0, batch_size * num_objects, num_objects).unsqueeze(-1)
+            offset = offset.expand(batch_size, num_objects * (num_objects - 1))
+            offset = offset.contiguous().view(-1)
+            self.edge_list += offset.unsqueeze(-1)
+
+            # Transpose to COO format -> Shape: [2, num_edges].
+            self.edge_list = self.edge_list.transpose(0, 1)
+            self.edge_list = self.edge_list.to(device)
+
+        return self.edge_list
+
+    def process_action_(self, action):
+        if self.copy_action:
+            if action.shape[1] == 1 and (action.dtype in (torch.int32, torch.int64)):
+                # action is an integer
+                action = action.squeeze(1)
+                action_vec = to_one_hot(action, self.action_dim).repeat(1, self.num_objects)
+            else:
+                # action is a vector
+                action_vec = action.repeat(1, self.num_objects)
+            # mix node and batch dimension
+            action_vec = action_vec.reshape(-1, self.action_dim).float()
+        else:
+            # we have a separate action for each node
+            if action.shape[1] == 1 and (action.dtype in (torch.int32, torch.int64)):
+                # index for both object and action
+                action = action.squeeze(1)
+                action_vec = to_one_hot(action, self.action_dim * self.num_objects)
+                action_vec = action_vec.reshape(-1, self.action_dim)
+            else:
+                action_vec = action.reshape(action.size(0), self.action_dim * self.num_objects)
+                action_vec = action_vec.reshape(-1, self.action_dim)
+
+        return action_vec
+
+    def forward(self, states, action):
+
+        device = states.device
+        batch_size = states.size(0)
+        num_nodes = states.size(1)
+
+        # states: [batch_size (B), num_objects, embedding_dim]
+        # node_attr: Flatten states tensor to [B * num_objects, embedding_dim]
+        node_attr = states.reshape(-1, self.input_dim)
+
+        action_vec = None
+        if not self.ignore_action:
+            action_vec = self.process_action_(action)
+
+        edge_attr = None
+        edge_index = None
+
+        if num_nodes > 1 and self.use_interactions:
+            # edge_index: [B * (num_objects*[num_objects-1]), 2] edge list
+            edge_index = self._get_edge_list_fully_connected(
+                batch_size, num_nodes, device)
+
+            row, col = edge_index
+            edge_attr = self._edge_model(node_attr[row], node_attr[col], action_vec[row] if self.edge_actions else None)
+
+        if not self.ignore_action:
+            # Attach action to each state
+            node_attr = torch.cat([node_attr, action_vec], dim=-1)
+
+        node_attr = self._node_model(
+            node_attr, edge_index, edge_attr)
+
+        # [batch_size, num_nodes, hidden_dim]
+        node_attr = node_attr.view(batch_size, num_nodes, -1)
+
+        return node_attr
+
+    def make_node_mlp_layers_(self, input_dim, output_dim, act_fn, layer_norm):
+        return make_node_mlp_layers(self.num_layers, input_dim, self.hidden_dim, output_dim, act_fn, layer_norm)
+
+class OCPredictionNetwork(nn.Module):
+
+    def __init__(
+            self,
+            action_space_size: int,
+            value_head_hidden_channels: int,
+            policy_head_hidden_channels: int,
+            output_support_size: int,
+            slot_dim: int,
+            n_slots: int,
+            latent_dim: int,
+            last_linear_layer_init_zero: bool = True,
+            activation: nn.Module = nn.ReLU(inplace=True),
+            norm_type: Optional[str] = 'BN',
+    ) -> None:
+        super(OCPredictionNetwork, self).__init__()
+        assert norm_type in ['BN', 'LN'], "norm_type must in ['BN', 'LN']"
+        self.activation = activation
+
+        self.gnn_policy = GNN(input_dim=slot_dim, hidden_dim=latent_dim, action_dim=0,
+                          num_objects=n_slots, ignore_action=True, copy_action=False, edge_actions=False)
+
+        self.value_policy = GNN(input_dim=slot_dim, hidden_dim=latent_dim, action_dim=0,
+                              num_objects=n_slots, ignore_action=True, copy_action=False, edge_actions=False)
+
+        self.fc_value = MLP_V2(
+            in_channels=slot_dim,
+            hidden_channels=value_head_hidden_channels,
+            out_channels=output_support_size,
+            activation=self.activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            # last_linear_layer_init_zero=True is beneficial for convergence speed.
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+        self.fc_policy = MLP_V2(
+            in_channels=slot_dim,
+            hidden_channels=policy_head_hidden_channels,
+            out_channels=action_space_size,
+            activation=self.activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            # last_linear_layer_init_zero=True is beneficial for convergence speed.
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+
+    def forward(self, slots: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Overview:
+            Forward computation of the prediction network.
+        Arguments:
+            - latent_state (:obj:`torch.Tensor`): input tensor with shape (B, latent_state_dim).
+        Returns:
+            - policy (:obj:`torch.Tensor`): policy tensor with shape (B, action_space_size).
+            - value (:obj:`torch.Tensor`): value tensor with shape (B, output_support_size).
+        """
+        x = self.gnn_values(slots, action=None)
+        x = self.activation(x)
+        value = self.fc_values(x.sum(dim=1))
+
+        x = self.gnn_policy(slots, action=None)
+        x = self.activation(x)
+        policy = self.fc_policy(x.sum(dim=1))
+        return policy, value
+
+
+class OCPredictionHiddenNetwork(nn.Module):
+
+    def __init__(
+            self,
+            action_space_size: int,
+            value_head_hidden_channels: Sequence[int],
+            policy_head_hidden_channels: Sequence[int],
+            output_support_size: int,
+            slot_dim: int,
+            n_slots: int,
+            latent_dim: int,
+            rnn_hidden_size: int,
+            last_linear_layer_init_zero: bool = True,
+            activation: nn.Module = nn.ReLU(inplace=True),
+            norm_type: Optional[str] = 'BN',
+    ) -> None:
+        super().__init__()
+        assert norm_type in ['BN', 'LN'], "norm_type must in ['BN', 'LN']"
+
+        self.activation = activation
+
+        self.gnn_policy = GNN(input_dim=slot_dim, hidden_dim=latent_dim, action_dim=0,
+                          num_objects=n_slots, ignore_action=True, copy_action=False, edge_actions=False)
+
+        self.gnn_value = GNN(input_dim=slot_dim, hidden_dim=latent_dim, action_dim=0,
+                              num_objects=n_slots, ignore_action=True, copy_action=False, edge_actions=False)
+        fused_dim = slot_dim + rnn_hidden_size
+
+        self.fc_value = MLP(
+            in_channels=fused_dim,
+            hidden_channels=value_head_hidden_channels[0],
+            out_channels=output_support_size,
+            layer_num=len(value_head_hidden_channels) + 1,
+            activation=self.activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            # last_linear_layer_init_zero=True is beneficial for convergence speed.
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+        self.fc_policy = MLP(
+            in_channels=fused_dim,
+            hidden_channels=policy_head_hidden_channels[0],
+            out_channels=action_space_size,
+            layer_num=len(policy_head_hidden_channels) + 1,
+            activation=self.activation,
+            norm_type=norm_type,
+            output_activation=False,
+            output_norm=False,
+            # last_linear_layer_init_zero=True is beneficial for convergence speed.
+            last_linear_layer_init_zero=last_linear_layer_init_zero
+        )
+
+    def forward(self, slots: torch.Tensor, world_model_slots_history: torch.Tensor) -> Tuple[
+        torch.Tensor, torch.Tensor]:
+        """
+        Overview:
+            Forward computation of the prediction network.
+        Arguments:
+            - slots (:obj:`torch.Tensor`): (B, N, D_slot)
+            - world_model_slots_history (:obj:`torch.Tensor`): (B, N, D_hist)
+        Returns:
+            - policy (:obj:`torch.Tensor`): (B, action_space_size)
+            - value (:obj:`torch.Tensor`): (B, output_support_size)
+        """
+        x_val = self.gnn_value(slots, action=None)   # (B, N, D_slot)
+        x_val = self.activation(x_val)
+        hist = world_model_slots_history.squeeze(0)
+        fused_val = torch.cat([x_val, hist], dim=-1)  # (B, N, D_slot + D_hist)
+        pooled_val = fused_val.sum(dim=1)             # (B, D_slot + D_hist)
+        value = self.fc_value(pooled_val)
+
+        x_pol = self.gnn_policy(slots, action=None)   # (B, N, D_slot)
+        x_pol = self.activation(x_pol)
+        fused_pol = torch.cat([x_pol, hist], dim=-1)  # (B, N, D_slot + D_hist)
+        pooled_pol = fused_pol.sum(dim=1)             # (B, D_slot + D_hist)
+        policy = self.fc_policy(pooled_pol)
+
+        return policy, value

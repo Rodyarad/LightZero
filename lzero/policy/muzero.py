@@ -836,6 +836,9 @@ class MuZeroPolicy(Policy):
         elif self._cfg.model.model_type in ['mlp', 'mlp_context']:
             beg_index = self._cfg.model.observation_shape * step
             end_index = self._cfg.model.observation_shape * (step + self._cfg.model.frame_stack_num)
+        elif self._cfg.model.model_type == 'slot':
+            beg_index = step
+            end_index = step + 1
         return beg_index, end_index
 
     def _init_eval(self) -> None:
@@ -1040,6 +1043,8 @@ class MuZeroPolicy(Policy):
         self._learn_model.load_state_dict(state_dict['model'])
         self._target_model.load_state_dict(state_dict['target_model'])
         self._optimizer.load_state_dict(state_dict['optimizer'])
+        if self._cfg.piecewise_decay_lr_scheduler:
+            self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
 
     def __del__(self):
         if self._cfg.model.analysis_sim_norm:

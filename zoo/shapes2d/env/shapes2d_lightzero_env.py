@@ -22,7 +22,6 @@ class Shapes2dEnvLightZero(BaseEnv):
         _reward_space, obs, _eval_episode_return, has_reset, _seed, _dynamic_seed
     """
     config = dict(
-        from_pixels=True,
         # (int) The number of environment instances used for data collection.
         collector_env_num=8,
         # (int) The number of environment instances used for evaluator.
@@ -52,7 +51,6 @@ class Shapes2dEnvLightZero(BaseEnv):
         frame_skip=0,
         # (bool) If True, the channels of the observation images are placed last (e.g., height, width, channels).
         # Default is False, which means the channels are placed first (e.g., channels, height, width).
-        channel_last=False,
         # (bool) If True, the pixel values of the game frames are scaled down to the range [0, 1].
         scale=True,
         # (bool) If True, the game frames are preprocessed by cropping irrelevant parts and resizing to a smaller resolution.
@@ -66,6 +64,10 @@ class Shapes2dEnvLightZero(BaseEnv):
         manager=dict(shared_memory=False, ),
         # (int) The value of the cumulative reward at which the training stops.
         stop_value=int(1e6),
+        ocr_config_path='LightZero/zoo/ocr/slate/config/navigation5x5.yaml',
+        chekpoint_path='LightZero/zoo/ocr/slate_weights/navigation5х5.pth',
+        num_slots=6,
+        slot_dim=64,
     )
 
     @classmethod
@@ -91,7 +93,6 @@ class Shapes2dEnvLightZero(BaseEnv):
         """
         self.cfg = cfg
         self._init_flag = False
-        self.channel_last = cfg.channel_last
         self.clip_rewards = cfg.clip_rewards
         self.episode_life = cfg.episode_life
         self._timestep = 0
@@ -108,9 +109,7 @@ class Shapes2dEnvLightZero(BaseEnv):
             self._env = wrap_lightzero(self.cfg)
 
             self._observation_space = gym.spaces.Dict({
-                'observation': gym.spaces.Box(
-                    low=0, high=1, shape=self.cfg.observation_shape, dtype=np.float32
-                ),
+                'observation': self._env.env.observation_space,
                 'action_mask': gym.spaces.Box(
                     low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
                 ),
@@ -176,11 +175,6 @@ class Shapes2dEnvLightZero(BaseEnv):
             - observation (:obj:`dict`): The dictionary containing current observation, action mask, and to_play flag.
         """
         observation = self.obs
-        if self.cfg.from_pixels:
-            if not self.channel_last:
-                # move the channel dim to the fist axis
-                # (96, 96, 3) -> (3, 96, 96)
-                observation = np.transpose(observation, (2, 0, 1))
 
         action_mask = np.ones(self._action_space.n, 'int8')
 
