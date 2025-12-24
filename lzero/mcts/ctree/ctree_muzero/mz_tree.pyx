@@ -38,6 +38,33 @@ cdef class Roots:
     def prepare_no_noise(self, list value_prefix_pool, list policy_logits_pool, vector[int] & to_play_batch):
         self.roots[0].prepare_no_noise(value_prefix_pool, policy_logits_pool, to_play_batch)
 
+    def prepare_with_action_masks(
+        self,
+        float root_noise_weight,
+        list noises,
+        list value_prefix_pool,
+        list policy_logits_pool,
+        list action_masks,
+        vector[int] & to_play_batch
+    ):
+        cdef vector[vector[float]] cnoises = noises
+        cdef vector[float] crewards = value_prefix_pool
+        cdef vector[vector[float]] cpolicies = policy_logits_pool
+        cdef vector[vector[float]] caction_masks = action_masks
+        self.roots[0].prepare_with_action_masks(root_noise_weight, cnoises, crewards, cpolicies, caction_masks, to_play_batch)
+
+    def prepare_no_noise_with_action_masks(
+        self,
+        list value_prefix_pool,
+        list policy_logits_pool,
+        list action_masks,
+        vector[int] & to_play_batch
+    ):
+        cdef vector[float] crewards = value_prefix_pool
+        cdef vector[vector[float]] cpolicies = policy_logits_pool
+        cdef vector[vector[float]] caction_masks = action_masks
+        self.roots[0].prepare_no_noise_with_action_masks(crewards, cpolicies, caction_masks, to_play_batch)
+
     def get_trajectories(self):
         return self.roots[0].get_trajectories()
 
@@ -80,6 +107,34 @@ def batch_backpropagate(int current_latent_state_index, float discount_factor, l
 
     cbatch_backpropagate(current_latent_state_index, discount_factor, cvalue_prefixs, cvalues, cpolicies,
                           min_max_stats_lst.cmin_max_stats_lst, results.cresults, to_play_batch)
+
+def batch_backpropagate_with_action_masks(
+    int current_latent_state_index,
+    float discount_factor,
+    list value_prefixs,
+    list values,
+    list policies,
+    list action_masks,
+    MinMaxStatsList min_max_stats_lst,
+    ResultsWrapper results,
+    list to_play_batch
+):
+    cdef vector[float] cvalue_prefixs = value_prefixs
+    cdef vector[float] cvalues = values
+    cdef vector[vector[float]] cpolicies = policies
+    cdef vector[vector[float]] caction_masks = action_masks
+
+    cbatch_backpropagate_with_action_masks(
+        current_latent_state_index,
+        discount_factor,
+        cvalue_prefixs,
+        cvalues,
+        cpolicies,
+        caction_masks,
+        min_max_stats_lst.cmin_max_stats_lst,
+        results.cresults,
+        to_play_batch
+    )
 
 def batch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, list value_prefixs, list values, list policies,
                          MinMaxStatsList min_max_stats_lst, ResultsWrapper results, list to_play_batch, list no_inference_lst, list reuse_lst, list reuse_value_lst):

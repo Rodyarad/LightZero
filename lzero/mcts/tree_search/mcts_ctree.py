@@ -61,6 +61,15 @@ class UniZeroMCTSCtree(object):
         self.value_inverse_scalar_transform_handle = InverseScalarTransform(self.value_support, self._cfg.model.categorical_distribution)
         self.reward_inverse_scalar_transform_handle = InverseScalarTransform(self.reward_support, self._cfg.model.categorical_distribution)
 
+        # Object-level action abstraction (optional): precompute object grouping for actions.
+        self._num_objects = getattr(self._cfg.model, 'num_objects', None)
+        self._action_space_size = getattr(self._cfg.model, 'action_space_size', None)
+        self._obj_of_action = None
+        if self._num_objects is not None and self._action_space_size is not None and self._num_objects > 0:
+            actions_per_obj = self._action_space_size // self._num_objects
+            if actions_per_obj * self._num_objects == self._action_space_size:
+                self._obj_of_action = np.arange(self._action_space_size, dtype=np.int64) // actions_per_obj
+
     @classmethod
     def roots(cls: int, active_collect_env_num: int, legal_actions: List[Any]) -> "mz_ctree":
         """
@@ -185,6 +194,8 @@ class UniZeroMCTSCtree(object):
                 network_output.policy_logits = to_detach_cpu_numpy(network_output.policy_logits)
                 network_output.value = to_detach_cpu_numpy(self.value_inverse_scalar_transform_handle(network_output.value))
                 network_output.reward = to_detach_cpu_numpy(self.reward_inverse_scalar_transform_handle(network_output.reward))
+                if getattr(network_output, 'mask_logits', None) is not None:
+                    network_output.mask_logits = to_detach_cpu_numpy(network_output.mask_logits)
 
                 for env_id in range(batch_size):
                     depth = search_depth[env_id]
@@ -200,15 +211,45 @@ class UniZeroMCTSCtree(object):
                 value_batch = network_output.value.reshape(-1).tolist()
                 policy_logits_batch = network_output.policy_logits.tolist()
 
+                # === Per-node action mask for MCTS selection (score=-inf for invalid actions) ===
+                train_iter = getattr(self, 'train_iter', 0)
+                use_causal_mask = (
+                    train_iter >= getattr(self._cfg, 'causal_puct_start_step', 0)
+                    #and getattr(self._cfg.model, 'mcts_mask_thres', None) is not None
+                    and getattr(network_output, 'mask_logits', None) is not None
+                    and self._obj_of_action is not None
+                    and self._num_objects is not None
+                )
+                if use_causal_mask:
+                    x = network_output.mask_logits
+                    x = x - np.max(x, axis=-1, keepdims=True)
+                    e = np.exp(x)
+                    probs_obj = e / (np.sum(e, axis=-1, keepdims=True) + 1e-12)
+                    idx = np.argmax(probs_obj, axis=-1)
+                    mask_obj = np.zeros_like(probs_obj, dtype=np.float32)
+                    mask_obj[np.arange(mask_obj.shape[0]), idx] = 1.0
+                    action_masks = mask_obj[:, self._obj_of_action].tolist()  # (B, A)
+                else:
+                    if self._action_space_size is None and len(policy_logits_batch) > 0:
+                        self._action_space_size = len(policy_logits_batch[0])
+                    action_masks = np.ones((batch_size, self._action_space_size), dtype=np.float32).tolist()
+
                 # In ``batch_backpropagate()``, we first expand the leaf node using ``the policy_logits`` and
                 # ``reward`` predicted by the model, then perform backpropagation along the search path to update the
                 # statistics.
 
                 # NOTE: simulation_index + 1 is very important, which is the depth of the current leaf node.
                 current_latent_state_index = simulation_index + 1
-                tree_muzero.batch_backpropagate(
-                    current_latent_state_index, discount_factor, reward_batch, value_batch, policy_logits_batch,
-                    min_max_stats_lst, results, virtual_to_play_batch
+                tree_muzero.batch_backpropagate_with_action_masks(
+                    current_latent_state_index,
+                    discount_factor,
+                    reward_batch,
+                    value_batch,
+                    policy_logits_batch,
+                    action_masks,
+                    min_max_stats_lst,
+                    results,
+                    virtual_to_play_batch
                 )
  
             return first_action_latent_map
