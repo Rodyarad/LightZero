@@ -2,7 +2,7 @@ import logging
 import os
 from functools import partial
 from typing import Tuple, Optional
-
+import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
@@ -12,7 +12,6 @@ from ding.policy import create_policy
 from ding.rl_utils import get_epsilon_greedy_fn
 from ding.utils import set_pkg_seed, get_rank
 from ding.worker import BaseLearner
-from tensorboardX import SummaryWriter
 from torch.utils.tensorboard import SummaryWriter
 
 from lzero.entry.utils import log_buffer_memory_usage
@@ -106,7 +105,16 @@ def train_unizero(
         logging.info("Pretrained model loaded successfully!")
 
     # Create core components for training
-    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    if model_path is not None:
+        comet_ml.login()
+        exp = comet_ml.start(mode="get", experiment_key=cfg.run_id_comet_ml)
+        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    else:
+        experiment = comet_ml.start(
+            project_name="lightzero"
+        )
+        experiment.log_parameters(vars(cfg))
+        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
     learner = BaseLearner(cfg.policy.learn.learner, policy.learn_mode, tb_logger, exp_name=cfg.exp_name)
     replay_buffer = GameBuffer(cfg.policy)
     collector = Collector(env=collector_env, policy=policy.collect_mode, tb_logger=tb_logger, exp_name=cfg.exp_name,
@@ -114,6 +122,20 @@ def train_unizero(
     evaluator = Evaluator(eval_freq=cfg.policy.eval_freq, n_evaluator_episode=cfg.env.n_evaluator_episode,
                           stop_value=cfg.env.stop_value, env=evaluator_env, policy=policy.eval_mode,
                           tb_logger=tb_logger, exp_name=cfg.exp_name, policy_config=cfg.policy)
+
+    def save_ckpt_with_state(filename: str):
+        ckpt_dir = './{}/ckpt'.format(learner.exp_name)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        learner.save_checkpoint(filename)
+        ckpt_path = os.path.join(ckpt_dir, filename)
+        from lzero.entry.utils import save_training_state
+        save_training_state(ckpt_path, learner, collector, replay_buffer, policy)
+
+    from lzero.entry.utils import try_load_training_state
+    if model_path is not None:
+        _resume_meta = try_load_training_state(model_path, replay_buffer)
+        learner._last_iter.update(int(_resume_meta['train_iter']))
+        collector._total_envstep_count = int(_resume_meta['envstep'])
 
     # Execute the learner's before_run hook
     learner.call_hook('before_run')
@@ -139,6 +161,7 @@ def train_unizero(
     # TODO: for visualize
     # stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
     # import sys; sys.exit(0)
+    did_initial_eval = False
 
     while True:
         # Log memory usage of the replay buffer
@@ -166,13 +189,19 @@ def train_unizero(
             collect_kwargs['epsilon'] = epsilon_greedy_fn(collector.envstep)
 
         # Evaluate policy performance
-        if learner.train_iter == 0 or evaluator.should_eval(learner.train_iter):
+        if (learner.train_iter == 0 and not did_initial_eval) or evaluator.should_eval(learner.train_iter):
             logging.info(f"Training iteration {learner.train_iter}: Starting evaluation...")
-            stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+            #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+            stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
+            save_ckpt_with_state('last_ckpt.pth.tar')
             logging.info(f"Training iteration {learner.train_iter}: Evaluation completed, stop condition: {stop}, current reward: {reward}")
             if stop:
                 logging.info("Stopping condition met, training ends!")
                 break
+
+        if learner.train_iter == 0 and not did_initial_eval:
+            save_ckpt_with_state('last_ckpt.pth.tar')
+            did_initial_eval = True
 
         # Collect new data
         new_data = collector.collect(train_iter=learner.train_iter, policy_kwargs=collect_kwargs)
@@ -225,6 +254,7 @@ def train_unizero(
                     replay_buffer.update_priority(train_data, log_vars[0]['value_priority_orig'])
 
         policy.recompute_pos_emb_diff_and_clear_cache()
+
 
         # Check stopping criteria
         if collector.envstep >= max_env_step or learner.train_iter >= max_train_iter:

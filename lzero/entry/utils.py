@@ -14,7 +14,7 @@ import math
 import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+import json, time
 import numpy as np
 import psutil
 import torch
@@ -742,6 +742,50 @@ def log_buffer_run_time(train_iter: int, buffer: GameBuffer, writer: SummaryWrit
     # Reset metrics after logging to prepare for the next interval.
     buffer.reset_runtime_metrics()
 
+def _ckpt_sidecars(ckpt_path: str):
+    base, ext = os.path.splitext(ckpt_path)
+    # поддержка суффикса ".pth.tar"
+    if ext == '.tar':
+        base2, ext2 = os.path.splitext(base)
+        base = base2
+    buffer_path = base + '.buffer.pth.tar'
+    meta_path = base + '.meta.json'
+    return buffer_path, meta_path
+
+def save_training_state(ckpt_path: str, learner, collector, replay_buffer, policy, extra_meta: dict = None) -> None:
+    buffer_path, meta_path = _ckpt_sidecars(ckpt_path)
+    try:
+        torch.save(replay_buffer.state_dict(), buffer_path)
+    except Exception as e:
+        print(f'Warning: failed to save replay buffer: {e}')
+    meta = {
+        'train_iter': getattr(learner, 'train_iter', None),
+        'envstep': getattr(collector, 'envstep', None),
+    }
+    if extra_meta:
+        meta.update(extra_meta)
+    try:
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f)
+    except Exception as e:
+        print(f'Warning: failed to save meta: {e}')
+
+def try_load_training_state(model_path: str, replay_buffer) -> dict:
+    buffer_path, meta_path = _ckpt_sidecars(model_path)
+    meta = {}
+    if os.path.isfile(buffer_path):
+        try:
+            state = torch.load(buffer_path, map_location='cpu')
+            replay_buffer.load_state_dict(state)
+        except Exception as e:
+            print(f'Warning: failed to load replay buffer: {e}')
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+        except Exception as e:
+            print(f'Warning: failed to load meta: {e}')
+    return meta
 
 # ==============================================================================
 # Example Usage

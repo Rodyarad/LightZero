@@ -2,7 +2,7 @@ import logging
 import os
 from functools import partial
 from typing import Optional, Tuple
-
+import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
@@ -12,7 +12,7 @@ from ding.policy import create_policy
 from ding.rl_utils import get_epsilon_greedy_fn
 from ding.utils import set_pkg_seed, get_rank
 from ding.worker import BaseLearner
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
 from lzero.entry.utils import log_buffer_memory_usage, log_buffer_run_time
 from lzero.policy import visit_count_temperature
@@ -99,7 +99,16 @@ def train_muzero(
         policy.learn_mode.load_state_dict(torch.load(model_path, map_location=cfg.policy.device))
 
     # Create worker components: learner, collector, evaluator, replay buffer, commander.
-    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    if model_path is not None:
+        comet_ml.login()
+        exp = comet_ml.start(mode="get", experiment_key=cfg.run_id_comet_ml)
+        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    else:
+        experiment = comet_ml.start(
+            project_name="lightzero"
+        )
+        experiment.log_parameters(vars(cfg))
+        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
     learner = BaseLearner(cfg.policy.learn.learner, policy.learn_mode, tb_logger, exp_name=cfg.exp_name)
 
     # ==============================================================
@@ -130,6 +139,20 @@ def train_muzero(
     # ==============================================================
     # Main loop
     # ==============================================================
+    def save_ckpt_with_state(filename: str):
+        ckpt_dir = './{}/ckpt'.format(learner.exp_name)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        learner.save_checkpoint(filename)
+        ckpt_path = os.path.join(ckpt_dir, filename)
+        from lzero.entry.utils import save_training_state
+        save_training_state(ckpt_path, learner, collector, replay_buffer, policy)
+
+    from lzero.entry.utils import try_load_training_state
+    if model_path is not None:
+        _resume_meta = try_load_training_state(model_path, replay_buffer)
+        learner._last_iter.update(int(_resume_meta['train_iter']))
+        collector._total_envstep_count = int(_resume_meta['envstep'])
+
     # Learner's before_run hook.
     learner.call_hook('before_run')
     if policy_config.use_wandb:
@@ -148,7 +171,12 @@ def train_muzero(
         eval_train_envstep_list = []
 
     # Evaluate the random agent
-    stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+    #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+    stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
+
+    # Ensure iteration_0 checkpoint also has sidecars (meta + buffer)
+    if learner.train_iter == 0:
+        save_ckpt_with_state('last_ckptpth.tar')
 
     while True:
         log_buffer_memory_usage(learner.train_iter, replay_buffer, tb_logger)
@@ -180,7 +208,9 @@ def train_muzero(
                 eval_train_iter_list.append(learner.train_iter)
                 eval_train_envstep_list.append(collector.envstep)
             else:
-                stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+                #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+                stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
+                save_ckpt_with_state('last_ckpt.pth.tar')
                 if stop:
                     break
 
@@ -218,6 +248,7 @@ def train_muzero(
             if cfg.policy.use_priority:
                 replay_buffer.update_priority(train_data, log_vars[0]['value_priority_orig'])
 
+
         if collector.envstep >= max_env_step or learner.train_iter >= max_train_iter:
             if cfg.policy.eval_offline:
                 logging.info(f'eval offline beginning...')
@@ -228,7 +259,8 @@ def train_muzero(
                     ckpt_path = os.path.join(ckpt_dirname, ckpt_name)
                     # load the ckpt of pretrained model
                     policy.learn_mode.load_state_dict(torch.load(ckpt_path, map_location=cfg.policy.device))
-                    stop, reward = evaluator.eval(learner.save_checkpoint, train_iter, collector_envstep)
+                    #stop, reward = evaluator.eval(learner.save_checkpoint, train_iter, collector_envstep)
+                    stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
                     logging.info(
                         f'eval offline at train_iter: {train_iter}, collector_envstep: {collector_envstep}, reward: {reward}')
                 logging.info(f'eval offline finished!')

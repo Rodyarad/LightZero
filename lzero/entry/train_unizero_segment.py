@@ -109,6 +109,20 @@ def train_unizero_segment(
                           stop_value=cfg.env.stop_value, env=evaluator_env, policy=policy.eval_mode,
                           tb_logger=tb_logger, exp_name=cfg.exp_name, policy_config=policy_config)
 
+    def save_ckpt_with_state(filename: str):
+        ckpt_dir = './{}/ckpt'.format(learner.exp_name)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        learner.save_checkpoint(filename)
+        ckpt_path = os.path.join(ckpt_dir, filename)
+        from lzero.entry.utils import save_training_state
+        save_training_state(ckpt_path, learner, collector, replay_buffer, policy)
+
+    from lzero.entry.utils import try_load_training_state
+    if model_path is not None:
+        _resume_meta = try_load_training_state(model_path, replay_buffer)
+        learner._last_iter.update(int(_resume_meta['train_iter']))
+        collector._total_envstep_count = int(_resume_meta['envstep'])
+
     # Learner's before_run hook
     learner.call_hook('before_run')
 
@@ -136,6 +150,8 @@ def train_unizero_segment(
         world_size = 1
         rank = 0
 
+    did_initial_eval = False
+
     while True:
         # Log buffer memory usage
         log_buffer_memory_usage(learner.train_iter, replay_buffer, tb_logger)
@@ -162,12 +178,17 @@ def train_unizero_segment(
             collect_kwargs['epsilon'] = epsilon_greedy_fn(collector.envstep)
 
         # Evaluate policy performance
-        if learner.train_iter == 0 or evaluator.should_eval(learner.train_iter):
-        # if learner.train_iter > 0 and evaluator.should_eval(learner.train_iter):
-        
-            stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+        if (learner.train_iter == 0 and not did_initial_eval) or evaluator.should_eval(learner.train_iter):
+            #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+            stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
+            save_ckpt_with_state('last_ckpt.pth.tar')
             if stop:
                 break
+
+
+        if learner.train_iter == 0 and not did_initial_eval:
+            save_ckpt_with_state('last_ckpt.pth.tar')
+            did_initial_eval = True
 
         # Collect new data
         new_data = collector.collect(train_iter=learner.train_iter, policy_kwargs=collect_kwargs)
