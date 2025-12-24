@@ -93,6 +93,9 @@ class WorldModel(nn.Module):
             self.obs_per_embdding_dim = self.config.embed_dim
         self.continuous_action_space = self.config.continuous_action_space
         self.use_action_absraction = self.config.use_action_absraction
+        # Optional: number of objects for object-level action abstraction.
+        # Must be defined on the instance because multiple parts of the code refer to `self.num_objects`.
+        self.num_objects = None
 
         # When object-level action abstraction is enabled, enforce a consistent configuration
         # up-front so that we cannot accidentally run experiments where the mask has no effect.
@@ -111,6 +114,8 @@ class WorldModel(nn.Module):
                     f"WorldModel: action_space_size ({self.config.action_space_size}) must be divisible by "
                     f"num_objects ({self.config.num_objects}) when use_action_absraction=True."
                 )
+            # Cache for convenience and to avoid AttributeError.
+            self.num_objects = int(self.config.num_objects)
 
         # Initialize action embedding table
         if self.continuous_action_space:
@@ -321,7 +326,6 @@ class WorldModel(nn.Module):
             'value': self.head_value,
             'reward': self.head_rewards,
             'policy': self.head_policy,
-            'mask': self.head_mask,
         }
 
         def _init_weights_for_head(module):
