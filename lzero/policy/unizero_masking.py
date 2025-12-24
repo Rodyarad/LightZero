@@ -1945,6 +1945,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'target_value',
             'transformed_target_reward',
             'transformed_target_value',
+            'mask_loss',
 
             # ==================== Gradient Norms ====================
             'total_grad_norm_before_clip_wm',
@@ -2075,8 +2076,16 @@ class UniZeroPolicy(MuZeroPolicy):
             'target_model': self._target_model.state_dict(),
             'optimizer_world_model': self._optimizer_world_model.state_dict(),
         }
+        # Save LR scheduler state for correct resume.
+        # (Scheduler is optional and depends on cfg flags.)
+        if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
+            state_dict['lr_scheduler'] = self.lr_scheduler.state_dict()
         # ==================== START: 保存Alpha优化器状态 ====================
         if self.use_adaptive_entropy_weight:
+            # Save the learnable entropy coefficient itself (optimizer state alone is not enough).
+            # Store on CPU for portability.
+            if hasattr(self, 'log_alpha'):
+                state_dict['log_alpha'] = self.log_alpha.detach().cpu()
             state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
         # ===================== END: 保存Alpha优化器状态 =====================
         return state_dict
@@ -2090,11 +2099,19 @@ class UniZeroPolicy(MuZeroPolicy):
         """
         self._learn_model.load_state_dict(state_dict['model'])
         self._target_model.load_state_dict(state_dict['target_model'])
-        # self._optimizer_world_model.load_state_dict(state_dict['optimizer_world_model'])
+        # Restore optimizer & scheduler so resume continues with correct LR/momenta.
+        if 'optimizer_world_model' in state_dict:
+            self._optimizer_world_model.load_state_dict(state_dict['optimizer_world_model'])
+        if 'lr_scheduler' in state_dict and hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
+            self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
 
         # ==================== START: 加载Alpha优化器状态 ====================
-        # if self.use_adaptive_entropy_weight and 'alpha_optimizer' in state_dict:
-        #     self.alpha_optimizer.load_state_dict(state_dict['alpha_optimizer'])
+        if self.use_adaptive_entropy_weight and 'alpha_optimizer' in state_dict:
+            # Restore log_alpha before optimizer state, so optimizer references a correctly-initialized parameter.
+            if 'log_alpha' in state_dict and hasattr(self, 'log_alpha'):
+                with torch.no_grad():
+                    self.log_alpha.copy_(state_dict['log_alpha'].to(self.log_alpha.device))
+            self.alpha_optimizer.load_state_dict(state_dict['alpha_optimizer'])
         # ===================== END: 加载Alpha优化器状态 =====================
 
     def recompute_pos_emb_diff_and_clear_cache(self) -> None:
