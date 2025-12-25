@@ -430,3 +430,130 @@ class KeysValues:
             dst_layer._v_cache._size = src_layer._v_cache._size
 
         return cloned_kv
+
+
+class SlotKVCache:
+    """
+    Overview:
+        KV cache manager for SlotTransformer with Slot Attention.
+        Manages separate caches for temporal attention and action attention.
+        
+        Unlike the standard KeysValues which handles a single type of attention,
+        SlotKVCache manages two synchronized cache types:
+        - Temporal cache: for self-attention over time for each slot
+        - Action cache: for cross-attention between slots and actions
+    """
+    
+    def __init__(
+        self, 
+        batch_size: int,
+        num_slots: int, 
+        num_heads: int,
+        max_timesteps: int,
+        embed_dim: int,
+        num_layers: int,
+        device: torch.device
+    ):
+        """
+        Overview:
+            Initializes KV caches for SlotTransformer.
+        Arguments:
+            - batch_size (:obj:`int`): Batch size.
+            - num_slots (:obj:`int`): Number of slots per timestep.
+            - num_heads (:obj:`int`): Number of attention heads.
+            - max_timesteps (:obj:`int`): Maximum number of timesteps to cache.
+            - embed_dim (:obj:`int`): Embedding dimension.
+            - num_layers (:obj:`int`): Number of transformer layers.
+            - device (:obj:`torch.device`): Device for cache tensors.
+        """
+        # Temporal attention cache: each slot has its own temporal sequence
+        # Using KeysValues with num_samples = batch_size * num_slots
+        # Shape: (B * num_slots, num_heads, T, head_dim)
+        self._temporal_keys_values = KeysValues(
+            num_samples=batch_size * num_slots,
+            num_heads=num_heads,
+            max_tokens=max_timesteps,
+            embed_dim=embed_dim,
+            num_layers=num_layers,
+            device=device
+        )
+        
+        # Action attention cache: actions are shared across slots
+        # Using KeysValues with num_samples = batch_size
+        # Shape: (B, num_heads, T, head_dim)
+        self._action_keys_values = KeysValues(
+            num_samples=batch_size,
+            num_heads=num_heads,
+            max_tokens=max_timesteps,
+            embed_dim=embed_dim,
+            num_layers=num_layers,
+            device=device
+        )
+        
+        self.num_slots = num_slots
+        self.batch_size = batch_size
+        self.num_layers = num_layers
+    
+    def __getitem__(self, layer_idx: int) -> tuple:
+        """
+        Overview:
+            Returns the KV cache pair for a specific layer.
+        Arguments:
+            - layer_idx (:obj:`int`): Index of the layer.
+        Returns:
+            - tuple: (temporal_cache, action_cache) for the specified layer.
+        """
+        return self._temporal_keys_values[layer_idx], self._action_keys_values[layer_idx]
+    
+    def __len__(self) -> int:
+        """
+        Overview:
+            Returns the number of layers.
+        Returns:
+            - int: Number of layers being managed.
+        """
+        return self.num_layers
+    
+    def reset(self) -> None:
+        """
+        Overview:
+            Resets all caches to empty state.
+        """
+        self._temporal_keys_values.reset()
+        self._action_keys_values.reset()
+    
+    @property
+    def temporal_size(self) -> int:
+        """
+        Overview:
+            Current number of timesteps in temporal cache.
+        Returns:
+            - int: Number of cached timesteps for temporal attention.
+        """
+        return self._temporal_keys_values.size
+    
+    @property  
+    def action_size(self) -> int:
+        """
+        Overview:
+            Current number of timesteps in action cache.
+        Returns:
+            - int: Number of cached timesteps for action attention.
+        """
+        return self._action_keys_values.size
+    
+    @property
+    def size(self) -> int:
+        """
+        Overview:
+            Returns the synchronized size of both caches.
+            Both temporal and action caches should have the same length along the time dimension.
+        Returns:
+            - int: Number of timesteps in cache.
+        Raises:
+            - AssertionError: If temporal and action cache sizes don't match.
+        """
+        t_size = self.temporal_size
+        a_size = self.action_size
+        assert t_size == a_size, f"Temporal and action cache sizes must match! Got {t_size} vs {a_size}"
+        return t_size
