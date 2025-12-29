@@ -1,6 +1,7 @@
 import hashlib
 import xxhash
 from dataclasses import dataclass
+from typing import Iterable, Union
 
 import numpy as np
 import torch
@@ -378,3 +379,45 @@ class LossWithIntermediateLosses:
             self.intermediate_losses[k] = v / value
         self.loss_total = self.loss_total / value
         return self
+
+
+def init_parameters(layers: Union[nn.Module, Iterable[nn.Module]], weight_init: str = "default"):
+    assert weight_init in ("default", "he_uniform", "he_normal", "xavier_uniform", "xavier_normal")
+    if isinstance(layers, nn.Module):
+        layers = [layers]
+
+    for idx, layer in enumerate(layers):
+        if hasattr(layer, "bias") and layer.bias is not None:
+            nn.init.zeros_(layer.bias)
+
+        if hasattr(layer, "weight") and layer.weight is not None:
+            gain = 1.0
+            if isinstance(layers, nn.Sequential):
+                if idx < len(layers) - 1:
+                    next = layers[idx + 1]
+                    if isinstance(next, nn.ReLU):
+                        gain = 2**0.5
+
+            if weight_init == "he_uniform":
+                torch.nn.init.kaiming_uniform_(layer.weight, gain)
+            elif weight_init == "he_normal":
+                torch.nn.init.kaiming_normal_(layer.weight, gain)
+            elif weight_init == "xavier_uniform":
+                torch.nn.init.xavier_uniform_(layer.weight, gain)
+            elif weight_init == "xavier_normal":
+                torch.nn.init.xavier_normal_(layer.weight, gain)
+
+
+class LayerScale(nn.Module):
+    """Module scaling input by learned scalar.
+
+    Adapted from timm library.
+    """
+
+    def __init__(self, dim: int, init_values: float = 1e-5, inplace: bool = False):
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
