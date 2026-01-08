@@ -872,25 +872,77 @@ class SelfAttention(nn.Module):
 
 
 @dataclass
-@dataclass
-class SlotTransformerConfig(TransformerConfig):
-    num_slots: int = 8
-    slots_dim: int = 64
-    action_dim: int = 4
-    action_type: str = 'discrete'
+class SlotTransformerConfig:
+    """
+    Configuration for the SlotTransformer and ObjectWorldModel.
     
+    This config consolidates all parameters needed for:
+    - SlotTransformer architecture
+    - ObjectWorldModel training and inference
+    - Auxiliary transformers (dynamics, prediction)
+    """
+    num_slots: int = 7
+    slots_dim: int = 64
+    tokens_dim: int = 256
+    max_timestep: int = 100
+    
+    action_space_size: int = 6
+    action_type: str = 'discrete'
+    continuous_action_space: bool = False
+    
+    num_heads: int = 4
+    num_layers: int = 3
+    hidden_mult: int = 4
+    embed_dim: int = 256
+
     use_time_encoding: bool = True
     use_actions: bool = True
     use_slot_temporal_block: bool = True
     use_slot_interaction_block: bool = True
     
-    def __post_init__(self):
-        """Set default values for TransformerConfig parameters suitable for SlotTransformer."""
-        if not hasattr(self, '_initialized'):
-            if self.lora_r == 0:
-                self.lora_target_modules = self.lora_target_modules or []
-            if self.task_embed_option == "none":
-                self.register_token_num = 0
+    dynamics_transformer_blocks: int = 2
+    dynamics_transformer_heads: int = 4
+    dynamics_transformer_dropout: float = 0.0
+    
+    prediction_transformer_blocks: int = 2
+    prediction_transformer_heads: int = 4
+    prediction_transformer_dropout: float = 0.0
+    
+    env_num: int = 8
+    device: str = 'cuda'
+    gamma: float = 0.997
+    context_length: int = 100
+    max_cache_size: int = 5000
+    
+    policy_entropy_weight: float = 5e-3
+    predict_latent_loss_type: str = 'group_kl'
+    latent_recon_loss_weight: float = 0.0
+    perceptual_loss_weight: float = 0.0
+    
+    support_size: int = 101
+
+    group_size: int = 8
+    norm_type: str = 'BN'
+    
+    game_segment_length: int = 20
+    num_simulations: int = 50
+    num_unroll_steps: int = 5
+    
+    use_policy_logits_clip: bool = False
+    policy_logits_clip_min: float = -10.0
+    policy_logits_clip_max: float = 10.0
+    use_policy_loss_temperature: bool = False
+    policy_loss_temperature: float = 1.0
+    use_target_policy_resmooth: bool = False
+    target_policy_resmooth_eps: float = 0.05
+    
+    use_priority: bool = False
+    
+    @property
+    def max_tokens(self) -> int:
+        """Maximum number of tokens."""
+        return self.tokens_per_block * self.max_blocks
+
 
 def get_sin_pos_enc(seq_len: int, d_model: int) -> torch.Tensor:
     """Sinusoid absolute positional encoding."""
@@ -933,17 +985,14 @@ class CrossAttention(nn.Module):
         
         self.attn_drop = nn.Dropout(dropout)
         self.resid_drop = nn.Dropout(dropout)
-        
-        # Causal mask for autoregressive attention
-        causal_mask = torch.tril(torch.ones(max_tokens, max_tokens))
-        self.register_buffer('mask', causal_mask)
     
     def forward(
         self, 
         query_input: torch.Tensor,  # Slots: (B, T_q, C)
         key_value_input: torch.Tensor,  # Actions: (B, T_kv, C)
         kv_cache: Optional[KVCache] = None,
-        attn_mask: Optional[torch.Tensor] = None
+        attn_mask: Optional[torch.Tensor] = None,
+        valid_context_lengths: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Overview:
@@ -953,6 +1002,7 @@ class CrossAttention(nn.Module):
             - key_value_input (:obj:`torch.Tensor`): Key/Value tensor from actions, shape (B, T_kv, C).
             - kv_cache (:obj:`Optional[KVCache]`): Optional KV cache for caching action keys/values.
             - attn_mask (:obj:`Optional[torch.Tensor]`): Optional attention mask.
+            - valid_context_lengths (:obj:`Optional[torch.Tensor]`): Valid context lengths for each batch element.
         Returns:
             - torch.Tensor: Output tensor of shape (B, T_q, C).
         """
@@ -975,19 +1025,19 @@ class CrossAttention(nn.Module):
             kv_cache.update(k, v)
             k, v = kv_cache.get()
         
-        current_len = k.size(2)
-        
         # Compute attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
         
         # Apply mask
-        if attn_mask is not None:
-            # Use provided mask (e.g., from gen_act_causal_mask)
-            att = att.masked_fill(attn_mask == float('-inf'), float('-inf'))
-        else:
-            # Use standard causal mask
-            mask = self.mask[past_len:past_len + T_q, :current_len]
-            att = att.masked_fill(mask == 0, float('-inf'))
+        att = att + attn_mask.unsqueeze(0).unsqueeze(0)
+        
+        # Apply valid_context_lengths mask if provided
+        if valid_context_lengths is not None:
+            # Create batch-specific mask: block attention to invalid past context
+            for i in range(B):
+                invalid_len = past_len - valid_context_lengths[i]
+                if invalid_len > 0:
+                    att[i, :, :, :invalid_len] = float('-inf')
         
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
@@ -1030,8 +1080,7 @@ class CompasParLayer(nn.TransformerEncoderLayer):
                  use_actions: bool = True,
                  use_slot_temporal_block: bool = True,
                  use_slot_interaction_block: bool = True,
-                 max_timestep: int = 100,
-                 config: Optional[TransformerConfig] = None):
+                 max_timestep: int = 100):
         """
         Module initializer
         """
@@ -1061,8 +1110,18 @@ class CompasParLayer(nn.TransformerEncoderLayer):
             **factory_kwargs
         )
         
-
-        temporal_attn_config = config
+        # Create TransformerConfig for SelfAttention from layer parameters
+        temporal_attn_config = TransformerConfig(
+            tokens_per_block=max_timestep,
+            max_blocks=1,
+            attention='causal',
+            num_layers=1,
+            num_heads=nhead,
+            embed_dim=d_model,
+            embed_pdrop=0.0,
+            resid_pdrop=dropout,
+            attn_pdrop=dropout,
+        )
         self.self_attn_time = SelfAttention(temporal_attn_config)
         
         # Action attention - use SlotCrossAttention with KV-caching support
@@ -1078,8 +1137,7 @@ class CompasParLayer(nn.TransformerEncoderLayer):
             eps=layer_norm_eps,
         )
 
-    def forward(self, src, action, time_mask=None, kv_cache=None):
-
+    def forward(self, src, action, time_mask=None, kv_cache=None, valid_context_lengths=None):
         """
         Forward pass through the Object-Centric Transformer-v2.
         Overloads PyTorch's transformer forward pass.
@@ -1095,27 +1153,36 @@ class CompasParLayer(nn.TransformerEncoderLayer):
             Temporal mask for causal attention
         kv_cache: tuple, optional
             Tuple of (temporal_cache, action_cache) for KV caching
+        valid_context_lengths: torch Tensor, optional
+            Valid context lengths for each batch element
         """
         x = src
         if self.norm_first:
-            x = x + self._sa_block(self.norm1(x), self.act_norm(action), time_mask, kv_cache)
+            x = x + self._sa_block(self.norm1(x), self.act_norm(action), time_mask, kv_cache, valid_context_lengths)
             x = x + self._ff_block(self.norm2(x))
         else:
-            x = self.norm1(x + self._sa_block(x, action, time_mask, kv_cache))
+            x = self.norm1(x + self._sa_block(x, action, time_mask, kv_cache, valid_context_lengths))
             x = self.norm2(x + self._ff_block(x))
 
         return x
 
-    def gen_act_causal_mask(self, slots: torch.Tensor) -> torch.Tensor:
+    def gen_act_causal_mask(self, slots: torch.Tensor, past_len: int = 0) -> torch.Tensor:
         time_steps = slots.size(1)
         num_slots = slots.size(2)
-        slots_mask = nn.Transformer.generate_square_subsequent_mask(time_steps,
-                                                                    device=slots.device,
-                                                                    dtype=slots.dtype)
-        slots_mask = slots_mask.repeat_interleave(num_slots, 0)
-        return slots_mask
+        total_len = past_len + time_steps
+        
+        row_indices = torch.arange(time_steps, device=slots.device).unsqueeze(1) + past_len
+        col_indices = torch.arange(total_len, device=slots.device).unsqueeze(0)
+        causal_mask = col_indices <= row_indices
 
-    def _sa_block(self, x, action, time_mask, kv_cache=None):
+        attn_mask = torch.zeros(time_steps, total_len, device=slots.device, dtype=slots.dtype)
+        attn_mask = attn_mask.masked_fill(~causal_mask, float('-inf'))
+        
+        attn_mask = attn_mask.repeat_interleave(num_slots, 0)
+        
+        return attn_mask
+
+    def _sa_block(self, x, action, time_mask, kv_cache=None, valid_context_lengths=None):
         """
         Forward pass through the parallel attention branches with KV-caching support.
         
@@ -1124,6 +1191,7 @@ class CompasParLayer(nn.TransformerEncoderLayer):
             - action: Action embeddings, shape (B, num_imgs, dim)
             - time_mask: Optional temporal mask
             - kv_cache: Optional tuple of (temporal_cache, action_cache)
+            - valid_context_lengths: Optional tensor of valid context lengths for each batch element
         """
         B, num_imgs, num_slots, dim = x.shape
         temporal_cache, action_cache = kv_cache if kv_cache else (None, None)
@@ -1143,13 +1211,15 @@ class CompasParLayer(nn.TransformerEncoderLayer):
 
         if self.use_actions:
             # action-attention
-            attn_mask = self.gen_act_causal_mask(x)
+            past_len = action_cache.shape[2] if action_cache is not None else 0
+            attn_mask = self.gen_act_causal_mask(x, past_len=past_len)
             x_aux = x.clone().view(B, num_imgs * num_slots, dim)
             x_act = self.act_attn(
                 query_input=x_aux,
                 key_value_input=action,
                 kv_cache=action_cache,
-                attn_mask=attn_mask
+                attn_mask=attn_mask,
+                valid_context_lengths=valid_context_lengths
             )
             x_act = x_act.view(B, num_imgs, num_slots, dim)
         else:
@@ -1161,11 +1231,17 @@ class CompasParLayer(nn.TransformerEncoderLayer):
             # From (B, num_imgs, num_slots, dim) to (B * num_slots, num_imgs, dim)
             x_reshaped = x.transpose(1, 2).reshape(B * num_slots, num_imgs, dim)
             
+            # Expand valid_context_lengths for each slot if provided
+            temporal_valid_lengths = None
+            if valid_context_lengths is not None:
+                # Repeat for each slot: (B,) -> (B * num_slots,)
+                temporal_valid_lengths = valid_context_lengths.repeat_interleave(num_slots)
+            
             # Use SelfAttention with KV cache
             x_time = self.self_attn_time(
                 x=x_reshaped,
                 kv_cache=temporal_cache,
-                valid_context_lengths=None
+                valid_context_lengths=temporal_valid_lengths
             )
             
             # Reshape back: (B * num_slots, num_imgs, dim) -> (B, num_imgs, num_slots, dim)
@@ -1177,91 +1253,71 @@ class CompasParLayer(nn.TransformerEncoderLayer):
         return y
 
 class SlotTransformer(nn.Module):
-    def __init__(self,
-                 num_slots: int = None,
-                 slots_dim: int = None,
-                 tokens_dim: int = None,
-                 max_timestep: int = None,
-                 action_dim: int = None,
-                 action_type: str = 'discrete',
-                 num_heads: int = 4,
-                 num_layers: int = 3,
-                 hidden_mult: int = 4,
-                 use_time_encoding: bool = True,
-                 use_actions: bool = True,
-                 use_slot_temporal_block: bool = True,
-                 use_slot_interaction_block: bool = True,
-                 config: Optional['SlotTransformerConfig'] = None):
+    """
+    SlotTransformer: Object-centric transformer for slot-based world models.
+    
+    This transformer processes slot representations with temporal, object-interaction,
+    and action attention mechanisms.
+    """
+    
+    def __init__(self, config: SlotTransformerConfig):
         """
-        Initialize SlotTransformer from either individual parameters or a config object.
+        Initialize SlotTransformer from configuration.
         
         Arguments:
-            - config (:obj:`Optional[SlotTransformerConfig]`): If provided, uses this config.
-                                                                Individual parameters are ignored.
+            - config (:obj:`SlotTransformerConfig`): Configuration object containing all parameters.
         """
         super().__init__()
+        self.config = config
         
-        # Use config if provided, otherwise use individual parameters
-        if config is not None:
-            num_slots = config.num_slots
-            slots_dim = config.slots_dim
-            tokens_dim = config.embed_dim
-            max_timestep = config.tokens_per_block
-            action_dim = config.action_dim
-            action_type = config.action_type
-            num_heads = config.num_heads
-            num_layers = config.num_layers
-            use_time_encoding = config.use_time_encoding
-            use_actions = config.use_actions
-            use_slot_temporal_block = config.use_slot_temporal_block
-            use_slot_interaction_block = config.use_slot_interaction_block
-            hidden_mult = 4  # Default, not in config
+        self.num_slots = config.num_slots
+        self.slots_dim = config.slots_dim
+        self.tokens_dim = config.tokens_dim
+        self.max_timestep = config.max_timestep
+        self.action_dim = config.action_space_size
+        self.action_type = config.action_type
+        self.num_heads = config.num_heads
+        self.num_layers = config.num_layers
+        self.hidden_mult = config.hidden_mult
+        self.use_time_encoding = config.use_time_encoding
+        self.use_actions = config.use_actions
+        self.use_slot_temporal_block = config.use_slot_temporal_block
+        self.use_slot_interaction_block = config.use_slot_interaction_block
+        self.in_proj = nn.Linear(self.slots_dim, self.tokens_dim, bias=False)
         
-        self.config = config  # Store config for reference
-        self.num_slots = num_slots
-        self.slots_dim = slots_dim
-        self.max_timestep = max_timestep
-        self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.hidden_mult = hidden_mult
-        if action_type == "discrete":
-            self.act_adapter = DiscreteActionAdapter(num_actions=action_dim, actions_dim=tokens_dim)
+        # Action adapter
+        if self.action_type == "discrete":
+            self.act_adapter = DiscreteActionAdapter(num_actions=self.action_dim, actions_dim=self.tokens_dim)
         else:
             self.act_adapter = ContinuousActionAdapter(
-                actions_dim=action_dim, projected_actions_dim=tokens_dim, norm_actions=True
+                actions_dim=self.action_dim, projected_actions_dim=self.tokens_dim, norm_actions=True
             )
-        self.use_time_encoding = use_time_encoding
-        self.use_actions = use_actions
-        self.use_slot_temporal_block = use_slot_temporal_block
-        self.use_slot_interaction_block = use_slot_interaction_block
-        self.in_proj = nn.Linear(slots_dim, tokens_dim, bias=False)
 
         self.blocks = nn.ModuleList([
             CompasParLayer(
-                d_model=tokens_dim,
-                nhead=num_heads,
+                d_model=self.tokens_dim,
+                nhead=self.num_heads,
                 batch_first=True,
                 norm_first=True,
-                dim_feedforward=tokens_dim * hidden_mult,
-                use_actions=use_actions,
-                use_slot_temporal_block=use_slot_temporal_block,
-                use_slot_interaction_block=use_slot_interaction_block,
-                max_timestep=max_timestep,
-                config=config  # Pass config if provided
-            ) for _ in range(num_layers)
+                dim_feedforward=self.tokens_dim * self.hidden_mult,
+                use_actions=self.use_actions,
+                use_slot_temporal_block=self.use_slot_temporal_block,
+                use_slot_interaction_block=self.use_slot_interaction_block,
+                max_timestep=self.max_timestep,
+            ) for _ in range(self.num_layers)
         ])
 
         self.time_pos_encoding = nn.Parameter(
-            get_sin_pos_enc(max_timestep, tokens_dim), requires_grad=False)
+            get_sin_pos_enc(self.max_timestep, self.tokens_dim), requires_grad=False)
 
         self.mlp_out = nn.Sequential(
-            nn.Linear(tokens_dim, slots_dim),
+            nn.Linear(self.tokens_dim, self.slots_dim),
         )
 
-    def load_state_from_method(self, state_dict: dict):
-        state_dict = {k.replace('transition_model.', ''): v for k, v in state_dict.items() if
-                      k.startswith('transition_model.')}
-        self.load_state_dict(state_dict)
+    # def load_state_from_method(self, state_dict: dict):
+    #     state_dict = {k.replace('transition_model.', ''): v for k, v in state_dict.items() if
+    #                   k.startswith('transition_model.')}
+    #     self.load_state_dict(state_dict)
     
     def generate_empty_kv_cache(self, batch_size: int) -> SlotKVCache:
         """
@@ -1273,61 +1329,60 @@ class SlotTransformer(nn.Module):
             - SlotKVCache: An empty KV cache object.
         """
         device = next(self.parameters()).device
-        # Get tokens_dim from in_proj layer
-        tokens_dim = self.in_proj.out_features
         
         return SlotKVCache(
             batch_size=batch_size,
             num_slots=self.num_slots,
             num_heads=self.num_heads,
             max_timesteps=self.max_timestep,
-            embed_dim=tokens_dim,
+            embed_dim=self.tokens_dim,
             num_layers=self.num_layers,
             device=device
         )
 
-    def auto_predict_trajectory(self, slots: torch.Tensor, actions: torch.Tensor):
-        pred_len = slots.size(1) - self.max_timestep
-        return self.predict_trajectory(slots, actions, length=pred_len), self.max_timestep
+    # def auto_predict_trajectory(self, slots: torch.Tensor, actions: torch.Tensor):
+    #     pred_len = slots.size(1) - self.max_timestep
+    #     return self.predict_trajectory(slots, actions, length=pred_len), self.max_timestep
 
-    def predict_trajectory(self, slots: torch.Tensor, actions: torch.Tensor, length: int = 2):
-        next_slots = []
-        max_t = min(self.max_timestep, slots.size(1))
-        slots = slots[:, :max_t]
-        offset = 0
+    # def predict_trajectory(self, slots: torch.Tensor, actions: torch.Tensor, length: int = 2):
+    #     next_slots = []
+    #     max_t = min(self.max_timestep, slots.size(1))
+    #     slots = slots[:, :max_t]
+    #     offset = 0
 
-        # print(actions.shape)
-        for i in range(length):
-            act_step = i - offset
-            act = actions[:, act_step:max_t + act_step]
-            next_slot = self.forward(slots, act)
-            if max_t == self.max_timestep:
-                slots = slots[:, 1:]
-            else:
-                max_t += 1
-                offset += 1
-            slots = torch.cat((slots, next_slot.unsqueeze(1)), dim=1)
-            next_slots.append(next_slot)
+    #     # print(actions.shape)
+    #     for i in range(length):
+    #         act_step = i - offset
+    #         act = actions[:, act_step:max_t + act_step]
+    #         next_slot = self.forward(slots, act)
+    #         if max_t == self.max_timestep:
+    #             slots = slots[:, 1:]
+    #         else:
+    #             max_t += 1
+    #             offset += 1
+    #         slots = torch.cat((slots, next_slot.unsqueeze(1)), dim=1)
+    #         next_slots.append(next_slot)
 
-        return torch.stack(next_slots, dim=1)
+    #     return torch.stack(next_slots, dim=1)
 
-    def _par_forward_blocks(self, slots: torch.Tensor, actions: torch.Tensor):
-        blocks = zip(self.slots_action_blocks, self.slots_pred_blocks)
-        for act_block, pred_block in blocks:
-            act_slots = act_block(slots, actions)
-            pred_slots = pred_block(slots)
-            slots = act_slots + pred_slots
-        return slots
+    # def _par_forward_blocks(self, slots: torch.Tensor, actions: torch.Tensor):
+    #     blocks = zip(self.slots_action_blocks, self.slots_pred_blocks)
+    #     for act_block, pred_block in blocks:
+    #         act_slots = act_block(slots, actions)
+    #         pred_slots = pred_block(slots)
+    #         slots = act_slots + pred_slots
+    #     return slots
 
-    def _seq_forward_blocks(self, slots: torch.Tensor, actions: torch.Tensor):
-        blocks = zip(self.slots_action_blocks, self.slots_pred_blocks)
-        for act_block, pred_block in blocks:
-            slots = act_block(slots, actions)
-            slots = pred_block(slots)
-        return slots
+    # def _seq_forward_blocks(self, slots: torch.Tensor, actions: torch.Tensor):
+    #     blocks = zip(self.slots_action_blocks, self.slots_pred_blocks)
+    #     for act_block, pred_block in blocks:
+    #         slots = act_block(slots, actions)
+    #         slots = pred_block(slots)
+    #     return slots
 
     def forward(self, slots: torch.Tensor, actions: torch.Tensor, 
-                kv_cache: Optional[SlotKVCache] = None) -> torch.Tensor:
+                kv_cache: Optional[SlotKVCache] = None,
+                valid_context_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Overview:
             Forward pass through the SlotTransformer with optional KV-caching.
@@ -1335,6 +1390,7 @@ class SlotTransformer(nn.Module):
             - slots (:obj:`torch.Tensor`): Slot representations, shape (B, T, N, slots_dim).
             - actions (:obj:`torch.Tensor`): Action tokens, shape (B, T, action_dim).
             - kv_cache (:obj:`Optional[SlotKVCache]`): Optional KV cache for inference.
+            - valid_context_lengths (:obj:`Optional[torch.Tensor]`): Valid context lengths for each batch element.
         Returns:
             - torch.Tensor: Predicted next slots, shape (B, N, slots_dim).
         """
@@ -1351,7 +1407,7 @@ class SlotTransformer(nn.Module):
         # Pass through transformer blocks with KV cache
         for layer_idx, block in enumerate(self.blocks):
             layer_cache = kv_cache[layer_idx] if kv_cache else None
-            slots = block(slots, actions, kv_cache=layer_cache)
+            slots = block(slots, actions, kv_cache=layer_cache, valid_context_lengths=valid_context_lengths)
 
         slots = in_slots + self.mlp_out(slots)
         return slots[:, -1]

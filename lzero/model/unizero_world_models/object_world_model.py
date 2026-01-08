@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch.distributions import Categorical, Independent, Normal, TransformedDistribution, TanhTransform
 
-from lzero.model.common import SimNorm
 from lzero.model.utils import calculate_dormant_ratio, compute_average_weight_magnitude, compute_effective_rank
 from .kv_caching import KeysValues, SlotKVCache
 from .tokenizer import Tokenizer
@@ -26,7 +25,6 @@ logging.getLogger().setLevel(logging.DEBUG)
 class ObjectWorldModel(nn.Module):
 
     def __init__(self, config: SlotTransformerConfig) -> None:
-        #TODO remake methods and adapt them for object world model
         super().__init__()
         self.config = config
 
@@ -43,7 +41,8 @@ class ObjectWorldModel(nn.Module):
 
         # Initialize configuration parameters
         self._initialize_config_parameters()
-        #TODO check parameters
+
+        #TODO check and fix params
         # Dynamics transformer: predicts next step slots from current slots
         # Used for dynamics/observations prediction
         self.dynamics_transformer = TransformerEncoder(
@@ -70,25 +69,18 @@ class ObjectWorldModel(nn.Module):
             qkv_bias=True,
             dropout=self.config.prediction_transformer_dropout,
             activation='gelu',
-            hidden_dim=None,  # Will default to 4 * dim
+            hidden_dim=None,
             initial_residual_scale=None,
             frozen=False
         )
 
         self.hidden_size = config.embed_dim // config.num_heads
 
-        self.continuous_action_space = self.config.continuous_action_space
-
         self.final_norm_option_in_obs_head = getattr(config, 'final_norm_option_in_obs_head', 'LayerNorm')
 
         # Head modules
         self.head_rewards = self._create_head( self.support_size)
-        if self.continuous_action_space:
-            self.sigma_type = self.config.sigma_type
-            self.bound_type = self.config.bound_type
-            self.head_policy = self._create_head_cont(self.action_space_size)
-        else:
-            self.head_policy = self._create_head(self.action_space_size)
+        self.head_policy = self._create_head(self.action_space_size)
         self.head_value = self._create_head(self.support_size)
 
         self.head_dict = {}
@@ -106,13 +98,8 @@ class ObjectWorldModel(nn.Module):
         # Initialize keys and values for transformer
         self._initialize_transformer_keys_values()
 
-        self.latent_recon_loss = torch.tensor(0., device=self.device)
-
-        # 先设置为game_segment_length，以保持self.shared_pool_init_infer都是有效的kv
-         # TODO: 非常重要，应该改为和segment_length一样
         self.shared_pool_size_init = int(self.config.game_segment_length)  # NOTE: Will having too many cause incorrect retrieval of the kv cache?
 
-        # TODO: check the size of the shared pool
         # for self.kv_cache_recurrent_infer
         # If needed, recurrent_infer should store the results of the one MCTS search.
         self.num_simulations = getattr(self.config, 'num_simulations', 50)
@@ -144,7 +131,6 @@ class ObjectWorldModel(nn.Module):
         self.past_kv_cache_recurrent_infer = {}
         self.pool_idx_to_key_map_recur_infer = [None] * self.shared_pool_size_recur
         self.past_kv_cache_init_infer_envs = [{} for _ in range(self.env_num)]
-        # 辅助数据结构，用于反向查找：pool_index -> key
         self.pool_idx_to_key_map_init_envs = [[None] * self.shared_pool_size_init for _ in range(self.env_num)]
 
         self.keys_values_wm_list = []
@@ -180,112 +166,151 @@ class ObjectWorldModel(nn.Module):
         logging.info("-" * (23 + len(head_name) + len(status)))
 
 
-    def custom_copy_kv_cache_to_shared_init_envs(self, src_kv: KeysValues, env_id) -> int:
+    def custom_copy_kv_cache_to_shared_init_envs(self, src_kv: SlotKVCache, env_id: int) -> int:
         """
         Overview:
-            Efficiently copies the contents of a KeysValues object to the shared pool for a specific environment in the init_infer stage.
+            Efficiently copies the contents of a SlotKVCache object to the shared pool 
+            for a specific environment in the init_infer stage.
+            
+            SlotKVCache contains two types of caches:
+            - temporal_keys_values: for self-attention over time (shape: B * num_slots)
+            - action_keys_values: for cross-attention with actions (shape: B)
+            
         Arguments:
-            - src_kv (:obj:`KeysValues`): The source KeysValues object from which data is copied.
+            - src_kv (:obj:`SlotKVCache`): The source SlotKVCache object from which data is copied.
             - env_id (:obj:`int`): The identifier of the environment for which the cache is being copied.
         Returns:
-            - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
+            - index (:obj:`int`): The index in the shared pool where the SlotKVCache object is stored.
         """
-        src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        pool_index = self.shared_pool_index_init_envs[env_id]
         
-        if self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]] is None:
-            self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]] = KeysValues(
-                src_kv_shape[0],  # Number of elements (n)
-                src_kv_shape[1],  # Number of attention heads (num_heads)
-                src_kv_shape[2],  # Maximum number of tokens (max_tokens)
-                src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
-                len(src_kv),  # Number of layers (num_layers)
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+        if self.shared_pool_init_infer[env_id][pool_index] is None:
+            self.shared_pool_init_infer[env_id][pool_index] = SlotKVCache(
+                batch_size=src_kv.batch_size,
+                num_slots=src_kv.num_slots,
+                num_heads=src_kv._temporal_keys_values._keys_values[0]._k_cache._num_heads,
+                max_timesteps=src_kv._temporal_keys_values._keys_values[0]._k_cache._max_tokens,
+                embed_dim=src_kv._temporal_keys_values._keys_values[0]._k_cache._num_heads * 
+                          src_kv._temporal_keys_values._keys_values[0]._k_cache._head_dim,
+                num_layers=src_kv.num_layers,
+                device=src_kv._temporal_keys_values._keys_values[0]._k_cache._device
             )
         
-        dst_kv = self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]]
+        dst_kv = self.shared_pool_init_infer[env_id][pool_index]
         
-        for src_layer, dst_layer in zip(src_kv._keys_values, dst_kv._keys_values):
-            # Copy the key and value caches using torch.copy_() for efficient data transfer
+        # Copy temporal caches (for self-attention over time)
+        for src_layer, dst_layer in zip(src_kv._temporal_keys_values._keys_values, 
+                                        dst_kv._temporal_keys_values._keys_values):
             dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
             dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
             dst_layer._k_cache._size = src_layer._k_cache._size
             dst_layer._v_cache._size = src_layer._v_cache._size
         
-        index = self.shared_pool_index_init_envs[env_id]
-        self.shared_pool_index_init_envs[env_id] = (self.shared_pool_index_init_envs[env_id] + 1) % self.shared_pool_size_init
+        # Copy action caches (for cross-attention with actions)
+        for src_layer, dst_layer in zip(src_kv._action_keys_values._keys_values, 
+                                        dst_kv._action_keys_values._keys_values):
+            dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
+            dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
+            dst_layer._k_cache._size = src_layer._k_cache._size
+            dst_layer._v_cache._size = src_layer._v_cache._size
+        
+        index = pool_index
+        self.shared_pool_index_init_envs[env_id] = (pool_index + 1) % self.shared_pool_size_init
         
         return index
 
-    def custom_copy_kv_cache_to_shared_wm(self, src_kv: KeysValues) -> int:
+    def custom_copy_kv_cache_to_shared_wm(self, src_kv: SlotKVCache) -> SlotKVCache:
         """
         Overview:
-            Efficiently copies the contents of a KeysValues object to the shared pool for world model usage.
+            Efficiently copies the contents of a SlotKVCache object to the shared pool for world model usage.
+            This is used for batch processing multiple environments simultaneously.
+            
         Arguments:
-            - src_kv (:obj:`KeysValues`): The source KeysValues object from which data is copied.
+            - src_kv (:obj:`SlotKVCache`): The source SlotKVCache object from which data is copied.
         Returns:
-            - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
+            - dst_kv (:obj:`SlotKVCache`): The destination SlotKVCache object in the shared pool.
         """
-        src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        pool_index = self.shared_pool_index_wm
         
-        if self.shared_pool_wm[self.shared_pool_index_wm] is None:
-            # import ipdb; ipdb.set_trace()
-            self.shared_pool_wm[self.shared_pool_index_wm] = KeysValues(
-                src_kv_shape[0],  # Number of elements (n)
-                src_kv_shape[1],  # Number of attention heads (num_heads)
-                src_kv_shape[2],  # Maximum number of tokens (max_tokens)
-                src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
-                len(src_kv),  # Number of layers (num_layers)
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+        if self.shared_pool_wm[pool_index] is None:
+            self.shared_pool_wm[pool_index] = SlotKVCache(
+                batch_size=src_kv.batch_size,
+                num_slots=src_kv.num_slots,
+                num_heads=src_kv._temporal_keys_values._keys_values[0]._k_cache._num_heads,
+                max_timesteps=src_kv._temporal_keys_values._keys_values[0]._k_cache._max_tokens,
+                embed_dim=src_kv._temporal_keys_values._keys_values[0]._k_cache._num_heads * 
+                          src_kv._temporal_keys_values._keys_values[0]._k_cache._head_dim,
+                num_layers=src_kv.num_layers,
+                device=src_kv._temporal_keys_values._keys_values[0]._k_cache._device
             )
         
-        dst_kv = self.shared_pool_wm[self.shared_pool_index_wm]
+        dst_kv = self.shared_pool_wm[pool_index]
         
-        for src_layer, dst_layer in zip(src_kv._keys_values, dst_kv._keys_values):
-            # Copy the key and value caches using torch.copy_() for efficient data transfer
-            # try:
+        # Copy temporal caches
+        for src_layer, dst_layer in zip(src_kv._temporal_keys_values._keys_values, 
+                                        dst_kv._temporal_keys_values._keys_values):
             dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
-            # except Exception as e:
-            #     import ipdb; ipdb.set_trace()
             dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
             dst_layer._k_cache._size = src_layer._k_cache._size
             dst_layer._v_cache._size = src_layer._v_cache._size
         
-        self.shared_pool_index_wm = (self.shared_pool_index_wm + 1) % self.shared_pool_size_wm
+        # Copy action caches
+        for src_layer, dst_layer in zip(src_kv._action_keys_values._keys_values, 
+                                        dst_kv._action_keys_values._keys_values):
+            dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
+            dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
+            dst_layer._k_cache._size = src_layer._k_cache._size
+            dst_layer._v_cache._size = src_layer._v_cache._size
+        
+        self.shared_pool_index_wm = (pool_index + 1) % self.shared_pool_size_wm
         
         return dst_kv
 
-    def custom_copy_kv_cache_to_shared_recur(self, src_kv: KeysValues) -> int:
+    def custom_copy_kv_cache_to_shared_recur(self, src_kv: SlotKVCache) -> int:
         """
         Overview:
-            Efficiently copies the contents of a KeysValues object to the shared pool for recurrent inference.
+            Efficiently copies the contents of a SlotKVCache object to the shared pool for recurrent inference.
+            This is used during MCTS simulations to cache intermediate states.
+            
         Arguments:
-            - src_kv (:obj:`KeysValues`): The source KeysValues object from which data is copied.
+            - src_kv (:obj:`SlotKVCache`): The source SlotKVCache object from which data is copied.
         Returns:
-            - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
+            - index (:obj:`int`): The index in the shared pool where the SlotKVCache object is stored.
         """
-        src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        pool_index = self.shared_pool_index
         
-        if self.shared_pool_recur_infer[self.shared_pool_index] is None:
-            self.shared_pool_recur_infer[self.shared_pool_index] = KeysValues(
-                src_kv_shape[0],  # Number of elements (n)
-                src_kv_shape[1],  # Number of attention heads (num_heads)
-                src_kv_shape[2],  # Maximum number of tokens (max_tokens)
-                src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
-                len(src_kv),  # Number of layers (num_layers)
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+        if self.shared_pool_recur_infer[pool_index] is None:
+            self.shared_pool_recur_infer[pool_index] = SlotKVCache(
+                batch_size=src_kv.batch_size,
+                num_slots=src_kv.num_slots,
+                num_heads=src_kv._temporal_keys_values._keys_values[0]._k_cache._num_heads,
+                max_timesteps=src_kv._temporal_keys_values._keys_values[0]._k_cache._max_tokens,
+                embed_dim=src_kv._temporal_keys_values._keys_values[0]._k_cache._num_heads * 
+                          src_kv._temporal_keys_values._keys_values[0]._k_cache._head_dim,
+                num_layers=src_kv.num_layers,
+                device=src_kv._temporal_keys_values._keys_values[0]._k_cache._device
             )
         
-        dst_kv = self.shared_pool_recur_infer[self.shared_pool_index]
+        dst_kv = self.shared_pool_recur_infer[pool_index]
         
-        for src_layer, dst_layer in zip(src_kv._keys_values, dst_kv._keys_values):
-            # Copy the key and value caches using torch.copy_() for efficient data transfer
+        # Copy temporal caches
+        for src_layer, dst_layer in zip(src_kv._temporal_keys_values._keys_values, 
+                                        dst_kv._temporal_keys_values._keys_values):
             dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
             dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
             dst_layer._k_cache._size = src_layer._k_cache._size
             dst_layer._v_cache._size = src_layer._v_cache._size
         
-        index = self.shared_pool_index
-        self.shared_pool_index = (self.shared_pool_index + 1) % self.shared_pool_size_recur
+        # Copy action caches
+        for src_layer, dst_layer in zip(src_kv._action_keys_values._keys_values, 
+                                        dst_kv._action_keys_values._keys_values):
+            dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
+            dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
+            dst_layer._k_cache._size = src_layer._k_cache._size
+            dst_layer._v_cache._size = src_layer._v_cache._size
+        
+        index = pool_index
+        self.shared_pool_index = (pool_index + 1) % self.shared_pool_size_recur
         
         return index
 
@@ -310,7 +335,6 @@ class ObjectWorldModel(nn.Module):
         self.max_cache_size = self.config.max_cache_size
         self.env_num = self.config.env_num
         self.num_layers = self.config.num_layers
-        self.sim_norm = SimNorm(simnorm_dim=self.group_size)
         self.slot_dim = self.config.slot_dim
         self.num_slots = self.config.num_slots
 
@@ -347,10 +371,9 @@ class ObjectWorldModel(nn.Module):
     def _create_head(self, output_dim: int, norm_layer=None) -> nn.Module:
         """Create head modules for the transformer."""
         modules = [
-            nn.LayerNorm(self.config.slot_dim),  # <-- 核心优化！ # TODO
-            # nn.Linear(self.config.embed_dim, self.config.embed_dim),
+            nn.LayerNorm(self.config.slot_dim),
             nn.Linear(self.config.embed_dim, self.config.embed_dim*4),
-            nn.LayerNorm(self.config.embed_dim*4),      # 2. <-- 新增！稳定内部激活
+            nn.LayerNorm(self.config.embed_dim*4),
             nn.GELU(approximate='tanh'),
             nn.Linear(self.config.embed_dim*4, output_dim)
         ]
@@ -365,7 +388,7 @@ class ObjectWorldModel(nn.Module):
         self.fc_policy_head = ReparameterizationHead(
             input_size=self.config.embed_dim,
             output_size=output_dim,
-            layer_num=2,  # TODO: check the effect of layer_num
+            layer_num=2,
             sigma_type=self.sigma_type,
             activation=nn.GELU(approximate='tanh'),
             fixed_sigma_value=self.config.fixed_sigma_value if self.sigma_type == 'fixed' else 0.5,
@@ -376,12 +399,9 @@ class ObjectWorldModel(nn.Module):
 
     def _initialize_last_layer(self) -> None:
         """Initialize the last linear layer."""
-        last_linear_layer_init_zero = True  # TODO
+        last_linear_layer_init_zero = True
         if last_linear_layer_init_zero:
-            if self.continuous_action_space:
-                module_to_initialize = [self.head_value, self.head_rewards]
-            else:
-                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards]
+            module_to_initialize = [self.head_policy, self.head_value, self.head_rewards]
             for head in module_to_initialize:
                 for layer in reversed(head):
                     if isinstance(layer, nn.Linear):
@@ -392,7 +412,6 @@ class ObjectWorldModel(nn.Module):
 
     def _initialize_transformer_keys_values(self) -> None:
         """Initialize keys and values for the transformer."""
-        #TODO check this
         self.keys_values_wm_single_env = self.transformer.generate_empty_kv_cache(batch_size=1)
         self.keys_values_wm_single_env_tmp = self.transformer.generate_empty_kv_cache(batch_size=1)
         self.keys_values_wm = self.transformer.generate_empty_kv_cache(batch_size=self.env_num)
@@ -402,11 +421,10 @@ class ObjectWorldModel(nn.Module):
         slots: torch.Tensor,
         actions: torch.Tensor,
         past_keys_values: Optional[Union[SlotKVCache, List[SlotKVCache]]] = None,
-        kvcache_independent: bool = False,
-        #TODO check kv caching again and implement it if needed like in Unizero
-        is_init_infer: bool = True,
         valid_context_lengths: Optional[torch.Tensor] = None,
-        search_depth: Optional[List[int]] = None
+        # kvcache_independent: bool = False,
+        # is_init_infer: bool = True,
+        # search_depth: Optional[List[int]] = None
     ) -> "WorldModelOutput":
         """
         Overview:
@@ -425,29 +443,8 @@ class ObjectWorldModel(nn.Module):
         """
         B, T, N, _ = slots.shape
         
-        # Handle KV cache for independent vs shared caching
-        if kvcache_independent:
-            # Each batch element has its own KV cache
-            if past_keys_values is None:
-                kv_caches = [None] * B
-            else:
-                kv_caches = past_keys_values  # Should be List[SlotKVCache]
-            
-            # Process each batch element independently
-            slots_outputs = []
-            for b in range(B):
-                slots_b = slots[b:b+1]  # (1, T, N, slots_dim)
-                actions_b = actions[b:b+1]  # (1, T, action_dim)
-                kv_cache_b = kv_caches[b] if kv_caches else None
-                
-                slots_out_b = self.transformer(slots_b, actions_b, kv_cache=kv_cache_b)
-                slots_outputs.append(slots_out_b)
-            
-            x = torch.cat(slots_outputs, dim=0)  # (B, N, slots_dim)
-        else:
-            # Shared KV cache for all batch elements
-            kv_cache = past_keys_values if isinstance(past_keys_values, SlotKVCache) else None
-            x = self.transformer(slots, actions, kv_cache=kv_cache)  # (B, N, slots_dim)
+
+        x = self.transformer(slots, actions, past_keys_values, valid_context_lengths)  # (B, N, slots_dim)
         
         # Dynamics transformer: predict next step slots (for dynamics/observations)
         # slots_out: (B, N, slots_dim) -> dynamics_transformer -> predicted_slots: (B, N, slots_dim)
@@ -482,35 +479,6 @@ class ObjectWorldModel(nn.Module):
             logits_policy=logits_policy, 
             logits_value=logits_value
         )
-
-    # #@profile
-    # def _add_position_embeddings(self, embeddings, prev_steps, num_steps, kvcache_independent, is_init_infer,
-    #                              valid_context_lengths):
-    #     """
-    #     Add position embeddings to the input embeddings.
-
-    #     Arguments:
-    #         - embeddings (:obj:`torch.Tensor`): Input embeddings.
-    #         - prev_steps (:obj:`torch.Tensor`): Previous steps.
-    #         - num_steps (:obj:`int`): Number of steps.
-    #         - kvcache_independent (:obj:`bool`): Whether to use independent key-value caching.
-    #         - is_init_infer (:obj:`bool`): Initialize inference.
-    #         - valid_context_lengths (:obj:`torch.Tensor`): Valid context lengths.
-    #     Returns:
-    #         - torch.Tensor: Embeddings with position information added.
-    #     """
-    #     if kvcache_independent:
-    #         steps_indices = prev_steps + torch.arange(num_steps, device=embeddings.device)
-    #         position_embeddings = self.pos_emb(steps_indices).view(-1, num_steps, embeddings.shape[-1])
-    #         return embeddings + position_embeddings
-    #     else:
-    #         if is_init_infer:
-    #             return embeddings + self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
-    #         else:
-    #             valid_context_lengths = torch.tensor(self.keys_values_wm_size_list_current, device=self.device)
-    #             position_embeddings = self.pos_emb(
-    #                 valid_context_lengths + torch.arange(num_steps, device=self.device)).unsqueeze(1)
-    #             return embeddings + position_embeddings
 
     #@profile
     @torch.no_grad()
@@ -561,10 +529,7 @@ class ObjectWorldModel(nn.Module):
             # ================ Collect and Evaluation Phase ================
             if current_obs_embeddings is not None:
                  # Determine whether it is the first step in an episode.
-                if self.continuous_action_space:
-                    first_step_flag = not isinstance(batch_action[0], np.ndarray)
-                else:
-                    first_step_flag = max(batch_action) == -1
+                first_step_flag = max(batch_action) == -1
                 if first_step_flag:
                     # ------------------------- First Step of an Episode -------------------------
                     self.keys_values_wm = self.transformer.generate_empty_keys_values(n=current_obs_embeddings.shape[0],
@@ -584,7 +549,6 @@ class ObjectWorldModel(nn.Module):
 
                     for i in range(ready_env_num):
                         # Retrieve latent state for a single environment
-                        # TODO: len(last_obs_embeddings) may smaller than len(current_obs_embeddings), because some environments may have done
 
                         state_single_env = last_obs_embeddings[i]
                         # Compute hash value using latent state for a single environment
@@ -592,16 +556,12 @@ class ObjectWorldModel(nn.Module):
 
                         # ==================== Phase 1.6: Storage Layer Integration ====================
                         # Retrieve cached value
-                        if self.use_new_cache_manager:
-                            # NEW SYSTEM: Use KVCacheManager
-                            matched_value = self.kv_cache_manager.get_init_cache(env_id=i, cache_key=cache_key)
+                        # OLD SYSTEM: Use legacy cache dictionaries
+                        cache_index = self.past_kv_cache_init_infer_envs[i].get(cache_key)
+                        if cache_index is not None:
+                            matched_value = self.shared_pool_init_infer[i][cache_index]
                         else:
-                            # OLD SYSTEM: Use legacy cache dictionaries
-                            cache_index = self.past_kv_cache_init_infer_envs[i].get(cache_key)
-                            if cache_index is not None:
-                                matched_value = self.shared_pool_init_infer[i][cache_index]
-                            else:
-                                matched_value = None
+                            matched_value = None
                         # =============================================================================
 
                         self.root_total_query_cnt += 1
@@ -610,13 +570,8 @@ class ObjectWorldModel(nn.Module):
                             self.root_hit_cnt += 1
                             # ==================== BUG FIX: Cache Corruption Prevention ====================
                             # Perform a deep copy because the transformer's forward pass modifies matched_value in-place.
-                            if self.use_new_cache_manager:
-                                # NEW SYSTEM: Use KeysValues.clone() for deep copy
-                                cached_copy = matched_value.clone()
-                                self.keys_values_wm_list.append(cached_copy)
-                            else:
-                                # OLD SYSTEM: Use custom_copy_kv_cache_to_shared_wm
-                                self.keys_values_wm_list.append(self.custom_copy_kv_cache_to_shared_wm(matched_value))
+                            # OLD SYSTEM: Use custom_copy_kv_cache_to_shared_wm
+                            self.keys_values_wm_list.append(self.custom_copy_kv_cache_to_shared_wm(matched_value))
                             # =============================================================================
                             self.keys_values_wm_size_list.append(matched_value.size)
                         else:
@@ -636,10 +591,7 @@ class ObjectWorldModel(nn.Module):
 
                     batch_action = batch_action[:ready_env_num]
                 
-                    if self.continuous_action_space:
-                        act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1)
-                    else:
-                        act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1)
+                    act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1)
                     
                     outputs_wm = self.forward({'act_tokens': act_tokens}, past_keys_values=self.keys_values_wm,
                                               is_init_infer=True, start_pos=start_pos)
@@ -657,10 +609,7 @@ class ObjectWorldModel(nn.Module):
 
             last_obs_embeddings = last_obs_embeddings[:, :-1, :]
             batch_action = torch.from_numpy(batch_action).to(last_obs_embeddings.device)
-            if self.continuous_action_space:
-                act_tokens = batch_action
-            else:
-                act_tokens = rearrange(batch_action, 'b l -> b l 1')
+            act_tokens = rearrange(batch_action, 'b l -> b l 1')
 
             # select the last timestep for each sample
             # This will select the last column while keeping the dimensions unchanged, and the target policy/value in the final step itself is not used.
@@ -699,12 +648,8 @@ class ObjectWorldModel(nn.Module):
         outputs_wm, latent_state = self.reset_for_initial_inference(obs_act_dict, start_pos)
 
         # ==================== BUG FIX: Clear Cache Using Correct API ====================
-        if self.use_new_cache_manager:
-            # NEW SYSTEM: Clear recurrent cache using KVCacheManager
-            self.kv_cache_manager.clear_recur_cache()
-        else:
-            # OLD SYSTEM: Clear using legacy attribute
-            self.past_kv_cache_recurrent_infer.clear()
+        # OLD SYSTEM: Clear using legacy attribute
+        self.past_kv_cache_recurrent_infer.clear()
         # =============================================================================
 
         return (outputs_wm.output_sequence, latent_state, outputs_wm.logits_rewards,
@@ -732,26 +677,7 @@ class ObjectWorldModel(nn.Module):
         self.keys_values_wm_size_list = self.retrieve_or_generate_kvcache(latest_state, ready_env_num, simulation_index, start_pos)
 
         latent_state_list = []
-        if not self.continuous_action_space:
-            token = action.reshape(-1, 1)
-        else:
-            token = action.reshape(-1, self.action_space_size)
-
-        # ======= Print statistics for debugging =============
-        # min_size = min(self.keys_values_wm_size_list)
-        # if min_size >= self.config.max_tokens - 5:
-        #     self.length_largethan_maxminus5_context_cnt += len(self.keys_values_wm_size_list)
-        # if min_size >= self.config.max_tokens - 7:
-        #     self.length_largethan_maxminus7_context_cnt += len(self.keys_values_wm_size_list)
-        # if self.total_query_count > 0 and self.total_query_count % 10000 == 0:
-        #     self.hit_freq = self.hit_count / self.total_query_count
-        #     print('total_query_count:', self.total_query_count)
-        #     length_largethan_maxminus5_context_cnt_ratio = self.length_largethan_maxminus5_context_cnt / self.total_query_count
-        #     print('recurrent largethan_maxminus5_context:', self.length_largethan_maxminus5_context_cnt)
-        #     print('recurrent largethan_maxminus5_context_ratio:', length_largethan_maxminus5_context_cnt_ratio)
-        #     length_largethan_maxminus7_context_cnt_ratio = self.length_largethan_maxminus7_context_cnt / self.total_query_count
-        #     print('recurrent largethan_maxminus7_context_ratio:', length_largethan_maxminus7_context_cnt_ratio)
-        #     print('recurrent largethan_maxminus7_context:', self.length_largethan_maxminus7_context_cnt)
+        token = action.reshape(-1, self.action_space_size)
 
         # Trim and pad kv_cache: modify self.keys_values_wm in-place
         self.keys_values_wm_size_list = self.trim_and_pad_kv_cache(is_init_infer=False)
@@ -984,79 +910,44 @@ class ObjectWorldModel(nn.Module):
                         self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 3
                         self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 3
 
-            # ORIGNAL
-            # if is_init_infer:
-            #     # Store the latest key-value cache for initial inference
-            #     cache_index = self.custom_copy_kv_cache_to_shared_init_envs(self.keys_values_wm_single_env, i)
-            #     self.past_kv_cache_init_infer_envs[i][cache_key] = cache_index
-            # else:
-            #     # Store the latest key-value cache for recurrent inference
-            #     cache_index = self.custom_copy_kv_cache_to_shared_recur(self.keys_values_wm_single_env)
-            #     self.past_kv_cache_recurrent_infer[cache_key] = cache_index
-
 
             # ==================== Phase 1.5: Storage Layer Integration ====================
-            if self.use_new_cache_manager:
-                # NEW SYSTEM: Use KVCacheManager for cache storage
-                # ==================== BUG FIX: Deep Copy Before Storage ====================
-                # CRITICAL: Must clone before storing to prevent cache corruption.
-                # self.keys_values_wm_single_env is a shared object that gets modified.
-                # Without cloning, all cache entries would point to the same object,
-                # causing incorrect KV retrieval and training divergence.
-                kv_cache_to_store = self.keys_values_wm_single_env.clone()
-                # =============================================================================
+            # OLD SYSTEM: Use legacy cache with manual eviction
+            if is_init_infer:
+                # ==================== 主动淘汰修复逻辑 ====================
+                # 1. 获取即将被覆写的物理索引
+                index_to_write = self.shared_pool_index_init_envs[i]
+                # 2. 使用辅助列表查找该索引上存储的旧的 key
+                old_key_to_evict = self.pool_idx_to_key_map_init_envs[i][index_to_write]
+                # 3. 如果存在旧 key，就从主 cache map 中删除它
+                if old_key_to_evict is not None:
+                    # 确保要删除的键确实存在，避免意外错误
+                    if old_key_to_evict in self.past_kv_cache_init_infer_envs[i]:
+                        del self.past_kv_cache_init_infer_envs[i][old_key_to_evict]
 
-                if is_init_infer:
-                    # Store to per-environment init cache pool
-                    # Note: KVCacheManager automatically handles eviction logic (FIFO/LRU)
-                    self.kv_cache_manager.set_init_cache(
-                        env_id=i,
-                        cache_key=cache_key,
-                        kv_cache=kv_cache_to_store  # Store cloned copy, not reference
-                    )
-                else:
-                    # Store to global recurrent cache pool
-                    self.kv_cache_manager.set_recur_cache(
-                        cache_key=cache_key,
-                        kv_cache=kv_cache_to_store  # Store cloned copy, not reference
-                    )
+                # 现在可以安全地写入新数据了
+                cache_index = self.custom_copy_kv_cache_to_shared_init_envs(self.keys_values_wm_single_env, i)
+
+                # 4. 在主 cache map 和辅助列表中同时更新新的映射关系
+                self.past_kv_cache_init_infer_envs[i][cache_key] = cache_index
+                self.pool_idx_to_key_map_init_envs[i][index_to_write] = cache_key
             else:
-                # OLD SYSTEM: Use legacy cache with manual eviction
-                if is_init_infer:
-                    # ==================== 主动淘汰修复逻辑 ====================
-                    # 1. 获取即将被覆写的物理索引
-                    index_to_write = self.shared_pool_index_init_envs[i]
-                    # 2. 使用辅助列表查找该索引上存储的旧的 key
-                    old_key_to_evict = self.pool_idx_to_key_map_init_envs[i][index_to_write]
-                    # 3. 如果存在旧 key，就从主 cache map 中删除它
-                    if old_key_to_evict is not None:
-                        # 确保要删除的键确实存在，避免意外错误
-                        if old_key_to_evict in self.past_kv_cache_init_infer_envs[i]:
-                            del self.past_kv_cache_init_infer_envs[i][old_key_to_evict]
+                # ==================== RECURRENT INFER FIX ====================
+                # 1. 获取即将被覆写的物理索引
+                index_to_write = self.shared_pool_index
+                # 2. 使用辅助列表查找该索引上存储的旧的 key
+                old_key_to_evict = self.pool_idx_to_key_map_recur_infer[index_to_write]
+                # 3. 如果存在旧 key，就从主 cache map 中删除它
+                if old_key_to_evict is not None:
+                    if old_key_to_evict in self.past_kv_cache_recurrent_infer:
+                        del self.past_kv_cache_recurrent_infer[old_key_to_evict]
 
-                    # 现在可以安全地写入新数据了
-                    cache_index = self.custom_copy_kv_cache_to_shared_init_envs(self.keys_values_wm_single_env, i)
+                # 4. 现在可以安全地写入新数据了
+                cache_index = self.custom_copy_kv_cache_to_shared_recur(self.keys_values_wm_single_env)
 
-                    # 4. 在主 cache map 和辅助列表中同时更新新的映射关系
-                    self.past_kv_cache_init_infer_envs[i][cache_key] = cache_index
-                    self.pool_idx_to_key_map_init_envs[i][index_to_write] = cache_key
-                else:
-                    # ==================== RECURRENT INFER FIX ====================
-                    # 1. 获取即将被覆写的物理索引
-                    index_to_write = self.shared_pool_index
-                    # 2. 使用辅助列表查找该索引上存储的旧的 key
-                    old_key_to_evict = self.pool_idx_to_key_map_recur_infer[index_to_write]
-                    # 3. 如果存在旧 key，就从主 cache map 中删除它
-                    if old_key_to_evict is not None:
-                        if old_key_to_evict in self.past_kv_cache_recurrent_infer:
-                            del self.past_kv_cache_recurrent_infer[old_key_to_evict]
-
-                    # 4. 现在可以安全地写入新数据了
-                    cache_index = self.custom_copy_kv_cache_to_shared_recur(self.keys_values_wm_single_env)
-
-                    # 5. 在主 cache map 和辅助列表中同时更新新的映射关系
-                    self.past_kv_cache_recurrent_infer[cache_key] = cache_index
-                    self.pool_idx_to_key_map_recur_infer[index_to_write] = cache_key
+                # 5. 在主 cache map 和辅助列表中同时更新新的映射关系
+                self.past_kv_cache_recurrent_infer[cache_key] = cache_index
+                self.pool_idx_to_key_map_recur_infer[index_to_write] = cache_key
             # =============================================================================
 
 
@@ -1084,36 +975,27 @@ class ObjectWorldModel(nn.Module):
             cache_key = hash_state(state_single_env)
 
             if self.reanalyze_phase:
-                # TODO: check if this is correct
                 matched_value = None
             else:
                 # ==================== Phase 1.6: Storage Layer Integration (Refactored) ====================
-                if self.use_new_cache_manager:
-                    # NEW SYSTEM: Use KVCacheManager's hierarchical_get for unified lookup
-                    matched_value = self.kv_cache_manager.hierarchical_get(env_id=index, cache_key=cache_key)
-
-                    # Log cache miss (统计由 KVCacheManager 自动处理)
-                    if matched_value is None:
-                        logging.debug(f"[NEW CACHE MISS] Not found for key={cache_key} in both init and recurrent cache.")
+                # OLD SYSTEM: Use legacy cache dictionaries and pools
+                # Try to retrieve the cached value from past_kv_cache_init_infer_envs
+                cache_index = self.past_kv_cache_init_infer_envs[index].get(cache_key)
+                if cache_index is not None:
+                    matched_value = self.shared_pool_init_infer[index][cache_index]
                 else:
-                    # OLD SYSTEM: Use legacy cache dictionaries and pools
-                    # Try to retrieve the cached value from past_kv_cache_init_infer_envs
-                    cache_index = self.past_kv_cache_init_infer_envs[index].get(cache_key)
-                    if cache_index is not None:
-                        matched_value = self.shared_pool_init_infer[index][cache_index]
-                    else:
-                        matched_value = None
+                    matched_value = None
 
-                    # 仅当在 init_infer 中未找到时，才尝试从 recurrent_infer 缓存中查找
-                    if matched_value is None:
-                        # 安全地从字典中获取索引，它可能返回 None
-                        recur_cache_index = self.past_kv_cache_recurrent_infer.get(cache_key)
-                        # 只有在索引有效（不是 None）的情况下，才使用它来从物理池中检索值
-                        if recur_cache_index is not None:
-                            matched_value = self.shared_pool_recur_infer[recur_cache_index]
+                # 仅当在 init_infer 中未找到时，才尝试从 recurrent_infer 缓存中查找
+                if matched_value is None:
+                    # 安全地从字典中获取索引，它可能返回 None
+                    recur_cache_index = self.past_kv_cache_recurrent_infer.get(cache_key)
+                    # 只有在索引有效（不是 None）的情况下，才使用它来从物理池中检索值
+                    if recur_cache_index is not None:
+                        matched_value = self.shared_pool_recur_infer[recur_cache_index]
 
-                        if recur_cache_index is None:
-                            logging.debug(f"[OLD CACHE MISS] Not found for key={cache_key} in recurrent infer. Generating new cache.")
+                    if recur_cache_index is None:
+                        logging.debug(f"[OLD CACHE MISS] Not found for key={cache_key} in recurrent infer. Generating new cache.")
                 # =============================================================================
 
             if matched_value is not None:
@@ -1123,13 +1005,8 @@ class ObjectWorldModel(nn.Module):
                 # Perform a deep copy because the transformer's forward pass modifies matched_value in-place.
                 # Without cloning, the original cache in init_pool or recur_pool would be polluted,
                 # causing incorrect predictions in subsequent queries.
-                if self.use_new_cache_manager:
-                    # NEW SYSTEM: Use KeysValues.clone() for deep copy
-                    cached_copy = matched_value.clone()
-                    self.keys_values_wm_list.append(cached_copy)
-                else:
-                    # OLD SYSTEM: Use custom_copy_kv_cache_to_shared_wm
-                    self.keys_values_wm_list.append(self.custom_copy_kv_cache_to_shared_wm(matched_value))
+                # OLD SYSTEM: Use custom_copy_kv_cache_to_shared_wm
+                self.keys_values_wm_list.append(self.custom_copy_kv_cache_to_shared_wm(matched_value))
                 # =============================================================================
                 self.keys_values_wm_size_list.append(matched_value.size)
             else:
@@ -1164,14 +1041,6 @@ class ObjectWorldModel(nn.Module):
         start_pos = batch['timestep']
         # Encode observations into latent state representations
         obs_embeddings = self.tokenizer.encode_to_obs_embeddings(batch['observations'])
-
-        # ========= for visual analysis =========
-        # Uncomment the lines below for visual analysis in Pong
-        # self.plot_latent_tsne_each_and_all_for_pong(obs_embeddings, suffix='pong_H10_H4_tsne')
-        # self.save_as_image_with_timestep(batch['observations'], suffix='pong_H10_H4_tsne')
-        # Uncomment the lines below for visual analysis in visual match
-        # self.plot_latent_tsne_each_and_all(obs_embeddings, suffix='visual_match_memlen1-60-15_tsne')
-        # self.save_as_image_with_timestep(batch['observations'], suffix='visual_match_memlen1-60-15_tsne')
 
         # ======================== Logging for Analysis ========================
         # This block calculates various metrics for model analysis if the corresponding config flag is enabled.
@@ -1211,10 +1080,7 @@ class ObjectWorldModel(nn.Module):
             )
 
             # ==================== BUG FIX: Clear Cache Using Correct API ====================
-            if self.use_new_cache_manager:
-                self.kv_cache_manager.clear_recur_cache()
-            else:
-                self.past_kv_cache_recurrent_infer.clear()
+            self.past_kv_cache_recurrent_infer.clear()
             # =============================================================================
             self.keys_values_wm_list.clear()
             torch.cuda.empty_cache()
@@ -1230,24 +1096,18 @@ class ObjectWorldModel(nn.Module):
         latent_state_l2_norms = torch.norm(obs_embeddings, p=2, dim=2).mean()
 
         # Action tokens
-        if self.continuous_action_space:
-            act_tokens = batch['actions']
-        else:
-            act_tokens = rearrange(batch['actions'], 'b l -> b l 1')
+        act_tokens = rearrange(batch['actions'], 'b l -> b l 1')
 
         # Forward pass to obtain predictions for observations, rewards, and policies
         outputs = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)}, start_pos=start_pos)
-        
-        # [新增] 从模型输出中获取中间张量 x，并分离计算图
+
         intermediate_tensor_x = outputs.output_sequence.detach()
 
         global_step = kwargs.get('global_step', 0)
-        # if global_step >= 0 and global_step % 10000 == 0: # 20k
-        if global_step > 0 and global_step % 100000000000 == 0: # 20k # TODO
+
+        if global_step > 0 and global_step % 100000000000 == 0:
 
             with torch.no_grad():
-                # 将logits转换为标量值
-                # 注意：outputs的形状是(B, L, E)，我们需要reshape
                 batch_size, seq_len = batch['actions'].shape[0], batch['actions'].shape[1]
 
                 pred_val_logits = outputs.logits_value.view(batch_size * seq_len, -1)
@@ -1293,21 +1153,9 @@ class ObjectWorldModel(nn.Module):
 
                 # Reconstruct observations from latent state representations
                 reconstructed_images = self.tokenizer.decode_to_obs(obs_embeddings)
-
-                #  ========== for visualization ==========
-                # Uncomment the lines below for visual analysis
-                # original_images, reconstructed_images = batch['observations'], reconstructed_images
-                # target_policy = batch['target_policy']
-                # target_predict_value = inverse_scalar_transform_handle(batch['target_value'].reshape(-1, 101)).reshape(
-                #     batch['observations'].shape[0], batch['observations'].shape[1], 1)
-                # true_rewards = inverse_scalar_transform_handle(batch['rewards'].reshape(-1, 101)).reshape(
-                #     batch['observations'].shape[0], batch['observations'].shape[1], 1)
-                #  ========== for visualization ==========
-                # ========== Calculate reconstruction loss and perceptual loss ============
                 latent_recon_loss = self.tokenizer.reconstruction_loss(batch['observations'].reshape(-1, 3, 64, 64), reconstructed_images) # NOTE: for stack=1
                 perceptual_loss = self.tokenizer.perceptual_loss(batch['observations'].reshape(-1, 3, 64, 64), reconstructed_images) # NOTE: for stack=1
             else:
-                # TODO:
                 latent_recon_loss = self.latent_recon_loss
                 perceptual_loss = self.perceptual_loss
 
@@ -1351,22 +1199,6 @@ class ObjectWorldModel(nn.Module):
                 latent_recon_loss = self.latent_recon_loss
 
         elif self.obs_type == 'image_memory':
-            # Reconstruct observations from latent state representations
-            # reconstructed_images = self.tokenizer.decode_to_obs(obs_embeddings)
-            # original_images, reconstructed_images = batch['observations'], reconstructed_images
-
-            #  ========== for visualization ==========
-            # Uncomment the lines below for visual analysis
-            # target_policy = batch['target_policy']
-            # target_predict_value = inverse_scalar_transform_handle(batch['target_value'].reshape(-1, 101)).reshape(
-            #     batch['observations'].shape[0], batch['observations'].shape[1], 1)
-            # true_rewards = inverse_scalar_transform_handle(batch['rewards'].reshape(-1, 101)).reshape(
-            #     batch['observations'].shape[0], batch['observations'].shape[1], 1)
-            #  ========== for visualization ==========
-
-            # Calculate reconstruction loss and perceptual loss
-            # latent_recon_loss = self.tokenizer.reconstruction_loss(batch['observations'].reshape(-1, 3, 5, 5),
-            #                                                        reconstructed_images)
             latent_recon_loss = self.latent_recon_loss
             perceptual_loss = self.perceptual_loss
 
@@ -1380,29 +1212,13 @@ class ObjectWorldModel(nn.Module):
             dormant_ratio_head = dormant_ratio_world_model['head']
 
             # ==================== BUG FIX: Clear Cache Using Correct API ====================
-            if self.use_new_cache_manager:
-                self.kv_cache_manager.clear_recur_cache()
-            else:
-                self.past_kv_cache_recurrent_infer.clear()
+            self.past_kv_cache_recurrent_infer.clear()
             # =============================================================================
             self.keys_values_wm_list.clear()
             torch.cuda.empty_cache()
         else:
             dormant_ratio_transformer = torch.tensor(0.)
             dormant_ratio_head = torch.tensor(0.)
-
-        #  ========== for visualization ==========
-        # Uncomment the lines below for visualization
-        # predict_policy = outputs.logits_policy
-        # predict_policy = F.softmax(outputs.logits_policy, dim=-1)
-        # predict_value = inverse_scalar_transform_handle(outputs.logits_value.reshape(-1, 101)).reshape(batch['observations'].shape[0], batch['observations'].shape[1], 1)
-        # predict_rewards = inverse_scalar_transform_handle(outputs.logits_rewards.reshape(-1, 101)).reshape(batch['observations'].shape[0], batch['observations'].shape[1], 1)
-        # import pdb; pdb.set_trace()
-        # visualize_reward_value_img_policy(original_images, reconstructed_images, target_predict_value, true_rewards, target_policy, predict_value, predict_rewards, predict_policy, not_plot_timesteps=[], suffix='pong_H10_H4_0613')
-
-        # visualize_reward_value_img_policy(original_images, reconstructed_images, target_predict_value, true_rewards, target_policy, predict_value, predict_rewards, predict_policy, not_plot_timesteps=list(np.arange(4,60)), suffix='visual_match_memlen1-60-15/one_success_episode')
-        # visualize_reward_value_img_policy(original_images, reconstructed_images, target_predict_value, true_rewards, target_policy, predict_value, predict_rewards, predict_policy, not_plot_timesteps=list(np.arange(4,60)), suffix='visual_match_memlen1-60-15/one_fail_episode')
-        #  ========== for visualization ==========
 
         # For training stability, use target_tokenizer to compute the true next latent state representations
         with torch.no_grad():
@@ -1431,20 +1247,7 @@ class ObjectWorldModel(nn.Module):
             labels_reshaped = labels_observations.reshape(batch_size, self.num_groups, self.group_size) + epsilon
 
             loss_obs = F.kl_div(logits_reshaped.log(), labels_reshaped, reduction='none').sum(dim=-1).mean(dim=-1)
-
-            #  ========== for debugging ==========
-            # print('loss_obs:', loss_obs.mean())
-            # assert not torch.isnan(loss_obs).any(), "loss_obs contains NaN values"
-            # assert not torch.isinf(loss_obs).any(), "loss_obs contains Inf values"
-            # for name, param in self.tokenizer.encoder.named_parameters():
-            #     print('name, param.mean(), param.std():', name, param.mean(), param.std())
         elif self.predict_latent_loss_type == 'cos_sim':
-            # --- 修复后的代码 (推荐方案) ---
-            # 使用余弦相似度损失 (Cosine Similarity Loss)
-            # F.cosine_similarity 计算的是相似度，范围是 [-1, 1]。我们希望最大化它，
-            # 所以最小化 1 - similarity。
-            # reduction='none' 使得我们可以像原来一样处理mask
-            # print("predict_latent_loss_type == 'cos_sim'")
             cosine_sim_loss = 1 - F.cosine_similarity(logits_observations, labels_observations, dim=-1)
             loss_obs = cosine_sim_loss
 
@@ -1469,25 +1272,11 @@ class ObjectWorldModel(nn.Module):
         # Compute losses for rewards, policy, and value
         loss_rewards = self.compute_cross_entropy_loss(outputs, labels_rewards, batch, element='rewards')
 
-        if not self.continuous_action_space:
-            loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(outputs, labels_policy,
+        loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(outputs, labels_policy,
                                                                                             batch,
                                                                                             element='policy')
-        else:
-            # NOTE: for continuous action space
-            if self.config.policy_loss_type == 'simple':
-                orig_policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma = self._calculate_policy_loss_cont_simple(outputs, batch)
-            else:
-                orig_policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma = self._calculate_policy_loss_cont(outputs, batch)
-            
-            loss_policy = orig_policy_loss + self.policy_entropy_weight * policy_entropy_loss
-            policy_entropy = - policy_entropy_loss
 
         loss_value = self.compute_cross_entropy_loss(outputs, labels_value, batch, element='value')
-
-        # ==== TODO: calculate the new priorities for each transition. ====
-        # value_priority = L1Loss(reduction='none')(labels_value.squeeze(-1), outputs['logits_value'][:, 0])
-        # value_priority = value_priority.data.cpu().numpy() + 1e-6
 
         # Compute timesteps
         timesteps = torch.arange(batch['actions'].shape[1], device=batch['actions'].device)
@@ -1539,235 +1328,41 @@ class ObjectWorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
-
-        # 为了让外部的训练循环能够获取encoder的输出，我们将其加入返回字典
-        # 使用 .detach() 是因为这个张量仅用于后续的clip操作，不应影响梯度计算
         detached_obs_embeddings = obs_embeddings.detach()
 
-        if self.continuous_action_space:
-            return LossWithIntermediateLosses(
-                latent_recon_loss_weight=self.latent_recon_loss_weight,
-                perceptual_loss_weight=self.perceptual_loss_weight,
-                continuous_action_space=True,
-                loss_obs=discounted_loss_obs,
-                loss_rewards=discounted_loss_rewards,
-                loss_value=discounted_loss_value,
-                loss_policy=discounted_loss_policy,
-                latent_recon_loss=discounted_latent_recon_loss,
-                perceptual_loss=discounted_perceptual_loss,
-                orig_policy_loss=discounted_orig_policy_loss,
-                policy_entropy=discounted_policy_entropy,
-                first_step_losses=first_step_losses,
-                middle_step_losses=middle_step_losses,
-                last_step_losses=last_step_losses,
-                dormant_ratio_encoder=dormant_ratio_encoder,
-                dormant_ratio_transformer=dormant_ratio_transformer,
-                dormant_ratio_head=dormant_ratio_head,
-                avg_weight_mag_encoder = avg_weight_mag_encoder,
-                avg_weight_mag_transformer = avg_weight_mag_transformer,
-                avg_weight_mag_head = avg_weight_mag_head,
-                e_rank_last_linear = e_rank_last_linear,
-                e_rank_sim_norm = e_rank_sim_norm,
-                latent_state_l2_norms=latent_state_l2_norms,
-                policy_mu=mu,
-                policy_sigma=sigma,
-                target_sampled_actions=target_sampled_actions,
-                
-                value_priority=value_priority,
-                intermediate_tensor_x=intermediate_tensor_x,
-                obs_embeddings=detached_obs_embeddings, # <-- 新增
 
-                # logits_value_mean=outputs.logits_value.mean(),
-                # logits_value_max=outputs.logits_value.max(),
-                # logits_value_min=outputs.logits_value.min(),
-                # logits_policy_mean=outputs.logits_policy.mean(),
-                # logits_policy_max=outputs.logits_policy.max(),
-                # logits_policy_min=outputs.logits_policy.min(),
-                logits_value=outputs.logits_value.detach(),  # 使用detach()，因为它仅用于分析和裁剪，不参与梯度计算
-                logits_reward=outputs.logits_rewards.detach(),
-                logits_policy=outputs.logits_policy.detach(),
+        return LossWithIntermediateLosses(
+            latent_recon_loss_weight=self.latent_recon_loss_weight,
+            perceptual_loss_weight=self.perceptual_loss_weight,
+            continuous_action_space=False,
+            loss_obs=discounted_loss_obs,
+            loss_rewards=discounted_loss_rewards,
+            loss_value=discounted_loss_value,
+            loss_policy=discounted_loss_policy,
+            latent_recon_loss=discounted_latent_recon_loss,
+            perceptual_loss=discounted_perceptual_loss,
+            orig_policy_loss=discounted_orig_policy_loss,
+            policy_entropy=discounted_policy_entropy,
+            first_step_losses=first_step_losses,
+            middle_step_losses=middle_step_losses,
+            last_step_losses=last_step_losses,
+            dormant_ratio_encoder=dormant_ratio_encoder,
+            dormant_ratio_transformer=dormant_ratio_transformer,
+            dormant_ratio_head=dormant_ratio_head,
+            avg_weight_mag_encoder = avg_weight_mag_encoder,
+            avg_weight_mag_transformer = avg_weight_mag_transformer,
+            avg_weight_mag_head = avg_weight_mag_head,
+            e_rank_last_linear = e_rank_last_linear,
+            e_rank_sim_norm = e_rank_sim_norm,
+            latent_state_l2_norms=latent_state_l2_norms,
+
+            value_priority=value_priority,
+            intermediate_tensor_x=intermediate_tensor_x,
+            obs_embeddings=detached_obs_embeddings, # <-- 新增
+            logits_value=outputs.logits_value.detach(),  # 使用detach()，因为它仅用于分析和裁剪，不参与梯度计算
+            logits_reward=outputs.logits_rewards.detach(),
+            logits_policy=outputs.logits_policy.detach(),
             )
-        else:
-            return LossWithIntermediateLosses(
-                latent_recon_loss_weight=self.latent_recon_loss_weight,
-                perceptual_loss_weight=self.perceptual_loss_weight,
-                continuous_action_space=False,
-                loss_obs=discounted_loss_obs,
-                loss_rewards=discounted_loss_rewards,
-                loss_value=discounted_loss_value,
-                loss_policy=discounted_loss_policy,
-                latent_recon_loss=discounted_latent_recon_loss,
-                perceptual_loss=discounted_perceptual_loss,
-                orig_policy_loss=discounted_orig_policy_loss,
-                policy_entropy=discounted_policy_entropy,
-                first_step_losses=first_step_losses,
-                middle_step_losses=middle_step_losses,
-                last_step_losses=last_step_losses,
-                dormant_ratio_encoder=dormant_ratio_encoder,
-                dormant_ratio_transformer=dormant_ratio_transformer,
-                dormant_ratio_head=dormant_ratio_head,
-                avg_weight_mag_encoder = avg_weight_mag_encoder,
-                avg_weight_mag_transformer = avg_weight_mag_transformer,
-                avg_weight_mag_head = avg_weight_mag_head,
-                e_rank_last_linear = e_rank_last_linear,
-                e_rank_sim_norm = e_rank_sim_norm,
-                latent_state_l2_norms=latent_state_l2_norms,
-
-                value_priority=value_priority,
-                intermediate_tensor_x=intermediate_tensor_x,
-                obs_embeddings=detached_obs_embeddings, # <-- 新增
-
-                # logits_value_mean=outputs.logits_value.mean(),
-                # logits_value_max=outputs.logits_value.max(),
-                # logits_value_min=outputs.logits_value.min(),
-                # logits_policy_mean=outputs.logits_policy.mean(),
-                # logits_policy_max=outputs.logits_policy.max(),
-                # logits_policy_min=outputs.logits_policy.min(),
-                logits_value=outputs.logits_value.detach(),  # 使用detach()，因为它仅用于分析和裁剪，不参与梯度计算
-                logits_reward=outputs.logits_rewards.detach(),
-                logits_policy=outputs.logits_policy.detach(),
-            )
-
-    
-    # TODO: test correctness
-    def _calculate_policy_loss_cont_simple(self, outputs, batch: dict):
-        """
-        Simplified policy loss calculation for continuous actions.
-
-        Args:
-            - outputs: Model outputs containing policy logits.
-            - batch (:obj:`dict`): Batch data containing target policy, mask and sampled actions.
-
-        Returns:
-            - policy_loss (:obj:`torch.Tensor`): The simplified policy loss.
-        """
-        batch_size, num_unroll_steps, action_space_size = outputs.logits_policy.shape[
-            0], self.config.num_unroll_steps, self.config.action_space_size
-
-        # Get the policy logits and batch data
-        policy_logits_all = outputs.logits_policy
-        mask_batch = batch['mask_padding'].contiguous().view(-1)
-        target_policy = batch['target_policy'].contiguous().view(batch_size * num_unroll_steps, -1)
-        target_sampled_actions = batch['child_sampled_actions'].contiguous().view(batch_size * num_unroll_steps, -1, action_space_size)
-
-        # Flatten for vectorized computation
-        policy_logits_all = policy_logits_all.view(batch_size * num_unroll_steps, -1)
-        
-        # Extract mean and standard deviation from logits
-        mu, sigma = policy_logits_all[:, :action_space_size], policy_logits_all[:, action_space_size:]
-        dist = Independent(Normal(mu, sigma), 1)  # Create the normal distribution
-
-        # Find the indices of the maximum values in the target policy
-        target_best_action_idx = torch.argmax(target_policy, dim=1)
-
-        # Select the best actions based on the indices
-        target_best_action = target_sampled_actions[torch.arange(target_best_action_idx.size(0)), target_best_action_idx]
-
-        # Clip the target actions to prevent numerical issues during arctanh
-        # target_best_action_clamped = torch.clamp(target_best_action, -1 + 1e-6, 1 - 1e-6)
-        target_best_action_clamped = torch.clamp(target_best_action, -0.999, 0.999)
-        target_best_action_before_tanh = torch.arctanh(target_best_action_clamped)
-
-        # Calculate the log probability of the best action
-        log_prob_best_action = dist.log_prob(target_best_action_before_tanh)
-
-        # Mask the log probability with the padding mask
-        log_prob_best_action = log_prob_best_action * mask_batch
-
-        # Return the negative log probability as the policy loss (we want to maximize log_prob)
-        # policy_loss = -log_prob_best_action.mean()
-        policy_loss = -log_prob_best_action
-
-        policy_entropy = dist.entropy().mean()
-        policy_entropy_loss = -policy_entropy * mask_batch
-        # Calculate the entropy of the target policy distribution
-        non_masked_indices = torch.nonzero(mask_batch).squeeze(-1)
-        if len(non_masked_indices) > 0:
-            target_normalized_visit_count = target_policy.contiguous().view(batch_size * num_unroll_steps, -1)
-            target_dist = Categorical(target_normalized_visit_count[non_masked_indices])
-            target_policy_entropy = target_dist.entropy().mean().item()
-        else:
-            target_policy_entropy = 0.0
-
-        return policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma
-
-    def _calculate_policy_loss_cont(self, outputs, batch: dict, task_id=None) -> Tuple[torch.Tensor, torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Calculate the policy loss for continuous actions.
-
-        Args:
-            - outputs: Model outputs containing policy logits.
-            - batch (:obj:`dict`): Batch data containing target policy, mask and sampled actions.
-        Returns:
-            - policy_loss (:obj:`torch.Tensor`): The calculated policy loss.
-            - policy_entropy_loss (:obj:`torch.Tensor`): The entropy loss of the policy.
-            - target_policy_entropy (:obj:`float`): The entropy of the target policy distribution.
-            - target_sampled_actions (:obj:`torch.Tensor`): The actions sampled from the target policy.
-            - mu (:obj:`torch.Tensor`): The mean of the normal distribution.
-            - sigma (:obj:`torch.Tensor`): The standard deviation of the normal distribution.
-        """
-        if  task_id is None:
-            batch_size, num_unroll_steps, action_space_size = outputs.logits_policy.shape[
-            0], self.config.num_unroll_steps, self.config.action_space_size
-        else:
-            batch_size, num_unroll_steps, action_space_size = outputs.logits_policy.shape[
-                0], self.config.num_unroll_steps, self.config.action_space_size_list[task_id]
-        policy_logits_all = outputs.logits_policy
-        mask_batch = batch['mask_padding']
-        child_sampled_actions_batch = batch['child_sampled_actions']
-        target_policy = batch['target_policy']
-
-        # Flatten the unroll step dimension for easier vectorized operations
-        policy_logits_all = policy_logits_all.view(batch_size * num_unroll_steps, -1)
-        mask_batch = mask_batch.contiguous().view(-1)
-        child_sampled_actions_batch = child_sampled_actions_batch.contiguous().view(batch_size * num_unroll_steps, -1,
-                                                                                    action_space_size)
-
-        mu, sigma = policy_logits_all[:, :action_space_size], policy_logits_all[:, action_space_size:]
-        mu = mu.unsqueeze(1).expand(-1, child_sampled_actions_batch.shape[1], -1)
-        sigma = sigma.unsqueeze(1).expand(-1, child_sampled_actions_batch.shape[1], -1)
-        dist = Independent(Normal(mu, sigma), 1)
-
-        target_normalized_visit_count = target_policy.contiguous().view(batch_size * num_unroll_steps, -1)
-        target_sampled_actions = child_sampled_actions_batch
-
-        policy_entropy = dist.entropy().mean(dim=1)
-        policy_entropy_loss = -policy_entropy * mask_batch
-
-        # NOTE： Alternative way to calculate the log probability of the target actions
-        # y = 1 - target_sampled_actions.pow(2)
-        # target_sampled_actions_clamped = torch.clamp(target_sampled_actions, -1 + 1e-6, 1 - 1e-6)
-        # target_sampled_actions_before_tanh = torch.arctanh(target_sampled_actions_clamped)
-        # log_prob = dist.log_prob(target_sampled_actions_before_tanh)
-        # log_prob = log_prob - torch.log(y + 1e-6).sum(-1)
-        # log_prob_sampled_actions = log_prob
-
-        base_dist = Normal(mu, sigma)
-        tanh_transform = TanhTransform()
-        dist = TransformedDistribution(base_dist, [tanh_transform])
-        dist = Independent(dist, 1)
-        target_sampled_actions_clamped = torch.clamp(target_sampled_actions, -0.999, 0.999)
-        # assert torch.all(target_sampled_actions_clamped < 1) and torch.all(target_sampled_actions_clamped > -1), "Actions are not properly clamped."
-        log_prob = dist.log_prob(target_sampled_actions_clamped)
-        log_prob_sampled_actions = log_prob
-
-        # KL as projector
-        target_log_prob_sampled_actions = torch.log(target_normalized_visit_count + 1e-6)
-
-        # KL as projector
-        policy_loss = -torch.sum(
-            torch.exp(target_log_prob_sampled_actions.detach()) * log_prob_sampled_actions, 1
-        ) * mask_batch
-
-        # Calculate the entropy of the target policy distribution
-        non_masked_indices = torch.nonzero(mask_batch).squeeze(-1)
-        if len(non_masked_indices) > 0:
-            target_dist = Categorical(target_normalized_visit_count[non_masked_indices])
-            target_policy_entropy = target_dist.entropy().mean().item()
-        else:
-            target_policy_entropy = 0.0
-
-        return policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma
 
     def compute_cross_entropy_loss(self, outputs, labels, batch, element='rewards'):
         # Assume outputs is an object with logits attributes like 'rewards', 'policy', and 'value'.
@@ -1865,32 +1460,18 @@ class ObjectWorldModel(nn.Module):
         mask_fill_value = mask_fill.unsqueeze(-1).expand_as(target_value)
         labels_value = target_value.masked_fill(mask_fill_value, -100)
 
-        if self.continuous_action_space:
-            return None, labels_value.reshape(-1, self.support_size)
-        else:
-            return labels_policy.reshape(-1, self.action_space_size), labels_value.reshape(-1, self.support_size)
+        return labels_policy.reshape(-1, self.action_space_size), labels_value.reshape(-1, self.support_size)
 
     def clear_caches(self):
         """
         Clears the caches of the world model.
         """
-        if self.use_new_cache_manager:
-            # Use new KV cache manager's clear method
-            self.kv_cache_manager.clear_all()
-            print(f'Cleared {self.__class__.__name__} KV caches (NEW system).')
-
-            # Optionally print stats before clearing
-            if hasattr(self.kv_cache_manager, 'get_stats_summary'):
-                stats = self.kv_cache_manager.get_stats_summary()
-                if stats.get('stats_enabled'):
-                    logging.debug(f'Cache stats before clear: {stats}')
-        else:
-            # Use old cache clearing logic
-            for kv_cache_dict_env in self.past_kv_cache_init_infer_envs:
-                kv_cache_dict_env.clear()
-            self.past_kv_cache_recurrent_infer.clear()
-            self.keys_values_wm_list.clear()
-            print(f'Cleared {self.__class__.__name__} past_kv_cache (OLD system).')
+        # Use old cache clearing logic
+        for kv_cache_dict_env in self.past_kv_cache_init_infer_envs:
+            kv_cache_dict_env.clear()
+        self.past_kv_cache_recurrent_infer.clear()
+        self.keys_values_wm_list.clear()
+        print(f'Cleared {self.__class__.__name__} past_kv_cache (OLD system).')
 
     def __repr__(self) -> str:
         return "transformer-based latent world_model of UniZero"
