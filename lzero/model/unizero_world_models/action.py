@@ -5,9 +5,10 @@ from torch import nn
 class DiscreteActionAdapter(nn.Module):
     def __init__(self, num_actions: int, actions_dim: int):
         super(DiscreteActionAdapter, self).__init__()
-        self.emb = nn.Embedding(num_actions, actions_dim)
+        self.emb = nn.Embedding(num_actions+1, actions_dim)
 
     def forward(self, actions: torch.Tensor, ) -> torch.Tensor:
+        actions = actions.long() + 1
         return self.emb(actions)
 
 
