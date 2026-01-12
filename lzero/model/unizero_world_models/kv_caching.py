@@ -98,8 +98,7 @@ class Cache:
         in a Transformer-like model. It handles dynamic updates and size management.
     """
 
-    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device,
-                 enforce_even_shift: bool = True) -> None:
+    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device) -> None:
         """
         Overview:
             Initializes the cache.
@@ -109,8 +108,6 @@ class Cache:
             - max_tokens (:obj:`int`): The maximum number of tokens the cache can hold.
             - embed_dim (:obj:`int`): The total dimension of the embeddings.
             - device (:obj:`torch.device`): The device on which to store the cache tensor.
-            - enforce_even_shift (:obj:`bool`): If True, ensures shift_amount is even (for state-action pairs).
-                                                If False, allows arbitrary shift amounts. Defaults to True.
         """
         if embed_dim % num_heads != 0:
             raise ValueError(f"Embedding dimension ({embed_dim}) must be divisible by the number of heads ({num_heads}).")
@@ -120,7 +117,6 @@ class Cache:
         self._max_tokens = max_tokens
         self._head_dim = embed_dim // num_heads
         self._device = device
-        self._enforce_even_shift = enforce_even_shift
 
         self._cache: torch.Tensor = self._create_cache_tensor(self._num_samples)
         self._size: int = 0
@@ -195,8 +191,7 @@ class Cache:
 
             # This logic is crucial for models like MuZero where tokens are added in (state, action) pairs.
             # To maintain the integrity of these pairs, an even number of tokens must be discarded.
-            # For other models (like SlotTransformer), this can be disabled via enforce_even_shift=False.
-            if self._enforce_even_shift and shift_amount % 2 != 0:
+            if shift_amount % 2 != 0:
                 shift_amount += 1
 
             if shift_amount >= self._size:
@@ -226,8 +221,7 @@ class KVCache:
         typically used in a single attention layer of a Transformer.
     """
 
-    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device,
-                 enforce_even_shift: bool = True) -> None:
+    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device) -> None:
         """
         Overview:
             Initializes the Key-Value cache pair.
@@ -237,10 +231,9 @@ class KVCache:
             - max_tokens (:obj:`int`): The maximum number of tokens the cache can hold.
             - embed_dim (:obj:`int`): The total dimension of the embeddings.
             - device (:obj:`torch.device`): The device on which to store the cache tensors.
-            - enforce_even_shift (:obj:`bool`): If True, ensures shift_amount is even. Defaults to True.
         """
-        self._k_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, device, enforce_even_shift)
-        self._v_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, device, enforce_even_shift)
+        self._k_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, device)
+        self._v_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, device)
 
     @property
     def shape(self) -> Tuple[int, int, int, int]:
@@ -307,8 +300,7 @@ class KeysValues:
             max_tokens: int,
             embed_dim: int,
             num_layers: int,
-            device: torch.device,
-            enforce_even_shift: bool = True
+            device: torch.device
     ) -> None:
         """
         Overview:
@@ -320,10 +312,9 @@ class KeysValues:
             - embed_dim (:obj:`int`): The dimension of the embeddings.
             - num_layers (:obj:`int`): The number of layers in the Transformer model.
             - device (:obj:`torch.device`): The device for storing cache tensors.
-            - enforce_even_shift (:obj:`bool`): If True, ensures shift_amount is even. Defaults to True.
         """
         self._keys_values = tuple([
-            KVCache(num_samples, num_heads, max_tokens, embed_dim, device, enforce_even_shift) for _ in range(num_layers)
+            KVCache(num_samples, num_heads, max_tokens, embed_dim, device) for _ in range(num_layers)
         ])
 
     def __getitem__(self, layer_index: int) -> KVCache:
@@ -439,200 +430,3 @@ class KeysValues:
             dst_layer._v_cache._size = src_layer._v_cache._size
 
         return cloned_kv
-
-
-class SlotKVCache:
-    """
-    Overview:
-        KV cache manager for SlotTransformer with Slot Attention.
-        Manages separate caches for temporal attention and action attention.
-        
-        Unlike the standard KeysValues which handles a single type of attention,
-        SlotKVCache manages two synchronized cache types:
-        - Temporal cache: for self-attention over time for each slot
-        - Action cache: for cross-attention between slots and actions
-    """
-    
-    def __init__(
-        self, 
-        batch_size: int,
-        num_slots: int, 
-        num_heads: int,
-        max_timesteps: int,
-        embed_dim: int,
-        num_layers: int,
-        device: torch.device
-    ):
-        """
-        Overview:
-            Initializes KV caches for SlotTransformer.
-        Arguments:
-            - batch_size (:obj:`int`): Batch size.
-            - num_slots (:obj:`int`): Number of slots per timestep.
-            - num_heads (:obj:`int`): Number of attention heads.
-            - max_timesteps (:obj:`int`): Maximum number of timesteps to cache.
-            - embed_dim (:obj:`int`): Embedding dimension.
-            - num_layers (:obj:`int`): Number of transformer layers.
-            - device (:obj:`torch.device`): Device for cache tensors.
-        """
-        # Temporal attention cache: each slot has its own temporal sequence
-        # Using KeysValues with num_samples = batch_size * num_slots
-        # Shape: (B * num_slots, num_heads, T, head_dim)
-        self._temporal_keys_values = KeysValues(
-            num_samples=batch_size * num_slots,
-            num_heads=num_heads,
-            max_tokens=max_timesteps,
-            embed_dim=embed_dim,
-            num_layers=num_layers,
-            device=device,
-            enforce_even_shift=False
-        )
-        
-        # Action attention cache: actions are shared across slots
-        # Using KeysValues with num_samples = batch_size
-        # Shape: (B, num_heads, T, head_dim)
-        self._action_keys_values = KeysValues(
-            num_samples=batch_size,
-            num_heads=num_heads,
-            max_tokens=max_timesteps,
-            embed_dim=embed_dim,
-            num_layers=num_layers,
-            device=device,
-            enforce_even_shift=False
-        )
-        
-        self.num_slots = num_slots
-        self.batch_size = batch_size
-        self.num_layers = num_layers
-    
-    def __getitem__(self, layer_idx: int) -> tuple:
-        """
-        Overview:
-            Returns the KV cache pair for a specific layer.
-        Arguments:
-            - layer_idx (:obj:`int`): Index of the layer.
-        Returns:
-            - tuple: (temporal_cache, action_cache) for the specified layer.
-        """
-        return self._temporal_keys_values[layer_idx], self._action_keys_values[layer_idx]
-    
-    def __len__(self) -> int:
-        """
-        Overview:
-            Returns the number of layers.
-        Returns:
-            - int: Number of layers being managed.
-        """
-        return self.num_layers
-    
-    def reset(self) -> None:
-        """
-        Overview:
-            Resets all caches to empty state.
-        """
-        self._temporal_keys_values.reset()
-        self._action_keys_values.reset()
-    
-    @property
-    def temporal_size(self) -> int:
-        """
-        Overview:
-            Current number of timesteps in temporal cache.
-        Returns:
-            - int: Number of cached timesteps for temporal attention.
-        """
-        return self._temporal_keys_values.size
-    
-    @property  
-    def action_size(self) -> int:
-        """
-        Overview:
-            Current number of timesteps in action cache.
-        Returns:
-            - int: Number of cached timesteps for action attention.
-        """
-        return self._action_keys_values.size
-    
-    @property
-    def size(self) -> int:
-        """
-        Overview:
-            Returns the synchronized size of both caches.
-            Both temporal and action caches should have the same length along the time dimension.
-        Returns:
-            - int: Number of timesteps in cache.
-        Raises:
-            - AssertionError: If temporal and action cache sizes don't match.
-        """
-        t_size = self.temporal_size
-        a_size = self.action_size
-        assert t_size == a_size, f"Temporal and action cache sizes must match! Got {t_size} vs {a_size}"
-        return t_size
-    
-    def clone(self) -> "SlotKVCache":
-        """
-        Overview:
-            Creates a deep copy of this SlotKVCache object.
-            
-            This is critical for preventing cache corruption when the same cache is reused
-            across multiple forward passes that modify it in-place.
-        Returns:
-            - cloned_cache (:obj:`SlotKVCache`): A new SlotKVCache object with copied data.
-        """
-        # Create a new SlotKVCache with the same structure
-        cloned_cache = SlotKVCache(
-            batch_size=self.batch_size,
-            num_slots=self.num_slots,
-            num_heads=self._temporal_keys_values._keys_values[0]._k_cache._num_heads,
-            max_timesteps=self._temporal_keys_values._keys_values[0]._k_cache._max_tokens,
-            embed_dim=self._temporal_keys_values._keys_values[0]._k_cache._num_heads * 
-                      self._temporal_keys_values._keys_values[0]._k_cache._head_dim,
-            num_layers=self.num_layers,
-            device=self._temporal_keys_values._keys_values[0]._k_cache._device
-        )
-        
-        # Deep copy temporal caches
-        for src_layer, dst_layer in zip(self._temporal_keys_values._keys_values, 
-                                        cloned_cache._temporal_keys_values._keys_values):
-            dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
-            dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
-            dst_layer._k_cache._size = src_layer._k_cache._size
-            dst_layer._v_cache._size = src_layer._v_cache._size
-        
-        # Deep copy action caches
-        for src_layer, dst_layer in zip(self._action_keys_values._keys_values, 
-                                        cloned_cache._action_keys_values._keys_values):
-            dst_layer._k_cache._cache.copy_(src_layer._k_cache._cache)
-            dst_layer._v_cache._cache.copy_(src_layer._v_cache._cache)
-            dst_layer._k_cache._size = src_layer._k_cache._size
-            dst_layer._v_cache._size = src_layer._v_cache._size
-        
-        return cloned_cache
-    
-    def prune(self, mask: np.ndarray) -> None:
-        """
-        Overview:
-            Prunes both temporal and action caches based on a mask.
-            For temporal cache, the mask is expanded to cover all slots.
-        Arguments:
-            - mask (:obj:`np.ndarray`): A 1D boolean array of length batch_size indicating which batches to keep.
-        """
-        if not (mask.ndim == 1 and mask.shape[0] == self.batch_size):
-            raise ValueError(f"Mask must be a 1D numpy array with length equal to batch_size ({self.batch_size}).")
-        
-        # Expand mask for temporal cache (batch_size -> batch_size * num_slots)
-        temporal_mask = np.repeat(mask, self.num_slots)
-        self._temporal_keys_values.prune(temporal_mask)
-        
-        # Use mask directly for action cache
-        self._action_keys_values.prune(mask)
-    
-    # def remove_register_tokens(self, register_token_num: int) -> None:
-    #     """
-    #     Overview:
-    #         Removes the last `register_token_num` tokens from both caches.
-    #     Arguments:
-    #         - register_token_num (:obj:`int`): Number of tokens to remove from the end.
-    #     """
-    #     self._temporal_keys_values.remove_register_tokens(register_token_num)
-    #     self._action_keys_values.remove_register_tokens(register_token_num)
