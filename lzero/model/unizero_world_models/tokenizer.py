@@ -111,57 +111,60 @@ class Tokenizer(nn.Module):
         Returns:
             - torch.Tensor: The encoded latent embeddings with a consistent shape of (B, 1, E), where B is the effective batch size.
         """
-        
-        # global DEBUG_ENABLED;DEBUG_ENABLED = True 
-        # import torch.distributed as dist
-        # if dist.get_rank() == 0 and DEBUG_ENABLED:
-        #     print(f"rank {dist.get_rank()} 进入调试模式，输入interact，可以键入整段的python代码调试。通过设置 DEBUG_ENABLED = False, 可以跳过调试状态")
-        #     import ipdb; ipdb.set_trace()
-        # # 同步点，防止其它进程早跑
-        # dist.barrier()
+        if self.obs_type == 'slot':
+            x = x.unsqueeze(1)
+            obs_embeddings = x
+        else:
+            # global DEBUG_ENABLED;DEBUG_ENABLED = True
+            # import torch.distributed as dist
+            # if dist.get_rank() == 0 and DEBUG_ENABLED:
+            #     print(f"rank {dist.get_rank()} 进入调试模式，输入interact，可以键入整段的python代码调试。通过设置 DEBUG_ENABLED = False, 可以跳过调试状态")
+            #     import ipdb; ipdb.set_trace()
+            # # 同步点，防止其它进程早跑
+            # dist.barrier()
 
-        # Step 1: Select the appropriate encoder module.
-        # This handles both single-task (a single nn.Module) and multi-task (an nn.ModuleList) scenarios.
-        if isinstance(self.encoder, nn.ModuleList):
-            if not 0 <= task_id < len(self.encoder):
-                # raise ValueError(
-                #     f"Provided task_id {task_id} is invalid for the encoder list of size {len(self.encoder)}."
-                # )
-                encoder_module = self.encoder[0]
+            # Step 1: Select the appropriate encoder module.
+            # This handles both single-task (a single nn.Module) and multi-task (an nn.ModuleList) scenarios.
+            if isinstance(self.encoder, nn.ModuleList):
+                if not 0 <= task_id < len(self.encoder):
+                    # raise ValueError(
+                    #     f"Provided task_id {task_id} is invalid for the encoder list of size {len(self.encoder)}."
+                    # )
+                    encoder_module = self.encoder[0]
+                else:
+                    encoder_module = self.encoder[task_id]
             else:
-                encoder_module = self.encoder[task_id]
-        else:
-            encoder_module = self.encoder
+                encoder_module = self.encoder
 
-        # Step 2: Pre-process and reshape the input tensor based on its dimensions.
-        # The goal is to transform the input into a 2D or 4D tensor that the encoder can process.
-        original_shape = x.shape
-        if len(original_shape) == 5:  # Batch of sequences of images: (B, T, C, H, W)
-            # Flatten the batch and time dimensions to create a batch of images.
-            x = x.contiguous().view(-1, *original_shape[-3:])  # Shape: (B*T, C, H, W)
-        elif len(original_shape) == 3:  # Batch of sequences of vectors: (B, T, E)
-            # Flatten the batch and time dimensions to create a batch of vectors.
-            x = x.contiguous().view(-1, original_shape[-1])  # Shape: (B*T, E)
-        # Note: 2D (B, E) and 4D (B, C, H, W) inputs are processed directly without reshaping.
+            # Step 2: Pre-process and reshape the input tensor based on its dimensions.
+            # The goal is to transform the input into a 2D or 4D tensor that the encoder can process.
+            original_shape = x.shape
+            if len(original_shape) == 5:  # Batch of sequences of images: (B, T, C, H, W)
+                # Flatten the batch and time dimensions to create a batch of images.
+                x = x.contiguous().view(-1, *original_shape[-3:])  # Shape: (B*T, C, H, W)
+            elif len(original_shape) == 3:  # Batch of sequences of vectors: (B, T, E)
+                # Flatten the batch and time dimensions to create a batch of vectors.
+                x = x.contiguous().view(-1, original_shape[-1])  # Shape: (B*T, E)
+            # Note: 2D (B, E) and 4D (B, C, H, W) inputs are processed directly without reshaping.
 
-        # Step 3: Pass the processed tensor through the encoder.
-        # Some encoders (like RepresentationNetworkMLPMT) require task_id as a parameter,
-        # while others do not. We use inspect to check the signature and pass task_id only if needed.
-        sig = inspect.signature(encoder_module.forward)
-        if 'task_id' in sig.parameters:
-            # Encoder requires task_id (e.g., RepresentationNetworkMLPMT)
-            obs_embeddings = encoder_module(x, task_id=task_id)
-        else:
-            # Encoder does not require task_id (e.g., standard CNN/MLP encoders)
-            obs_embeddings = encoder_module(x)
-        if len(obs_embeddings.shape) != 2:
-            raise RuntimeError(
-                f"Encoder output was expected to be 2D (batch, embedding_dim), but got shape {obs_embeddings.shape}."
-            )
+            # Step 3: Pass the processed tensor through the encoder.
+            # Some encoders (like RepresentationNetworkMLPMT) require task_id as a parameter,
+            # while others do not. We use inspect to check the signature and pass task_id only if needed.
+            sig = inspect.signature(encoder_module.forward)
+            if 'task_id' in sig.parameters:
+                # Encoder requires task_id (e.g., RepresentationNetworkMLPMT)
+                obs_embeddings = encoder_module(x, task_id=task_id)
+            else:
+                # Encoder does not require task_id (e.g., standard CNN/MLP encoders)
+                obs_embeddings = encoder_module(x)
+            if len(obs_embeddings.shape) != 2:
+                raise RuntimeError(
+                    f"Encoder output was expected to be 2D (batch, embedding_dim), but got shape {obs_embeddings.shape}."
+                )
 
-        # Step 4: Reshape the output to a consistent sequence format (B', 1, E).
-        # The '1' represents a sequence length of one, making it compatible with sequence models.
-        obs_embeddings = rearrange(obs_embeddings, 'b e -> b 1 e')
+            # Step 4: Reshape the output to a consistent sequence format (B', 1, E).
+            # The '1' represents a sequence length of one, making it compatible with sequence models.
+            obs_embeddings = rearrange(obs_embeddings, 'b e -> b 1 e')
 
         return obs_embeddings
 

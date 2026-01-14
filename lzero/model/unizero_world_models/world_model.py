@@ -11,7 +11,7 @@ from torch.distributions import Categorical, Independent, Normal, TransformedDis
 from lzero.model.common import SimNorm
 from lzero.model.utils import calculate_dormant_ratio, compute_average_weight_magnitude, compute_effective_rank
 from .kv_caching import KeysValues
-from .slicer import Head, PolicyHeadCont
+from .slicer import Head, PolicyHeadCont, SlotHead
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
 from .utils import LossWithIntermediateLosses, init_weights, WorldModelOutput, hash_state
@@ -104,7 +104,7 @@ class WorldModel(nn.Module):
             self.act_embedding_table = nn.Embedding(config.action_space_size, config.embed_dim, device=self.device)
             logging.info(f"self.act_embedding_table.weight.device: {self.act_embedding_table.weight.device}")
 
-        self.final_norm_option_in_obs_head = getattr(config, 'final_norm_option_in_obs_head', 'LayerNorm')
+        self.final_norm_option_in_obs_head = getattr(config, 'final_norm_option_in_obs_head', None)
 
         # Head modules
         self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
@@ -119,8 +119,15 @@ class WorldModel(nn.Module):
             self.bound_type = self.config.bound_type
             self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
         else:
-            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
-        self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
+            if self.model_type == 'slot':
+                self.head_policy = self._create_slot_head(self.value_policy_tokens_pattern, self.action_space_size)
+            else:
+                self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
+        
+        if self.model_type == 'slot':
+            self.head_value = self._create_slot_head(self.value_policy_tokens_pattern, self.support_size)
+        else:
+            self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
         self.head_dict = {}
         for name, module in self.named_children():
@@ -437,7 +444,7 @@ class WorldModel(nn.Module):
                 plt.close(fig) # 明确关闭图形对象
                 print(f"t-SNE plot with V/R annotations saved to {save_path}")
 
-    def _get_final_norm(self, norm_option: str) -> nn.Module:
+    def _get_final_norm(self, norm_option: Optional[str]) -> Optional[nn.Module]:
         """
         Return the corresponding normalization module based on the specified normalization option.
         """
@@ -445,6 +452,8 @@ class WorldModel(nn.Module):
             return nn.LayerNorm(self.config.embed_dim, eps=1e-5)
         elif norm_option == 'SimNorm':
             return SimNorm(simnorm_dim=self.config.group_size)
+        elif norm_option is None:
+            return None
         else:
             raise ValueError(f"Unsupported final_norm_option_in_obs_head: {norm_option}")
 
@@ -580,6 +589,8 @@ class WorldModel(nn.Module):
         self.num_layers = self.config.num_layers
         self.sim_norm = SimNorm(simnorm_dim=self.group_size)
 
+        self.model_type = self.config.model_type
+
         # ==================== [NEW] Policy Stability Fix Options ====================
         # Load fix options from config (with defaults for backward compatibility)
         self.use_policy_logits_clip = getattr(self.config, 'use_policy_logits_clip', False)
@@ -616,8 +627,11 @@ class WorldModel(nn.Module):
         self.all_but_last_latent_state_pattern[-2] = 0
         self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
         self.act_tokens_pattern[-1] = 1
-        self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
-        self.value_policy_tokens_pattern[-2] = 1
+        if self.model_type != 'slot':
+            self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.value_policy_tokens_pattern[-2] = 1
+        else:
+            self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern 
 
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
@@ -649,6 +663,26 @@ class WorldModel(nn.Module):
         if norm_layer:
             modules.append(norm_layer)
         return Head(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=nn.Sequential(*modules)
+        )
+
+    def _create_slot_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> SlotHead:
+        """
+        Create head module for slot-based models (policy/value).
+        Aggregates K slots per block using mean pooling, then passes to MLP.
+        """
+        modules = [
+            nn.LayerNorm(self.config.embed_dim),
+            nn.Linear(self.config.embed_dim, self.config.embed_dim*4),
+            nn.LayerNorm(self.config.embed_dim*4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim*4, output_dim)
+        ]
+        if norm_layer:
+            modules.append(norm_layer)
+        return SlotHead(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
             head_module=nn.Sequential(*modules)
@@ -705,6 +739,9 @@ class WorldModel(nn.Module):
                 self.projection_input_dim = self.config.embed_dim
             else:
                 self.projection_input_dim = self.config.embed_dim
+        else:
+            self.projection_input_dim = self.config.embed_dim
+
 
     def _initialize_statistics(self) -> None:
         """Initialize counters for hit count and query count statistics."""

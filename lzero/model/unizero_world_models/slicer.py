@@ -165,3 +165,56 @@ class Embedder(nn.Module):
             s = slicer.compute_slice(num_steps, prev_steps)
             output[:, s] = emb(tokens[:, s])
         return output
+
+
+class SlotHead(Slicer):
+    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module) -> None:
+        """
+        Overview:
+            Head module extends Slicer to include a head module for processing sliced inputs.
+        Arguments:
+            - max_blocks (:obj:`int`): The maximum number of blocks to process.
+            - block_mask (:obj:`torch.Tensor`): A tensor mask indicating which blocks to keep.
+            - head_module (:obj:`nn.Module`): The head module to process the sliced inputs.
+        """
+        super().__init__(max_blocks, block_mask)
+        assert isinstance(head_module, nn.Module)
+        self.head_module = head_module
+
+    def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int) -> torch.Tensor:
+        """
+        Overview:
+            Forward method processes the input tensor through the head module using computed slices.
+        Arguments:
+            - x (:obj:`torch.Tensor`): The input tensor.
+            - num_steps (:obj:`int`): The number of steps to consider.
+            - prev_steps (:obj:`int | :obj:`torch.Tensor`): The number of previous steps to consider.
+        Returns:
+            - torch.Tensor: The processed tensor.
+        """        
+        if isinstance(prev_steps, torch.Tensor):
+            aggregated_per_block_list = []
+            for batch_idx in range(prev_steps.shape[0]):
+                selected_token_indices = self.compute_slice(num_steps, prev_steps[batch_idx].item())
+                selected_tokens = x[batch_idx, selected_token_indices]
+                
+                num_selected_tokens = selected_tokens.size(0)
+                num_blocks = num_selected_tokens // self.num_kept_tokens
+                tokens_grouped_by_blocks = selected_tokens.view(num_blocks, self.num_kept_tokens, -1)
+                
+                aggregated_per_block = tokens_grouped_by_blocks.sum(dim=1)
+                aggregated_per_block_list.append(aggregated_per_block)
+            
+            aggregated_tokens = torch.cat(aggregated_per_block_list, dim=0)
+        else:
+            selected_token_indices = self.compute_slice(num_steps, prev_steps)
+            selected_tokens = x[:, selected_token_indices, :]
+            
+            batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
+            num_blocks = num_selected_tokens // self.num_kept_tokens
+            tokens_grouped_by_blocks = selected_tokens.view(batch_size, num_blocks, self.num_kept_tokens, embed_dim)
+            
+            aggregated_per_block = tokens_grouped_by_blocks.sum(dim=2)
+            aggregated_tokens = aggregated_per_block.reshape(batch_size * num_blocks, embed_dim)
+        
+        return self.head_module(aggregated_tokens)
