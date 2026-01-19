@@ -6,6 +6,7 @@ https://github.com/eloialonso/iris/blob/main/src/models/kv_caching.py
 The optimization focuses on improving clarity, documentation, and adherence to modern coding standards
 while strictly preserving the original functionality and external API.
 """
+from math import remainder
 from typing import Tuple, Optional
 
 import numpy as np
@@ -98,7 +99,7 @@ class Cache:
         in a Transformer-like model. It handles dynamic updates and size management.
     """
 
-    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device) -> None:
+    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, tokens_per_block: int, device: torch.device) -> None:
         """
         Overview:
             Initializes the cache.
@@ -116,6 +117,7 @@ class Cache:
         self._num_heads = num_heads
         self._max_tokens = max_tokens
         self._head_dim = embed_dim // num_heads
+        self._tokens_per_block = tokens_per_block
         self._device = device
 
         self._cache: torch.Tensor = self._create_cache_tensor(self._num_samples)
@@ -143,7 +145,7 @@ class Cache:
         Returns:
             - shape (:obj:`Tuple[int, int, int, int]`): A tuple representing (num_samples, num_heads, current_size, head_dim).
         """
-        return self._num_samples, self._num_heads, self._size, self._head_dim
+        return self._num_samples, self._num_heads, self._size, self._head_dim, self._tokens_per_block
 
     def reset(self) -> None:
         """
@@ -191,8 +193,9 @@ class Cache:
 
             # This logic is crucial for models like MuZero where tokens are added in (state, action) pairs.
             # To maintain the integrity of these pairs, an even number of tokens must be discarded.
-            if shift_amount % 2 != 0:
-                shift_amount += 1
+            if shift_amount % self._tokens_per_block != 0:
+                remainder = shift_amount % self._tokens_per_block
+                shift_amount += self._tokens_per_block - remainder
 
             if shift_amount >= self._size:
                 # If the required shift is larger than the current cache size, it's more efficient to reset.
@@ -221,7 +224,7 @@ class KVCache:
         typically used in a single attention layer of a Transformer.
     """
 
-    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device) -> None:
+    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, tokens_per_block: int, device: torch.device) -> None:
         """
         Overview:
             Initializes the Key-Value cache pair.
@@ -232,8 +235,8 @@ class KVCache:
             - embed_dim (:obj:`int`): The total dimension of the embeddings.
             - device (:obj:`torch.device`): The device on which to store the cache tensors.
         """
-        self._k_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, device)
-        self._v_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, device)
+        self._k_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, tokens_per_block, device)
+        self._v_cache = Cache(num_samples, num_heads, max_tokens, embed_dim, tokens_per_block, device)
 
     @property
     def shape(self) -> Tuple[int, int, int, int]:
@@ -300,6 +303,7 @@ class KeysValues:
             max_tokens: int,
             embed_dim: int,
             num_layers: int,
+            tokens_per_block: int,
             device: torch.device
     ) -> None:
         """
@@ -314,7 +318,7 @@ class KeysValues:
             - device (:obj:`torch.device`): The device for storing cache tensors.
         """
         self._keys_values = tuple([
-            KVCache(num_samples, num_heads, max_tokens, embed_dim, device) for _ in range(num_layers)
+            KVCache(num_samples, num_heads, max_tokens, embed_dim, tokens_per_block, device) for _ in range(num_layers)
         ])
 
     def __getitem__(self, layer_index: int) -> KVCache:
@@ -408,6 +412,7 @@ class KeysValues:
         max_tokens = first_kv_cache._k_cache._max_tokens
         embed_dim = num_heads * head_dim
         num_layers = len(self._keys_values)
+        tokens_per_block = first_kv_cache._k_cache._tokens_per_block
         device = first_kv_cache._k_cache._device
 
         # Create a new KeysValues object with the same structure
@@ -417,6 +422,7 @@ class KeysValues:
             max_tokens=max_tokens,
             embed_dim=embed_dim,
             num_layers=num_layers,
+            tokens_per_block=tokens_per_block,
             device=device
         )
 

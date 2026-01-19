@@ -75,7 +75,7 @@ class UniZeroModel(nn.Module):
         self.activation = activation
         self.downsample = downsample
         world_model_cfg.norm_type = norm_type
-        assert world_model_cfg.max_tokens == 2 * world_model_cfg.max_blocks, 'max_tokens should be 2 * max_blocks, because each timestep has 2 tokens: obs and action'
+        assert world_model_cfg.max_tokens == world_model_cfg.tokens_per_block * world_model_cfg.max_blocks, 'max_tokens should be tokens_per_block * max_blocks, because each timestep has 2 tokens: obs and action'
 
         if world_model_cfg.obs_type == 'vector':
             self.representation_network = RepresentationNetworkMLP(
@@ -132,12 +132,21 @@ class UniZeroModel(nn.Module):
             self.world_model = WorldModel(config=world_model_cfg, tokenizer=self.tokenizer)
             
             # --- Log parameter counts for analysis ---
-            self._log_model_parameters(obs_type)
+            self._log_model_parameters(world_model_cfg.obs_type)
             
             print(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
             print('==' * 20)
             print(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')
             print(f'{sum(p.numel() for p in self.tokenizer.encoder.parameters())} parameters in agent.tokenizer.encoder')
+            print('==' * 20)
+        elif world_model_cfg.obs_type == 'slot':
+            self.representation_network = nn.Identity()
+            self.decoder_network = None
+            self.tokenizer = Tokenizer(encoder=self.representation_network, decoder=self.decoder_network, with_lpips=False, obs_type=world_model_cfg.obs_type)
+            self.world_model = WorldModel(config=world_model_cfg, tokenizer=self.tokenizer)
+            print(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
+            print('==' * 20)
+            print(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')
             print('==' * 20)
         elif world_model_cfg.obs_type == 'image':
             if world_model_cfg.encoder_type == "resnet":
@@ -267,19 +276,22 @@ class UniZeroModel(nn.Module):
         wm_params = sum(p.numel() for p in self.world_model.parameters())
         wm_trainable = sum(p.numel() for p in self.world_model.parameters() if p.requires_grad)
         print(f'{"World Model Total":<40} {wm_params:>15,} parameters')
-        print(f'{"  └─ Trainable":<40} {wm_trainable:>15,} parameters ({100*wm_trainable/wm_params:.1f}%)')
+        wm_pct = 100*wm_trainable/wm_params if wm_params > 0 else 0.0
+        print(f'{"  └─ Trainable":<40} {wm_trainable:>15,} parameters ({wm_pct:.1f}%)')
 
         # --- Encoder ---
         encoder_params = sum(p.numel() for p in self.tokenizer.encoder.parameters())
         encoder_trainable = sum(p.numel() for p in self.tokenizer.encoder.parameters() if p.requires_grad)
         print(f'\n{"1. ENCODER (Tokenizer)":<40} {encoder_params:>15,} parameters')
-        print(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters ({100*encoder_trainable/encoder_params:.1f}%)')
+        encoder_pct = 100*encoder_trainable/encoder_params if encoder_params > 0 else 0.0
+        print(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters ({encoder_pct:.1f}%)')
 
         # --- Transformer Backbone ---
         transformer_params = sum(p.numel() for p in self.world_model.transformer.parameters())
         transformer_trainable = sum(p.numel() for p in self.world_model.transformer.parameters() if p.requires_grad)
         print(f'\n{"2. TRANSFORMER BACKBONE":<40} {transformer_params:>15,} parameters')
-        print(f'{"  └─ Trainable":<40} {transformer_trainable:>15,} parameters ({100*transformer_trainable/transformer_params:.1f}%)')
+        transformer_pct = 100*transformer_trainable/transformer_params if transformer_params > 0 else 0.0
+        print(f'{"  └─ Trainable":<40} {transformer_trainable:>15,} parameters ({transformer_pct:.1f}%)')
 
         # --- Prediction Heads (Detailed Breakdown) ---
         print(f'\n{"3. PREDICTION HEADS":<40}')
@@ -292,7 +304,8 @@ class UniZeroModel(nn.Module):
             total_heads_params = sum(p.numel() for module in head_dict.values() for p in module.parameters())
             total_heads_trainable = sum(p.numel() for module in head_dict.values() for p in module.parameters() if p.requires_grad)
             print(f'{"  Total (All Heads)":<40} {total_heads_params:>15,} parameters')
-            print(f'{"  └─ Trainable":<40} {total_heads_trainable:>15,} parameters ({100*total_heads_trainable/total_heads_params:.1f}%)')
+            heads_pct = 100*total_heads_trainable/total_heads_params if total_heads_params > 0 else 0.0
+            print(f'{"  └─ Trainable":<40} {total_heads_trainable:>15,} parameters ({heads_pct:.1f}%)')
 
             # Breakdown by head type
             head_names_map = {

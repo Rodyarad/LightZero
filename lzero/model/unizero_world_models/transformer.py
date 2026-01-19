@@ -577,7 +577,7 @@ class Transformer(nn.Module):
             - KeysValues: An object containing empty tensors for keys and values.
         """
         device = self.ln_f.weight.device
-        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, device)
+        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, self.config.tokens_per_block, device)
 
     def forward(
         self,
