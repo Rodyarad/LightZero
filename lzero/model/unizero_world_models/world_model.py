@@ -871,7 +871,6 @@ class WorldModel(nn.Module):
         valid_context_lengths: Optional[torch.Tensor] = None,
         start_pos: Union[int, List[int]] = 0,
         search_depth: Optional[List[int]] = None,
-        compute_policy_value: bool = True
     ) -> "WorldModelOutput":
         """
         Overview:
@@ -901,7 +900,6 @@ class WorldModel(nn.Module):
                 - logits for policy.
                 - logits for value.
         """
-
         # Calculate previous steps based on key-value caching configuration
         if kvcache_independent:
             # If kv caching is independent, compute previous steps for each past key-value pair.
@@ -1044,38 +1042,32 @@ class WorldModel(nn.Module):
         )
 
         if self.model_type == 'slot':
-            num_steps_for_heads = x.size(1)
-            if not is_init_infer and past_keys_values is not None:
-                actual_cache_size = past_keys_values.shape[2] if hasattr(past_keys_values, 'shape') else past_keys_values.size
-                prev_steps_for_heads = actual_cache_size - num_steps_for_heads
-            else:
-                prev_steps_for_heads = prev_steps
+             num_steps_for_heads = x.size(1)
+             if not is_init_infer and past_keys_values is not None:
+                 actual_cache_size = past_keys_values.shape[2] if hasattr(past_keys_values, 'shape') else past_keys_values.size
+                 prev_steps_for_heads = actual_cache_size - num_steps_for_heads
+             else:
+                 prev_steps_for_heads = prev_steps
         else:
-            num_steps_for_heads = num_steps
-            prev_steps_for_heads = prev_steps
+             num_steps_for_heads = num_steps
+             prev_steps_for_heads = prev_steps
         
+        # Generate logits for various components.
         logits_observations = self.head_observations(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
         logits_rewards = self.head_rewards(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
-        
-        # For slot model during recurrent inference, only compute policy/value when all slots are ready
-        if compute_policy_value:
-            logits_policy = self.head_policy(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
+        logits_policy = self.head_policy(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
 
-            # ==================== [NEW] Fix1: Clip Policy Logits ====================
-            # Prevent policy logits from exploding, which can cause gradient issues
-            if self.use_policy_logits_clip:
-                logits_policy = torch.clamp(
-                    logits_policy,
-                    min=self.policy_logits_clip_min,
-                    max=self.policy_logits_clip_max
-                )
-            # ========================================================================
+        # ==================== [NEW] Fix1: Clip Policy Logits ====================
+        # Prevent policy logits from exploding, which can cause gradient issues
+        if self.use_policy_logits_clip:
+            logits_policy = torch.clamp(
+                logits_policy,
+                min=self.policy_logits_clip_min,
+                max=self.policy_logits_clip_max
+            )
+        # ========================================================================
 
-            logits_value = self.head_value(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
-        else:
-            # Return None for policy and value when not computing them
-            logits_policy = None
-            logits_value = None
+        logits_value = self.head_value(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
 
         # The 'logits_ends' is intentionally set to None.
         return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
@@ -1506,8 +1498,6 @@ class WorldModel(nn.Module):
             else:
                 obs_embeddings_or_act_tokens = {'obs_embeddings': token}
 
-            is_last_iteration = (k == self.tokens_per_block - 1)
-            compute_policy_value = is_last_iteration if self.model_type == 'slot' else True
             # Perform forward pass
             outputs_wm = self.forward(
                 obs_embeddings_or_act_tokens,
@@ -1515,8 +1505,7 @@ class WorldModel(nn.Module):
                 kvcache_independent=False,
                 is_init_infer=False,
                 start_pos=start_pos,
-                search_depth=search_depth, # List containing depth of latent states in the search tree. 
-                compute_policy_value=compute_policy_value
+                search_depth=search_depth, # List containing depth of latent states in the search tree.
             )
 
             self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
@@ -1531,7 +1520,7 @@ class WorldModel(nn.Module):
                 latent_state_list.append(token)
             
             # Save policy and value from the last iteration when they are computed
-            if is_last_iteration:
+            if (k == self.num_observations_tokens):
                 policy = outputs_wm.logits_policy
                 value = outputs_wm.logits_value
 

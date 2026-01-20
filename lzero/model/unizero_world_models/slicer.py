@@ -212,9 +212,11 @@ class SlotHead(Slicer):
             
             batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
             num_blocks = num_selected_tokens // self.num_kept_tokens
-            tokens_grouped_by_blocks = selected_tokens.view(batch_size, num_blocks, self.num_kept_tokens, embed_dim)
-            
-            aggregated_per_block = tokens_grouped_by_blocks.sum(dim=2)
-            aggregated_tokens = aggregated_per_block.reshape(batch_size * num_blocks, embed_dim)
+            if num_blocks == 0:
+                aggregated_tokens = torch.zeros(batch_size, 0, embed_dim, dtype=x.dtype, device=x.device)
+            else:
+                tokens_grouped_by_blocks = selected_tokens.view(batch_size, num_blocks, self.num_kept_tokens, embed_dim)
+                aggregated_per_block = tokens_grouped_by_blocks.sum(dim=2)
+                aggregated_tokens = aggregated_per_block.reshape(batch_size * num_blocks, embed_dim)
         
         return self.head_module(aggregated_tokens)
