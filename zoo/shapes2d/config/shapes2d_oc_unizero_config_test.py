@@ -14,10 +14,10 @@ def main(env_id='Navigation5x5-v0', seed=0):
     game_segment_length = 20
     num_unroll_steps = 2
     infer_context_length = 2
-    evaluator_env_num = 2
+    evaluator_env_num = 1
     num_simulations = 4
     max_env_step = int(5e5)
-    batch_size = 2
+    batch_size = 1
     replay_ratio = 0.25
     num_layers = 2
     buffer_reanalyze_freq = 1 / 5000000000

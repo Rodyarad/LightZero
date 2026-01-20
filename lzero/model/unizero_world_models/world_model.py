@@ -471,6 +471,7 @@ class WorldModel(nn.Module):
             - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
         """
         src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        src_tokens_per_block = src_kv._keys_values[0]._k_cache._tokens_per_block
         
         if self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]] is None:
             self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]] = KeysValues(
@@ -479,8 +480,8 @@ class WorldModel(nn.Module):
                 src_kv_shape[2],  # Maximum number of tokens (max_tokens)
                 src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
                 len(src_kv),  # Number of layers (num_layers)
-                src_kv_shape[4],
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+                src_tokens_per_block,  # tokens_per_block
+                src_kv._keys_values[0]._k_cache._device,  # Device where the cache is stored
             )
         
         dst_kv = self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]]
@@ -507,6 +508,7 @@ class WorldModel(nn.Module):
             - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
         """
         src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        src_tokens_per_block = src_kv._keys_values[0]._k_cache._tokens_per_block
         
         if self.shared_pool_wm[self.shared_pool_index_wm] is None:
             # import ipdb; ipdb.set_trace()
@@ -516,8 +518,8 @@ class WorldModel(nn.Module):
                 src_kv_shape[2],  # Maximum number of tokens (max_tokens)
                 src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
                 len(src_kv),  # Number of layers (num_layers)
-                src_kv_shape[4],
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+                src_tokens_per_block,  # tokens_per_block
+                src_kv._keys_values[0]._k_cache._device,  # Device where the cache is stored
             )
         
         dst_kv = self.shared_pool_wm[self.shared_pool_index_wm]
@@ -546,6 +548,7 @@ class WorldModel(nn.Module):
             - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
         """
         src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        src_tokens_per_block = src_kv._keys_values[0]._k_cache._tokens_per_block
         
         if self.shared_pool_recur_infer[self.shared_pool_index] is None:
             self.shared_pool_recur_infer[self.shared_pool_index] = KeysValues(
@@ -554,8 +557,8 @@ class WorldModel(nn.Module):
                 src_kv_shape[2],  # Maximum number of tokens (max_tokens)
                 src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
                 len(src_kv),  # Number of layers (num_layers),
-                src_kv_shape[4],
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+                src_tokens_per_block,  # tokens_per_block
+                src_kv._keys_values[0]._k_cache._device,  # Device where the cache is stored
             )
         
         dst_kv = self.shared_pool_recur_infer[self.shared_pool_index]
@@ -631,15 +634,21 @@ class WorldModel(nn.Module):
 
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
-        self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
-        self.all_but_last_latent_state_pattern[-2] = 0
-        self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
-        self.act_tokens_pattern[-1] = 1
-        if self.model_type != 'slot':
-            self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
-            self.value_policy_tokens_pattern[-2] = 1
+        if self.model_type == 'slot':
+            # self.all_but_last_latent_state_pattern = torch.zeros(self.config.tokens_per_block)
+            # self.all_but_last_latent_state_pattern[:self.num_observations_tokens] = 1
+            self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
+            self.all_but_last_latent_state_pattern[-2] = 0
+            self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.act_tokens_pattern[-1] = 1
+            self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
         else:
-            self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern 
+            self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
+            self.all_but_last_latent_state_pattern[-2] = 0
+            self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.act_tokens_pattern[-1] = 1
+            self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.value_policy_tokens_pattern[-2] = 1 
 
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
@@ -723,12 +732,19 @@ class WorldModel(nn.Module):
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
                 module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
+
             for head in module_to_initialize:
+                is_obs_head_in_slot = (self.model_type == 'slot'and head is self.head_observations)
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
-                        nn.init.zeros_(layer.weight)
-                        if layer.bias is not None:
-                            nn.init.zeros_(layer.bias)
+                        if is_obs_head_in_slot:
+                            nn.init.xavier_uniform_(layer.weight)
+                            if layer.bias is not None:
+                                nn.init.zeros_(layer.bias)
+                        else:
+                            nn.init.zeros_(layer.weight)
+                            if layer.bias is not None:
+                                nn.init.zeros_(layer.bias)
                         break
 
 
@@ -854,7 +870,8 @@ class WorldModel(nn.Module):
         is_init_infer: bool = True,
         valid_context_lengths: Optional[torch.Tensor] = None,
         start_pos: Union[int, List[int]] = 0,
-        search_depth: Optional[List[int]] = None
+        search_depth: Optional[List[int]] = None,
+        compute_policy_value: bool = True
     ) -> "WorldModelOutput":
         """
         Overview:
@@ -1026,22 +1043,39 @@ class WorldModel(nn.Module):
             sequences, past_keys_values, kvcache_independent, valid_context_lengths, start_pos=start_pos_adjusted
         )
 
-        # Generate logits for various components.
-        logits_observations = self.head_observations(x, num_steps=num_steps, prev_steps=prev_steps)
-        logits_rewards = self.head_rewards(x, num_steps=num_steps, prev_steps=prev_steps)
-        logits_policy = self.head_policy(x, num_steps=num_steps, prev_steps=prev_steps)
+        if self.model_type == 'slot':
+            num_steps_for_heads = x.size(1)
+            if not is_init_infer and past_keys_values is not None:
+                actual_cache_size = past_keys_values.shape[2] if hasattr(past_keys_values, 'shape') else past_keys_values.size
+                prev_steps_for_heads = actual_cache_size - num_steps_for_heads
+            else:
+                prev_steps_for_heads = prev_steps
+        else:
+            num_steps_for_heads = num_steps
+            prev_steps_for_heads = prev_steps
+        
+        logits_observations = self.head_observations(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
+        logits_rewards = self.head_rewards(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
+        
+        # For slot model during recurrent inference, only compute policy/value when all slots are ready
+        if compute_policy_value:
+            logits_policy = self.head_policy(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
 
-        # ==================== [NEW] Fix1: Clip Policy Logits ====================
-        # Prevent policy logits from exploding, which can cause gradient issues
-        if self.use_policy_logits_clip:
-            logits_policy = torch.clamp(
-                logits_policy,
-                min=self.policy_logits_clip_min,
-                max=self.policy_logits_clip_max
-            )
-        # ========================================================================
+            # ==================== [NEW] Fix1: Clip Policy Logits ====================
+            # Prevent policy logits from exploding, which can cause gradient issues
+            if self.use_policy_logits_clip:
+                logits_policy = torch.clamp(
+                    logits_policy,
+                    min=self.policy_logits_clip_min,
+                    max=self.policy_logits_clip_max
+                )
+            # ========================================================================
 
-        logits_value = self.head_value(x, num_steps=num_steps, prev_steps=prev_steps)
+            logits_value = self.head_value(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
+        else:
+            # Return None for policy and value when not computing them
+            logits_policy = None
+            logits_value = None
 
         # The 'logits_ends' is intentionally set to None.
         return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
@@ -1090,7 +1124,7 @@ class WorldModel(nn.Module):
             start_block = prev_steps
         else:
             valid_context_lengths = torch.tensor(self.keys_values_wm_size_list_current, device=self.device)
-            start_block = valid_context_lengths
+            start_block = valid_context_lengths // self.tokens_per_block
         
         if seq_len == num_steps * self.tokens_per_block:
             num_blocks = num_steps
@@ -1447,6 +1481,7 @@ class WorldModel(nn.Module):
         Returns:
             - tuple: A tuple containing output sequence, updated latent state, reward, logits policy, and logits value.
         """
+        import ipdb; ipdb.set_trace();
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
@@ -1471,6 +1506,8 @@ class WorldModel(nn.Module):
             else:
                 obs_embeddings_or_act_tokens = {'obs_embeddings': token}
 
+            is_last_iteration = (k == self.tokens_per_block - 1)
+            compute_policy_value = is_last_iteration if self.model_type == 'slot' else True
             # Perform forward pass
             outputs_wm = self.forward(
                 obs_embeddings_or_act_tokens,
@@ -1478,7 +1515,8 @@ class WorldModel(nn.Module):
                 kvcache_independent=False,
                 is_init_infer=False,
                 start_pos=start_pos,
-                search_depth=search_depth # List containing depth of latent states in the search tree. 
+                search_depth=search_depth, # List containing depth of latent states in the search tree. 
+                compute_policy_value=compute_policy_value
             )
 
             self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
@@ -1491,6 +1529,11 @@ class WorldModel(nn.Module):
                 if len(token.shape) != 4:
                     token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
                 latent_state_list.append(token)
+            
+            # Save policy and value from the last iteration when they are computed
+            if is_last_iteration:
+                policy = outputs_wm.logits_policy
+                value = outputs_wm.logits_value
 
         del self.latent_state  # Very important to minimize cuda memory usage
         self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
@@ -1501,7 +1544,7 @@ class WorldModel(nn.Module):
             simulation_index=simulation_index,
         )
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
+        return (outputs_wm.output_sequence, self.latent_state, reward, policy, value)
 
 
     #@profile
