@@ -83,7 +83,7 @@ class WorldModel(nn.Module):
         # Position embedding
         if not self.config.rotary_emb:
             if self.model_type == 'slot':
-                self.pos_emb = nn.Embedding(2 * config.max_blocks, config.embed_dim, device=self.device)
+                self.pos_emb = nn.Embedding(config.max_blocks, config.embed_dim, device=self.device)
             else:
                 self.pos_emb = nn.Embedding(config.max_tokens, config.embed_dim, device=self.device)
             self.precompute_pos_emb_diff_kv()
@@ -732,19 +732,12 @@ class WorldModel(nn.Module):
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
                 module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
-
             for head in module_to_initialize:
-                is_obs_head_in_slot = (self.model_type == 'slot'and head is self.head_observations)
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
-                        if is_obs_head_in_slot:
-                            nn.init.xavier_uniform_(layer.weight)
-                            if layer.bias is not None:
-                                nn.init.zeros_(layer.bias)
-                        else:
-                            nn.init.zeros_(layer.weight)
-                            if layer.bias is not None:
-                                nn.init.zeros_(layer.bias)
+                        nn.init.zeros_(layer.weight)
+                        if layer.bias is not None:
+                            nn.init.zeros_(layer.bias)
                         break
 
 
@@ -834,33 +827,19 @@ class WorldModel(nn.Module):
          - torch.Tensor: The positional embedding tensor.
          """
         attn_func = getattr(self.transformer.blocks[layer].attn, attn_type)
-
         if self.model_type == 'slot':
-            expanded_pos_emb = torch.zeros(self.max_tokens, self.embed_dim, device=self.device)
-            
-            for block_idx in range(self.max_blocks):
-                start_token = block_idx * self.tokens_per_block
-                end_token = start_token + self.tokens_per_block
+            token_positions = torch.arange(self.config.max_tokens, device=self.pos_emb.weight.device)
+            block_positions = torch.div(token_positions, self.tokens_per_block, rounding_mode='floor')
+            pos_matrix = self.pos_emb(block_positions)
+        else:
+            pos_matrix = self.pos_emb.weight
 
-                slot_pos_emb = self.pos_emb(torch.tensor(block_idx, device=self.device))
-                expanded_pos_emb[start_token:start_token + self.num_observations_tokens] = slot_pos_emb.unsqueeze(0).expand(self.num_observations_tokens, -1)
-                
-                if end_token <= self.max_tokens:
-                    action_pos_emb = self.pos_emb(torch.tensor(block_idx + self.config.max_blocks, device=self.device))
-                    expanded_pos_emb[start_token + self.num_observations_tokens] = action_pos_emb
-            
-            pos_emb_weight = expanded_pos_emb
-        else:
-            pos_emb_weight = self.pos_emb.weight
-        
+        out = attn_func(pos_matrix).view(
+            1, self.config.max_tokens, self.num_heads, self.embed_dim // self.num_heads
+        ).transpose(1, 2)
         if torch.cuda.is_available():
-            return attn_func(pos_emb_weight).view(
-                1, self.config.max_tokens, self.num_heads, self.embed_dim // self.num_heads
-            ).transpose(1, 2).to(self.device).detach()
-        else:
-            return attn_func(pos_emb_weight).view(
-                1, self.config.max_tokens, self.num_heads, self.embed_dim // self.num_heads
-            ).transpose(1, 2).detach()
+            out = out.to(self.device)
+        return out.detach()
 
     def forward(
         self,
@@ -1088,58 +1067,27 @@ class WorldModel(nn.Module):
         Returns:
             - torch.Tensor: Embeddings with position information added.
         """
-        if self.model_type == 'slot':
-            return self._add_position_embeddings_slot(embeddings, prev_steps, num_steps, is_init_infer, valid_context_lengths)
-        
+        def _token_to_pos_index(token_indices: torch.Tensor) -> torch.Tensor:
+            if self.model_type == 'slot':
+                return torch.div(token_indices, self.tokens_per_block, rounding_mode='floor')
+            else:
+                return token_indices
+
         if kvcache_independent:
             steps_indices = prev_steps + torch.arange(num_steps, device=embeddings.device)
             position_embeddings = self.pos_emb(steps_indices).view(-1, num_steps, embeddings.shape[-1])
             return embeddings + position_embeddings
         else:
             if is_init_infer:
-                return embeddings + self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
+                token_indices = prev_steps + torch.arange(num_steps, device=self.device)
+                pos_indices = _token_to_pos_index(token_indices)
+                return embeddings + self.pos_emb(pos_indices)
             else:
                 valid_context_lengths = torch.tensor(self.keys_values_wm_size_list_current, device=self.device)
-                position_embeddings = self.pos_emb(
-                    valid_context_lengths + torch.arange(num_steps, device=self.device)).unsqueeze(1)
+                token_indices = valid_context_lengths.unsqueeze(-1) + torch.arange(num_steps, device=self.device).unsqueeze(0)
+                pos_indices = _token_to_pos_index(token_indices)
+                position_embeddings = self.pos_emb(pos_indices)
                 return embeddings + position_embeddings
-
-    def _add_position_embeddings_slot(self, embeddings, prev_steps, num_steps, is_init_infer, valid_context_lengths):
-        if len(embeddings.shape) == 4:
-            B, L, K, E = embeddings.shape
-            embeddings = embeddings.reshape(B, L * K, E)
-            seq_len = L * K
-        else:
-            B, seq_len, E = embeddings.shape
-        
-        if is_init_infer:
-            start_block = prev_steps
-        else:
-            valid_context_lengths = torch.tensor(self.keys_values_wm_size_list_current, device=self.device)
-            start_block = valid_context_lengths // self.tokens_per_block
-        
-        if seq_len == num_steps * self.tokens_per_block:
-            num_blocks = num_steps
-            pos_emb = torch.zeros(B, seq_len, E, device=self.device)
-            for i in range(num_blocks):
-                block_idx = start_block + i
-                start_idx = i * self.tokens_per_block
-                slot_pos = self.pos_emb(torch.tensor(block_idx, device=self.device))
-                act_pos = self.pos_emb(torch.tensor(block_idx + self.max_blocks, device=self.device))
-                pos_emb[:, start_idx:start_idx + self.num_observations_tokens] = slot_pos.unsqueeze(0).expand(B, self.num_observations_tokens, E)
-                pos_emb[:, start_idx + self.num_observations_tokens] = act_pos.unsqueeze(0).expand(B, E)
-            return embeddings + pos_emb
-        elif seq_len == num_steps * self.num_observations_tokens:
-            num_blocks = num_steps
-            block_indices = start_block + torch.arange(num_blocks, device=self.device)
-            slot_pos_emb = self.pos_emb(block_indices)
-            pos_emb = slot_pos_emb.unsqueeze(0).unsqueeze(2).expand(B, num_blocks, self.num_observations_tokens, E)
-            pos_emb = pos_emb.reshape(B, seq_len, E)
-            return embeddings + pos_emb
-        else:
-            block_indices = start_block + torch.arange(num_steps, device=self.device)
-            act_pos_emb = self.pos_emb(block_indices + self.max_blocks)
-            return embeddings + act_pos_emb
 
     #@profile
     def _process_obs_act_combined_cont(self, obs_embeddings_or_act_tokens, prev_steps):
@@ -1178,12 +1126,12 @@ class WorldModel(nn.Module):
 
         return_result = obs_act_embeddings
         if not self.config.rotary_emb:
+            token_indices = prev_steps + torch.arange(num_steps, device=self.device)
             if self.model_type == 'slot':
-                return_result = self._add_position_embeddings_slot(
-                    return_result, prev_steps, num_steps, is_init_infer=True, valid_context_lengths=None
-                )
+                pos_indices = torch.div(token_indices, self.tokens_per_block, rounding_mode='floor')
             else:
-                return_result += self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
+                pos_indices = token_indices
+            return_result += self.pos_emb(pos_indices)
         return return_result, num_steps
 
     #@profile
@@ -1216,12 +1164,12 @@ class WorldModel(nn.Module):
             
         return_result = obs_act_embeddings
         if not self.config.rotary_emb:
+            token_indices = prev_steps + torch.arange(num_steps, device=self.device)
             if self.model_type == 'slot':
-                return_result = self._add_position_embeddings_slot(
-                    return_result, prev_steps, num_steps, is_init_infer=True, valid_context_lengths=None
-                )
+                pos_indices = torch.div(token_indices, self.tokens_per_block, rounding_mode='floor')
             else:
-                return_result += self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
+                pos_indices = token_indices
+            return_result += self.pos_emb(pos_indices)
         return return_result, num_steps
 
     def _transformer_pass(self, sequences, past_keys_values, kvcache_independent, valid_context_lengths, start_pos: int = 0):
@@ -1294,7 +1242,7 @@ class WorldModel(nn.Module):
         Returns:
             - torch.FloatTensor: The outputs from the world model.
         """
-        n, num_observations_tokens, _ = last_obs_embeddings.shape
+        n = last_obs_embeddings.shape[0]
         if n <= self.env_num and current_obs_embeddings is not None:
             # ================ Collect and Evaluation Phase ================
             if current_obs_embeddings is not None:
@@ -1401,7 +1349,7 @@ class WorldModel(nn.Module):
         elif batch_action is not None and current_obs_embeddings is None:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
             # [192, 16, 64] -> [32, 6, 16, 64]
-            last_obs_embeddings = last_obs_embeddings.contiguous().view(batch_action.shape[0], -1, num_observations_tokens,
+            last_obs_embeddings = last_obs_embeddings.contiguous().view(batch_action.shape[0], -1, self.num_observations_tokens,
                                                           self.config.embed_dim)  # (BL, K) for unroll_step=1
 
             last_obs_embeddings = last_obs_embeddings[:, :-1, :]
@@ -1473,7 +1421,7 @@ class WorldModel(nn.Module):
         Returns:
             - tuple: A tuple containing output sequence, updated latent state, reward, logits policy, and logits value.
         """
-        import ipdb; ipdb.set_trace();
+        #import ipdb; ipdb.set_trace();
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
@@ -1515,7 +1463,7 @@ class WorldModel(nn.Module):
 
             if k < self.num_observations_tokens:
                 token = outputs_wm.logits_observations
-                if len(token.shape) != 4:
+                if len(token.shape) != 3:
                     token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
                 latent_state_list.append(token)
             
@@ -1666,7 +1614,7 @@ class WorldModel(nn.Module):
 
                         # Pad the last 3 steps along the third dimension with zeros
                         # F.pad parameters (0, 0, 0, 3) specify padding amounts for each dimension: (left, right, top, bottom). For 3D tensor, they correspond to (dim2 left, dim2 right, dim1 left, dim1 right).
-                        padding_size = (0, 0, 0, self.tokens_per_block)
+                        padding_size = (0, 0, 0, self.tokens_per_block+1)
                         k_cache_padded = F.pad(k_cache_trimmed, padding_size, 'constant', 0)
                         v_cache_padded = F.pad(v_cache_trimmed, padding_size, 'constant', 0)
                         # Update single environment cache
@@ -1713,15 +1661,15 @@ class WorldModel(nn.Module):
 
                         # Pad the last 3 steps along the third dimension with zeros
                         # F.pad parameters (0, 0, 0, 3) specify padding amounts for each dimension: (left, right, top, bottom). For 3D tensor, they correspond to (dim2 left, dim2 right, dim1 left, dim1 right).
-                        padding_size = (0, 0, 0, 3)
+                        padding_size = (0, 0, 0, self.tokens_per_block+1)
                         k_cache_padded = F.pad(k_cache_trimmed, padding_size, 'constant', 0)
                         v_cache_padded = F.pad(v_cache_trimmed, padding_size, 'constant', 0)
                         # Update cache of self.keys_values_wm_single_env
                         self.keys_values_wm_single_env._keys_values[layer]._k_cache._cache = k_cache_padded.unsqueeze(0)
                         self.keys_values_wm_single_env._keys_values[layer]._v_cache._cache = v_cache_padded.unsqueeze(0)
                         # Update size of self.keys_values_wm_single_env
-                        self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 3
-                        self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 3
+                        self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 1 - self.tokens_per_block
+                        self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 1 - self.tokens_per_block
 
             # ORIGNAL
             # if is_init_infer:
