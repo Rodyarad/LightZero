@@ -71,6 +71,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6, ), ), ),  # default is 10000
             model=dict(
                 observation_shape=(num_slots, slot_dim),
+                model_type='slot',
                 action_space_size=action_space_size,
                 reward_support_range=(-300., 301., 1.),
                 value_support_range=(-300., 301., 1.),

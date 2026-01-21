@@ -117,8 +117,9 @@ def prepare_observation(observation_list, model_type='conv'):
         else:
             raise ValueError("For 'mlp' model_type, the observation must have 3 dimensions [B, S, O]")
     elif model_type == 'slot':
-        if observation_array.ndim == 4 and observation_array.shape[1] == 1:
-            observation_array = observation_array.squeeze(1)
+        if observation_array.ndim == 4:
+            _, stack_num, num_slots, slot_dim = observation_array.shape
+            observation_array = observation_array.reshape(batch_size, stack_num * num_slots, slot_dim)
 
     return observation_array
 
