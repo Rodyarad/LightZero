@@ -23,6 +23,8 @@
 # Start from Ubuntu 20.04
 FROM ubuntu:20.04
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Set the working directory in the Docker image
 WORKDIR /opendilab
 
@@ -30,7 +32,7 @@ WORKDIR /opendilab
 # We update the apt package list, install Python 3.8, pip, compilers and other necessary tools.
 # After installing, we clean up the apt cache and remove unnecessary lists to save space.
 RUN apt-get update && \
-    apt-get install -y python3.9 python3-pip gcc g++ swig git && \
+    apt-get install -y python3.9  python3.9-dev python3-pip gcc g++ swig git libgl1-mesa-glx libglib2.0-0 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -50,3 +52,7 @@ RUN git clone -b iris_like https://github.com/Rodyarad/LightZero.git
 # Install the LightZero package in editable mode
 # The -e option allows us to edit the source code without needing to reinstall the package.
 RUN pip install -e ./LightZero
+
+COPY navigation5x5.pth /opendilab/LightZero/zoo/ocr/slate_weights/navigation5x5.pth
+COPY nav10x10_model_best.pth /opendilab/LightZero/zoo/ocr/slate_weights/nav10x10_model_best.pth
+COPY push7x7_model_best.pth /opendilab/LightZero/zoo/ocr/slate_weights/push7x7_model_best.pth
