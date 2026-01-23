@@ -783,6 +783,11 @@ class UniZeroPolicy(MuZeroPolicy):
         if isinstance(self._cfg.model.observation_shape, int) or len(self._cfg.model.observation_shape) == 1:
             batch_for_gpt['observations'] = torch.cat((obs_batch, obs_target_batch), dim=1).reshape(
                 self._cfg.batch_size, -1, self._cfg.model.observation_shape)
+        elif len(self._cfg.model.observation_shape) == 2:
+            # slot obs: (num_slots, slot_dim)
+            batch_for_gpt['observations'] = torch.cat((obs_batch, obs_target_batch), dim=1).reshape(
+                self._cfg.batch_size, -1, *self._cfg.model.observation_shape
+            )
         elif len(self._cfg.model.observation_shape) == 3:
             batch_for_gpt['observations'] = torch.cat((obs_batch, obs_target_batch), dim=1).reshape(
                 self._cfg.batch_size, -1, *self._cfg.model.observation_shape)

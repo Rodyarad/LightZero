@@ -430,10 +430,21 @@ def prepare_obs(obs_batch_ori: np.ndarray, cfg: EasyDict, task_id = None) -> Tup
     """
     if cfg.model.model_type == 'slot':
         obs_batch_ori = torch.from_numpy(obs_batch_ori).to(cfg.device)
-        obs_batch = obs_batch_ori[:, 0]#.squeeze(1)
+        num_slots, slot_dim = cfg.model.observation_shape  # (S, D)
+
+        if obs_batch_ori.ndim == 3:
+            B, TS, D = obs_batch_ori.shape
+            assert D == slot_dim and TS % num_slots == 0, (obs_batch_ori.shape, cfg.model.observation_shape)
+            obs_seq = obs_batch_ori.view(B, TS // num_slots, num_slots, slot_dim)  # (B, T, S, D)
+        elif obs_batch_ori.ndim == 4:
+            obs_seq = obs_batch_ori
+        else:
+            raise ValueError(f"Unexpected slot obs shape: {tuple(obs_batch_ori.shape)}")
+
+        obs_batch = obs_seq[:, :1]
         obs_target_batch = None
         if cfg.model.self_supervised_learning_loss:
-            obs_target_batch = obs_batch_ori[:, 1:]
+            obs_target_batch = obs_seq[:, 1:]
     else:
         # Convert the numpy array of original observations to a PyTorch tensor and transfer it to the specified device.
         # Also, ensure the tensor is of the correct floating-point type for the model.

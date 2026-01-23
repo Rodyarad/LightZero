@@ -10,7 +10,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
     # begin of the most frequently changed config specified by the user
     # ==============================================================
     collector_env_num = 2
-    num_segments = 8
+    num_segments = 2
     game_segment_length = 20
     num_unroll_steps = 2
     infer_context_length = 2

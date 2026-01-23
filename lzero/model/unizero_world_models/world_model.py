@@ -635,10 +635,10 @@ class WorldModel(nn.Module):
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
         if self.model_type == 'slot':
-            # self.all_but_last_latent_state_pattern = torch.zeros(self.config.tokens_per_block)
-            # self.all_but_last_latent_state_pattern[:self.num_observations_tokens] = 1
-            self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
-            self.all_but_last_latent_state_pattern[-2] = 0
+            self.all_but_last_latent_state_pattern = torch.zeros(self.config.tokens_per_block)
+            self.all_but_last_latent_state_pattern[:self.num_observations_tokens] = 1
+            # self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
+            # self.all_but_last_latent_state_pattern[-2] = 0
             self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
             self.act_tokens_pattern[-1] = 1
             self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
@@ -1022,7 +1022,7 @@ class WorldModel(nn.Module):
 
         if self.model_type == 'slot':
              num_steps_for_heads = x.size(1)
-             if not is_init_infer and past_keys_values is not None:
+             if past_keys_values is not None:
                  actual_cache_size = past_keys_values.shape[2] if hasattr(past_keys_values, 'shape') else past_keys_values.size
                  prev_steps_for_heads = actual_cache_size - num_steps_for_heads
              else:
@@ -1313,7 +1313,7 @@ class WorldModel(nn.Module):
                                                       past_keys_values=self.keys_values_wm_single_env,
                                                       is_init_infer=True, start_pos=start_pos[i].item())
                             self.keys_values_wm_list.append(self.keys_values_wm_single_env)
-                            self.keys_values_wm_size_list.append(1)
+                            self.keys_values_wm_size_list.append(self.keys_values_wm_single_env.size)
 
                     # Input self.keys_values_wm_list, output self.keys_values_wm
                     self.keys_values_wm_size_list_current = self.trim_and_pad_kv_cache(is_init_infer=True)
@@ -1366,6 +1366,15 @@ class WorldModel(nn.Module):
 
             # Each sample in the batch (last_obs_embeddings, act_tokens) corresponds to the same time step, and start_pos also corresponds to each sample's respective t.
             outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (last_obs_embeddings, act_tokens)}, start_pos=start_pos)
+
+            if outputs_wm.logits_value.ndim == 2:
+                outputs_wm.logits_value = outputs_wm.logits_value.view(
+                    batch_action.shape[0], -1, outputs_wm.logits_value.shape[-1]
+                )
+            if outputs_wm.logits_policy.ndim == 2:
+                outputs_wm.logits_policy = outputs_wm.logits_policy.view(
+                    batch_action.shape[0], -1, outputs_wm.logits_policy.shape[-1]
+                )
 
             # select the last timestep for each sample
             last_steps_value = outputs_wm.logits_value[:, -1:, :]
@@ -1461,7 +1470,7 @@ class WorldModel(nn.Module):
             if k == 0:
                 reward = outputs_wm.logits_rewards  # (B,)
 
-            if k < self.num_observations_tokens:
+            if k > 0:
                 token = outputs_wm.logits_observations
                 if len(token.shape) != 3:
                     token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
@@ -1841,7 +1850,7 @@ class WorldModel(nn.Module):
                     past_keys_values=self.keys_values_wm_single_env, is_init_infer=True, start_pos=start_pos_adjusted
                 )
                 self.keys_values_wm_list.append(self.keys_values_wm_single_env)
-                self.keys_values_wm_size_list.append(1)
+                self.keys_values_wm_size_list.append(self.keys_values_wm_single_env.size)
 
         return self.keys_values_wm_size_list
 
@@ -1997,6 +2006,13 @@ class WorldModel(nn.Module):
                 # TODO:
                 latent_recon_loss = self.latent_recon_loss
                 perceptual_loss = self.perceptual_loss
+
+        elif self.obs_type == 'slot':
+            perceptual_loss = torch.tensor(0., device=batch['observations'].device,
+                                           dtype=batch['observations'].dtype)
+
+            latent_recon_loss = self.latent_recon_loss
+
 
         elif self.obs_type == 'vector':
             perceptual_loss = torch.tensor(0., device=batch['observations'].device,
@@ -2203,18 +2219,33 @@ class WorldModel(nn.Module):
             # Adjust loss shape to (batch_size, seq_len)
             loss_tmp = loss_tmp.view(-1, seq_len)
 
+            use_mask = (
+                mask_padding.ndim == 2 and
+                loss_tmp.shape[0] == mask_padding.shape[0] and
+                mask_padding.shape[1] == seq_len
+            )
+
             # First step loss
-            first_step_mask = mask_padding[:, 0]
-            first_step_losses[loss_name] = loss_tmp[:, 0][first_step_mask].mean()
+            if use_mask:
+                first_step_mask = mask_padding[:, 0]
+                first_step_losses[loss_name] = loss_tmp[:, 0][first_step_mask].mean()
+            else:
+                first_step_losses[loss_name] = loss_tmp[:, 0].mean()
 
             # Middle step loss
             middle_timestep = seq_len // 2
-            middle_step_mask = mask_padding[:, middle_timestep]
-            middle_step_losses[loss_name] = loss_tmp[:, middle_timestep][middle_step_mask].mean()
+            if use_mask:
+                middle_step_mask = mask_padding[:, middle_timestep]
+                middle_step_losses[loss_name] = loss_tmp[:, middle_timestep][middle_step_mask].mean()
+            else:
+                middle_step_losses[loss_name] = loss_tmp[:, middle_timestep].mean()
 
             # Last step loss
-            last_step_mask = mask_padding[:, -1]
-            last_step_losses[loss_name] = loss_tmp[:, -1][last_step_mask].mean()
+            if use_mask:
+                last_step_mask = mask_padding[:, -1]
+                last_step_losses[loss_name] = loss_tmp[:, -1][last_step_mask].mean()
+            else:
+                last_step_losses[loss_name] = loss_tmp[:, -1].mean()
 
         # Discount reconstruction loss and perceptual loss
         discounted_latent_recon_loss = latent_recon_loss
