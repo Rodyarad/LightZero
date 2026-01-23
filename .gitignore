@@ -1452,7 +1452,6 @@ lzero/mcts/ctree/ctree_alphazero/pybind11
 
 zoo/jericho/envs/z-machine-games-master
 test.py
-train.sh
 vis_test.py
 vis_test
 weights
