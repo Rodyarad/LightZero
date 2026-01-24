@@ -751,9 +751,9 @@ class WorldModel(nn.Module):
         last_linear_layer_init_zero = True  # TODO
         if last_linear_layer_init_zero:
             if self.continuous_action_space:
-                module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
+                module_to_initialize = [self.head_value, self.head_rewards]
             else:
-                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
+                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards]
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
@@ -2167,7 +2167,7 @@ class WorldModel(nn.Module):
             loss_obs = cosine_sim_loss
 
         # Apply mask to loss_obs
-        mask_padding_expanded = batch['mask_padding'][:, 1:].unsqueeze(-1).repeat(1, 1, 6).contiguous().view(-1)
+        mask_padding_expanded = batch['mask_padding'][:, 1:].unsqueeze(-1).repeat(1, 1, self.num_observations_tokens).contiguous().view(-1)
         loss_obs = (loss_obs * mask_padding_expanded)
 
         # ==================== [NEW] Fix3: Load re-smooth options from config ====================
@@ -2225,7 +2225,7 @@ class WorldModel(nn.Module):
             if loss_name == 'loss_obs':
                 seq_len = batch['actions'].shape[1] - 1
                 # Get the corresponding mask_padding
-                mask_padding = batch['mask_padding'][:, 1:seq_len].unsqueeze(-1).repeat(1, 1, 6)
+                mask_padding = batch['mask_padding'][:, 1:seq_len].unsqueeze(-1).repeat(1, 1, self.num_observations_tokens)
                 # Adjust loss shape to (batch_size, seq_len)
                 loss_tmp = loss_tmp.view(batch['actions'].shape[0], seq_len, -1)
             else:
