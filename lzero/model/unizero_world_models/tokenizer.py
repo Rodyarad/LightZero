@@ -112,7 +112,6 @@ class Tokenizer(nn.Module):
             - torch.Tensor: The encoded latent embeddings with a consistent shape of (B, 1, E), where B is the effective batch size.
         """
         if self.obs_type == 'slot':
-            #x = x.unsqueeze(1)
             obs_embeddings = x
         else:
             # global DEBUG_ENABLED;DEBUG_ENABLED = True

@@ -113,8 +113,13 @@ class WorldModel(nn.Module):
         self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
         # self.head_observations = self._create_head(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
         #                                             self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-        #                                            )
-        self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
+        #                                           )
+        if self.model_type == 'slot':
+            self.head_observations = self._create_head_for_slots(self.act_tokens_pattern, self.obs_per_embdding_dim, \
+                                                    self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
+                                                   )
+        else:
+            self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
                                                     self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
                                                    )
         if self.continuous_action_space:
@@ -635,10 +640,8 @@ class WorldModel(nn.Module):
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
         if self.model_type == 'slot':
-            self.all_but_last_latent_state_pattern = torch.zeros(self.config.tokens_per_block)
-            self.all_but_last_latent_state_pattern[:self.num_observations_tokens] = 1
-            # self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
-            # self.all_but_last_latent_state_pattern[-2] = 0
+            self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
+            self.all_but_last_latent_state_pattern[-2] = 0
             self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
             self.act_tokens_pattern[-1] = 1
             self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
@@ -659,6 +662,25 @@ class WorldModel(nn.Module):
             nn.LayerNorm(self.config.embed_dim*4),      # 2. <-- 新增！稳定内部激活
             nn.GELU(approximate='tanh'),
             nn.Linear(self.config.embed_dim*4, output_dim)
+        ]
+        if norm_layer:
+            modules.append(norm_layer)
+        return Head(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=nn.Sequential(*modules)
+        )
+
+    def _create_head_for_slots(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
+        """Create head modules for the transformer."""
+        modules = [
+            nn.LayerNorm(self.config.embed_dim),  # <-- 核心优化！ # TODO
+            # nn.Linear(self.config.embed_dim, self.config.embed_dim),
+            nn.Linear(self.config.embed_dim, self.config.embed_dim*4),
+            nn.LayerNorm(self.config.embed_dim*4),      # 2. <-- 新增！稳定内部激活
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim*4, self.num_observations_tokens * output_dim),
+            nn.Unflatten(-1, (self.num_observations_tokens, output_dim))
         ]
         if norm_layer:
             modules.append(norm_layer)
@@ -1087,6 +1109,7 @@ class WorldModel(nn.Module):
                 token_indices = valid_context_lengths.unsqueeze(-1) + torch.arange(num_steps, device=self.device).unsqueeze(0)
                 pos_indices = _token_to_pos_index(token_indices)
                 position_embeddings = self.pos_emb(pos_indices)
+                embeddings + position_embeddings
                 return embeddings + position_embeddings
 
     #@profile
@@ -1430,7 +1453,6 @@ class WorldModel(nn.Module):
         Returns:
             - tuple: A tuple containing output sequence, updated latent state, reward, logits policy, and logits value.
         """
-        #import ipdb; ipdb.set_trace();
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
@@ -1448,8 +1470,8 @@ class WorldModel(nn.Module):
         self.keys_values_wm_size_list = self.trim_and_pad_kv_cache(is_init_infer=False)
         self.keys_values_wm_size_list_current = self.keys_values_wm_size_list
 
-        for k in range(self.tokens_per_block):
-            # action_token obs_tokens
+        for k in range(2):
+            # action_token obs_token
             if k == 0:
                 obs_embeddings_or_act_tokens = {'act_tokens': token}
             else:
@@ -1462,24 +1484,26 @@ class WorldModel(nn.Module):
                 kvcache_independent=False,
                 is_init_infer=False,
                 start_pos=start_pos,
-                search_depth=search_depth, # List containing depth of latent states in the search tree.
+                search_depth=search_depth # List containing depth of latent states in the search tree.
             )
 
-            self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
+            if k == 0:
+                self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
+            else:
+                self.keys_values_wm_size_list_current = [i + self.num_observations_tokens for i in self.keys_values_wm_size_list_current]
 
             if k == 0:
                 reward = outputs_wm.logits_rewards  # (B,)
 
-            if k > 0:
+            if k < 1:
                 token = outputs_wm.logits_observations
-                if len(token.shape) != 3:
-                    token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
+                if self.model_type == 'slot':
+                    if len(token.shape) == 4:
+                        token = token.squeeze(1)
+                else:
+                    if len(token.shape) != 3:
+                        token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
                 latent_state_list.append(token)
-            
-            # Save policy and value from the last iteration when they are computed
-            if (k == self.num_observations_tokens):
-                policy = outputs_wm.logits_policy
-                value = outputs_wm.logits_value
 
         del self.latent_state  # Very important to minimize cuda memory usage
         self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
@@ -1490,7 +1514,7 @@ class WorldModel(nn.Module):
             simulation_index=simulation_index,
         )
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, policy, value)
+        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
 
 
     #@profile
@@ -2219,33 +2243,18 @@ class WorldModel(nn.Module):
             # Adjust loss shape to (batch_size, seq_len)
             loss_tmp = loss_tmp.view(-1, seq_len)
 
-            use_mask = (
-                mask_padding.ndim == 2 and
-                loss_tmp.shape[0] == mask_padding.shape[0] and
-                mask_padding.shape[1] == seq_len
-            )
-
             # First step loss
-            if use_mask:
-                first_step_mask = mask_padding[:, 0]
-                first_step_losses[loss_name] = loss_tmp[:, 0][first_step_mask].mean()
-            else:
-                first_step_losses[loss_name] = loss_tmp[:, 0].mean()
+            first_step_mask = mask_padding[:, 0]
+            first_step_losses[loss_name] = loss_tmp[:, 0][first_step_mask].mean()
 
             # Middle step loss
             middle_timestep = seq_len // 2
-            if use_mask:
-                middle_step_mask = mask_padding[:, middle_timestep]
-                middle_step_losses[loss_name] = loss_tmp[:, middle_timestep][middle_step_mask].mean()
-            else:
-                middle_step_losses[loss_name] = loss_tmp[:, middle_timestep].mean()
+            middle_step_mask = mask_padding[:, middle_timestep]
+            middle_step_losses[loss_name] = loss_tmp[:, middle_timestep][middle_step_mask].mean()
 
             # Last step loss
-            if use_mask:
-                last_step_mask = mask_padding[:, -1]
-                last_step_losses[loss_name] = loss_tmp[:, -1][last_step_mask].mean()
-            else:
-                last_step_losses[loss_name] = loss_tmp[:, -1].mean()
+            last_step_mask = mask_padding[:, -1]
+            last_step_losses[loss_name] = loss_tmp[:, -1][last_step_mask].mean()
 
         # Discount reconstruction loss and perceptual loss
         discounted_latent_recon_loss = latent_recon_loss

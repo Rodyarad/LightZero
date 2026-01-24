@@ -191,37 +191,19 @@ class SlotHead(Slicer):
             - prev_steps (:obj:`int | :obj:`torch.Tensor`): The number of previous steps to consider.
         Returns:
             - torch.Tensor: The processed tensor.
-        """        
+        """
         if isinstance(prev_steps, torch.Tensor):
-            aggregated_per_block_list = []
+            aggregated_tokens_list = []
             for batch_idx in range(prev_steps.shape[0]):
                 selected_token_indices = self.compute_slice(num_steps, prev_steps[batch_idx].item())
                 selected_tokens = x[batch_idx, selected_token_indices]
-                
-                num_selected_tokens = selected_tokens.size(0)
-                num_blocks = num_selected_tokens // self.num_kept_tokens
-                tokens_grouped_by_blocks = selected_tokens.view(num_blocks, self.num_kept_tokens, -1)
-                
-                aggregated_per_block = tokens_grouped_by_blocks.sum(dim=1)
-                aggregated_per_block_list.append(aggregated_per_block)
+                aggregated_tokens= selected_tokens.sum(dim=0)
+                aggregated_tokens_list.append(aggregated_tokens)
             
-            aggregated_tokens = torch.cat(aggregated_per_block_list, dim=0)
+            aggregated_tokens = torch.cat(aggregated_tokens_list, dim=0)
         else:
             selected_token_indices = self.compute_slice(num_steps, prev_steps)
             selected_tokens = x[:, selected_token_indices, :]
-            
-            batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
-            num_blocks = num_selected_tokens // self.num_kept_tokens
-            if num_blocks == 0:
-                aggregated_tokens = selected_tokens.new_zeros((batch_size, 1, embed_dim))  # (B, 1, E)
-                num_blocks = 1
-            else:
-                tokens_grouped_by_blocks = selected_tokens.view(batch_size, num_blocks, self.num_kept_tokens, embed_dim)
-                aggregated_tokens = tokens_grouped_by_blocks.sum(dim=2)  # (B, num_blocks, E)
-
-            flat = aggregated_tokens.reshape(batch_size * num_blocks, embed_dim)
-            out = self.head_module(flat)
-            out = out.view(batch_size, num_blocks, out.shape[-1])
-            return out 
+            aggregated_tokens = selected_tokens.sum(dim=1)
 
         return self.head_module(aggregated_tokens)
