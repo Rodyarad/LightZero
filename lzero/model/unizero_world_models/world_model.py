@@ -2133,7 +2133,7 @@ class WorldModel(nn.Module):
                                                                                            batch['mask_padding'])
 
         # Reshape the logits and labels for observations
-        logits_observations = rearrange(outputs.logits_observations[:, :-1], 'b t o -> (b t) o')
+        logits_observations = rearrange(outputs.logits_observations[:, :-1], 'b t k o -> (b t k) o')
         labels_observations = labels_observations.reshape(-1, self.projection_input_dim)
 
         # Compute prediction loss for observations. Options: MSE and Group KL
@@ -2167,7 +2167,7 @@ class WorldModel(nn.Module):
             loss_obs = cosine_sim_loss
 
         # Apply mask to loss_obs
-        mask_padding_expanded = batch['mask_padding'][:, 1:].contiguous().view(-1)
+        mask_padding_expanded = batch['mask_padding'][:, 1:].unsqueeze(-1).repeat(1, 1, 6).contiguous().view(-1)
         loss_obs = (loss_obs * mask_padding_expanded)
 
         # ==================== [NEW] Fix3: Load re-smooth options from config ====================
@@ -2545,7 +2545,8 @@ class WorldModel(nn.Module):
         mask_fill = torch.logical_not(mask_padding)
 
         # Prepare observation labels
-        labels_observations = obs_embeddings.contiguous().view(rewards.shape[0], -1, self.projection_input_dim)[:, 1:]
+        obs_embeddings = obs_embeddings[:, 1:]
+        labels_observations = obs_embeddings.contiguous().view(rewards.shape[0], -1, self.projection_input_dim)
 
         # Fill the masked areas of rewards
         mask_fill_rewards = mask_fill.unsqueeze(-1).expand_as(rewards)
