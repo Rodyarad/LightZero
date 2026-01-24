@@ -1390,15 +1390,6 @@ class WorldModel(nn.Module):
             # Each sample in the batch (last_obs_embeddings, act_tokens) corresponds to the same time step, and start_pos also corresponds to each sample's respective t.
             outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (last_obs_embeddings, act_tokens)}, start_pos=start_pos)
 
-            if outputs_wm.logits_value.ndim == 2:
-                outputs_wm.logits_value = outputs_wm.logits_value.view(
-                    batch_action.shape[0], -1, outputs_wm.logits_value.shape[-1]
-                )
-            if outputs_wm.logits_policy.ndim == 2:
-                outputs_wm.logits_policy = outputs_wm.logits_policy.view(
-                    batch_action.shape[0], -1, outputs_wm.logits_policy.shape[-1]
-                )
-
             # select the last timestep for each sample
             last_steps_value = outputs_wm.logits_value[:, -1:, :]
             outputs_wm.logits_value = torch.cat((outputs_wm.logits_value, last_steps_value), dim=1)

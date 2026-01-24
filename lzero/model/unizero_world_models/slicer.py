@@ -192,18 +192,11 @@ class SlotHead(Slicer):
         Returns:
             - torch.Tensor: The processed tensor.
         """
-        if isinstance(prev_steps, torch.Tensor):
-            aggregated_tokens_list = []
-            for batch_idx in range(prev_steps.shape[0]):
-                selected_token_indices = self.compute_slice(num_steps, prev_steps[batch_idx].item())
-                selected_tokens = x[batch_idx, selected_token_indices]
-                aggregated_tokens= selected_tokens.sum(dim=0)
-                aggregated_tokens_list.append(aggregated_tokens)
-            
-            aggregated_tokens = torch.cat(aggregated_tokens_list, dim=0)
-        else:
-            selected_token_indices = self.compute_slice(num_steps, prev_steps)
-            selected_tokens = x[:, selected_token_indices, :]
-            aggregated_tokens = selected_tokens.sum(dim=1)
+        selected_token_indices = self.compute_slice(num_steps, prev_steps)
+        selected_tokens = x[:, selected_token_indices, :]
+        batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
+        num_timesteps = num_selected_tokens // self.num_kept_tokens
+        tokens_grouped_by_time = selected_tokens.view(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
+        aggregated_tokens = tokens_grouped_by_time.sum(dim=2)
 
         return self.head_module(aggregated_tokens)
