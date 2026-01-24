@@ -2225,14 +2225,15 @@ class WorldModel(nn.Module):
             if loss_name == 'loss_obs':
                 seq_len = batch['actions'].shape[1] - 1
                 # Get the corresponding mask_padding
-                mask_padding = batch['mask_padding'][:, 1:seq_len]
+                mask_padding = batch['mask_padding'][:, 1:seq_len].unsqueeze(-1).repeat(1, 1, 6)
+                # Adjust loss shape to (batch_size, seq_len)
+                loss_tmp = loss_tmp.view(batch['actions'].shape[0], seq_len, -1)
             else:
                 seq_len = batch['actions'].shape[1]
                 # Get the corresponding mask_padding
                 mask_padding = batch['mask_padding'][:, :seq_len]
-
-            # Adjust loss shape to (batch_size, seq_len)
-            loss_tmp = loss_tmp.view(-1, seq_len)
+                # Adjust loss shape to (batch_size, seq_len)
+                loss_tmp = loss_tmp.view(-1, seq_len)
 
             # First step loss
             first_step_mask = mask_padding[:, 0]
