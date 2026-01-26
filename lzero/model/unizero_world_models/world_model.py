@@ -114,14 +114,14 @@ class WorldModel(nn.Module):
         # self.head_observations = self._create_head(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
         #                                             self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
         #                                           )
-        if self.model_type == 'slot':
-            self.head_observations = self._create_head_for_slots(self.act_tokens_pattern, self.obs_per_embdding_dim, \
-                                                    self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-                                                   )
-        else:
-            self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
-                                                    self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-                                                   )
+        # if self.model_type == 'slot':
+        #     self.head_observations = self._create_head_for_slots(self.act_tokens_pattern, self.obs_per_embdding_dim, \
+        #                                             self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
+        #                                            )
+        # else:
+        self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
+                                                self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
+                                               )
         if self.continuous_action_space:
             self.sigma_type = self.config.sigma_type
             self.bound_type = self.config.bound_type
@@ -1109,7 +1109,6 @@ class WorldModel(nn.Module):
                 token_indices = valid_context_lengths.unsqueeze(-1) + torch.arange(num_steps, device=self.device).unsqueeze(0)
                 pos_indices = _token_to_pos_index(token_indices)
                 position_embeddings = self.pos_emb(pos_indices)
-                embeddings + position_embeddings
                 return embeddings + position_embeddings
 
     #@profile
@@ -1461,7 +1460,9 @@ class WorldModel(nn.Module):
         self.keys_values_wm_size_list = self.trim_and_pad_kv_cache(is_init_infer=False)
         self.keys_values_wm_size_list_current = self.keys_values_wm_size_list
 
-        for k in range(2):
+        aggregated_latent_for_pred = torch.zeros(latest_state.shape[0], 1, self.embed_dim, device=self.device)
+
+        for k in range(self.tokens_per_block):
             # action_token obs_token
             if k == 0:
                 obs_embeddings_or_act_tokens = {'act_tokens': token}
@@ -1478,15 +1479,12 @@ class WorldModel(nn.Module):
                 search_depth=search_depth # List containing depth of latent states in the search tree.
             )
 
-            if k == 0:
-                self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
-            else:
-                self.keys_values_wm_size_list_current = [i + self.num_observations_tokens for i in self.keys_values_wm_size_list_current]
+            self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
 
             if k == 0:
                 reward = outputs_wm.logits_rewards  # (B,)
 
-            if k < 1:
+            if k < self.num_observations_tokens:
                 token = outputs_wm.logits_observations
                 if self.model_type == 'slot':
                     if len(token.shape) == 4:
@@ -1496,8 +1494,15 @@ class WorldModel(nn.Module):
                         token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
                 latent_state_list.append(token)
 
+            if k > 0:
+                aggregated_latent_for_pred = aggregated_latent_for_pred + outputs_wm.output_sequence
+
+
         del self.latent_state  # Very important to minimize cuda memory usage
         self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
+
+        policy = self.head_policy.head_module(aggregated_latent_for_pred)
+        value  = self.head_value.head_module(aggregated_latent_for_pred)
 
         self.update_cache_context(
             self.latent_state,
@@ -1505,7 +1510,7 @@ class WorldModel(nn.Module):
             simulation_index=simulation_index,
         )
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
+        return (outputs_wm.output_sequence, self.latent_state, reward, policy, value)
 
 
     #@profile
@@ -2133,7 +2138,7 @@ class WorldModel(nn.Module):
                                                                                            batch['mask_padding'])
 
         # Reshape the logits and labels for observations
-        logits_observations = rearrange(outputs.logits_observations[:, :-1], 'b t k o -> (b t k) o')
+        logits_observations = rearrange(outputs.logits_observations[:, :-self.num_observations_tokens], 'b t o -> (b t) o')
         labels_observations = labels_observations.reshape(-1, self.projection_input_dim)
 
         # Compute prediction loss for observations. Options: MSE and Group KL
