@@ -196,7 +196,7 @@ class SlotHead(Slicer):
         selected_tokens = x[:, selected_token_indices, :]
         batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
         num_timesteps = num_selected_tokens // self.num_kept_tokens
-        if num_selected_tokens != self.num_kept_tokens:
+        if num_selected_tokens % self.num_kept_tokens != 0:
             selected_tokens = selected_tokens.new_zeros(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
         tokens_grouped_by_time = selected_tokens.view(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
         aggregated_tokens = tokens_grouped_by_time.sum(dim=2)
