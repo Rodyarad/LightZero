@@ -760,7 +760,7 @@ class SelfAttention(nn.Module):
         #slot_mask = ((b == b.T)|((b.T < b)&(( p== p.T)|(p.T==config.tokens_per_block-1)))).int()
 
         i = torch.arange(mask_size)
-        b, p = i[:,None]//3, i[:,None]%3
+        b, p = i[:,None]//config.tokens_per_block, i[:,None]%config.tokens_per_block
         slot_mask = ((b==b.T) | (b.T==b-1) | ((b.T<b-1)&((p==p.T)|(p.T==config.tokens_per_block-1)))).int()
 
         self.register_buffer('mask', slot_mask if config.model_type == 'slot' else causal_mask)

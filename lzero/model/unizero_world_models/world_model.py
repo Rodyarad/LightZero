@@ -751,9 +751,9 @@ class WorldModel(nn.Module):
         last_linear_layer_init_zero = True  # TODO
         if last_linear_layer_init_zero:
             if self.continuous_action_space:
-                module_to_initialize = [self.head_value, self.head_rewards]
+                module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
-                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards]
+                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
