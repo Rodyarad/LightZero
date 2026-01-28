@@ -582,6 +582,7 @@ class WorldModel(nn.Module):
 
     def _initialize_config_parameters(self) -> None:
         """Initialize configuration parameters."""
+        self.use_kv_cache = self.config.use_kv_cache
         self.policy_entropy_weight = self.config.policy_entropy_weight
         self.predict_latent_loss_type = self.config.predict_latent_loss_type
         self.group_size = self.config.group_size

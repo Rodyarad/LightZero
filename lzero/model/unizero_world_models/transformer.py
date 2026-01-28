@@ -781,16 +781,10 @@ class SelfAttention(nn.Module):
         head_size = C // self.num_heads
         
         past_len = 0
-        if kv_cache is not None:
-            past_len = kv_cache.shape[2]
 
         q = self.query(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
         k = self.key(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
         v = self.value(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
-
-        if kv_cache is not None:
-            kv_cache.update(k, v)
-            k, v = kv_cache.get()
 
         current_len = k.size(2)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -820,11 +814,6 @@ class SelfAttention(nn.Module):
                  # Only the actual register tokens in the current input `x` can see everything
                  register_mask[..., -self.register_token_num:, :] = 1
             mask = register_mask
-            
-            if kv_cache is not None:
-                # Ensure mask dimensions match the potentially smaller KV cache length
-                new_L = kv_cache.shape[2]
-                mask = mask[..., :new_L]
 
         att = att.masked_fill(mask == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
@@ -853,16 +842,10 @@ class SelfAttention(nn.Module):
         head_size = C // self.num_heads
 
         past_len = 0
-        if kv_cache is not None:
-            past_len = kv_cache.shape[2]
 
         q = self.query(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
         k = self.key(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
         v = self.value(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
-
-        if kv_cache is not None:
-            kv_cache.update(k, v)
-            k, v = kv_cache.get()
 
         current_len = k.size(2)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
