@@ -582,6 +582,7 @@ class WorldModel(nn.Module):
 
     def _initialize_config_parameters(self) -> None:
         """Initialize configuration parameters."""
+        self.disable_kv_cache_reuse = self.config.disable_kv_cache_reuse
         self.policy_entropy_weight = self.config.policy_entropy_weight
         self.predict_latent_loss_type = self.config.predict_latent_loss_type
         self.group_size = self.config.group_size
@@ -1300,16 +1301,19 @@ class WorldModel(nn.Module):
 
                         # ==================== Phase 1.6: Storage Layer Integration ====================
                         # Retrieve cached value
-                        if self.use_new_cache_manager:
-                            # NEW SYSTEM: Use KVCacheManager
-                            matched_value = self.kv_cache_manager.get_init_cache(env_id=i, cache_key=cache_key)
+                        if self.disable_kv_cache_reuse:
+                            matched_value = None
                         else:
-                            # OLD SYSTEM: Use legacy cache dictionaries
-                            cache_index = self.past_kv_cache_init_infer_envs[i].get(cache_key)
-                            if cache_index is not None:
-                                matched_value = self.shared_pool_init_infer[i][cache_index]
+                            if self.use_new_cache_manager:
+                                # NEW SYSTEM: Use KVCacheManager
+                                matched_value = self.kv_cache_manager.get_init_cache(env_id=i, cache_key=cache_key)
                             else:
-                                matched_value = None
+                                # OLD SYSTEM: Use legacy cache dictionaries
+                                cache_index = self.past_kv_cache_init_infer_envs[i].get(cache_key)
+                                if cache_index is not None:
+                                    matched_value = self.shared_pool_init_infer[i][cache_index]
+                                else:
+                                    matched_value = None
                         # =============================================================================
 
                         self.root_total_query_cnt += 1
@@ -1579,7 +1583,7 @@ class WorldModel(nn.Module):
             - search_depth (:obj:`list`): List of depth indices in the search tree.
             - valid_context_lengths (:obj:`list`): List of valid context lengths.
         """
-        if self.context_length <= self.tokens_per_block:
+        if self.context_length <= self.tokens_per_block or self.disable_kv_cache_reuse:
             # No context to update if the context length is less than or equal to 2.
             return
         for i in range(latent_state.size(0)):
@@ -1803,33 +1807,36 @@ class WorldModel(nn.Module):
                 # TODO: check if this is correct
                 matched_value = None
             else:
-                # ==================== Phase 1.6: Storage Layer Integration (Refactored) ====================
-                if self.use_new_cache_manager:
-                    # NEW SYSTEM: Use KVCacheManager's hierarchical_get for unified lookup
-                    matched_value = self.kv_cache_manager.hierarchical_get(env_id=index, cache_key=cache_key)
-
-                    # Log cache miss (统计由 KVCacheManager 自动处理)
-                    if matched_value is None:
-                        logging.debug(f"[NEW CACHE MISS] Not found for key={cache_key} in both init and recurrent cache.")
+                if self.disable_kv_cache_reuse:
+                    matched_value = None
                 else:
-                    # OLD SYSTEM: Use legacy cache dictionaries and pools
-                    # Try to retrieve the cached value from past_kv_cache_init_infer_envs
-                    cache_index = self.past_kv_cache_init_infer_envs[index].get(cache_key)
-                    if cache_index is not None:
-                        matched_value = self.shared_pool_init_infer[index][cache_index]
+                    # ==================== Phase 1.6: Storage Layer Integration (Refactored) ====================
+                    if self.use_new_cache_manager:
+                        # NEW SYSTEM: Use KVCacheManager's hierarchical_get for unified lookup
+                        matched_value = self.kv_cache_manager.hierarchical_get(env_id=index, cache_key=cache_key)
+
+                        # Log cache miss (统计由 KVCacheManager 自动处理)
+                        if matched_value is None:
+                            logging.debug(f"[NEW CACHE MISS] Not found for key={cache_key} in both init and recurrent cache.")
                     else:
-                        matched_value = None
+                        # OLD SYSTEM: Use legacy cache dictionaries and pools
+                        # Try to retrieve the cached value from past_kv_cache_init_infer_envs
+                        cache_index = self.past_kv_cache_init_infer_envs[index].get(cache_key)
+                        if cache_index is not None:
+                            matched_value = self.shared_pool_init_infer[index][cache_index]
+                        else:
+                            matched_value = None
 
-                    # 仅当在 init_infer 中未找到时，才尝试从 recurrent_infer 缓存中查找
-                    if matched_value is None:
-                        # 安全地从字典中获取索引，它可能返回 None
-                        recur_cache_index = self.past_kv_cache_recurrent_infer.get(cache_key)
-                        # 只有在索引有效（不是 None）的情况下，才使用它来从物理池中检索值
-                        if recur_cache_index is not None:
-                            matched_value = self.shared_pool_recur_infer[recur_cache_index]
+                        # 仅当在 init_infer 中未找到时，才尝试从 recurrent_infer 缓存中查找
+                        if matched_value is None:
+                            # 安全地从字典中获取索引，它可能返回 None
+                            recur_cache_index = self.past_kv_cache_recurrent_infer.get(cache_key)
+                            # 只有在索引有效（不是 None）的情况下，才使用它来从物理池中检索值
+                            if recur_cache_index is not None:
+                                matched_value = self.shared_pool_recur_infer[recur_cache_index]
 
-                        if recur_cache_index is None:
-                            logging.debug(f"[OLD CACHE MISS] Not found for key={cache_key} in recurrent infer. Generating new cache.")
+                            if recur_cache_index is None:
+                                logging.debug(f"[OLD CACHE MISS] Not found for key={cache_key} in recurrent infer. Generating new cache.")
                 # =============================================================================
 
             if matched_value is not None:

@@ -70,6 +70,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
         policy=dict(
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6, ), ), ),  # default is 10000
             model=dict(
+                disable_kv_cache_reuse = True,
                 observation_shape=(num_slots, slot_dim),
                 model_type='slot',
                 action_space_size=action_space_size,

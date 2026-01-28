@@ -79,6 +79,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
                 num_res_blocks=2,
                 num_channels=128,
                 world_model_cfg=dict(
+                    disable_kv_cache_reuse = True,
                     model_type='slot',
                     tokens_per_block=tokens_per_block,
                     use_new_cache_manager=False,
