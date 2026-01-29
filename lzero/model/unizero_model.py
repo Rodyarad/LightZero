@@ -394,7 +394,7 @@ class UniZeroModel(nn.Module):
         print(f'{"=" * 80}\n')
         
     def initial_inference(self, obs_batch: torch.Tensor, action_batch: Optional[torch.Tensor] = None, 
-                          current_obs_batch: Optional[torch.Tensor] = None, start_pos: int = 0) -> MZNetworkOutput:
+                          current_obs_batch: Optional[torch.Tensor] = None) -> MZNetworkOutput:
         """
         Overview:
             Initial inference of the UniZero model, which is the first step of the UniZero model.
@@ -426,7 +426,7 @@ class UniZeroModel(nn.Module):
         }
         
         # Perform initial inference using the world model
-        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict, start_pos)
+        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict)
         
         # Extract and squeeze the outputs for clarity
         latent_state = obs_token
@@ -442,7 +442,7 @@ class UniZeroModel(nn.Module):
         )
 
     def recurrent_inference(self, state_action_history: torch.Tensor, simulation_index: int = 0,
-                            search_depth: list = None, start_pos: int = 0) -> MZNetworkOutput:
+                            search_depth: list = None) -> MZNetworkOutput:
         """
         Overview:
             Performs recurrent inference of the UniZero model. This method concurrently predicts the latent dynamics 
@@ -470,7 +470,7 @@ class UniZeroModel(nn.Module):
 
         # Perform recurrent inference using the world model
         _, logits_observations, logits_rewards, logits_policy, logits_value = self.world_model.forward_recurrent_inference(
-            state_action_history, simulation_index, search_depth, start_pos)
+            state_action_history, simulation_index, search_depth)
 
         # Extract and squeeze the outputs for clarity
         next_latent_state = logits_observations

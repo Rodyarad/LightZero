@@ -1377,7 +1377,7 @@ class UniZeroPolicy(MuZeroPolicy):
         output = {i: None for i in ready_env_id}
 
         with torch.no_grad():
-            network_output = self._collect_model.initial_inference(self.last_batch_obs, self.last_batch_action, data, timestep)
+            network_output = self._collect_model.initial_inference(self.last_batch_obs, self.last_batch_action, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
@@ -1540,7 +1540,7 @@ class UniZeroPolicy(MuZeroPolicy):
             ready_env_id = np.arange(active_eval_env_num)
         output = {i: None for i in ready_env_id}
         with torch.no_grad():
-            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action, data, timestep)
+            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             # if not in training, obtain the scalars of the value/reward
@@ -1634,24 +1634,6 @@ class UniZeroPolicy(MuZeroPolicy):
             else: # Assumes it's a list
                 env_ids_to_reset = env_id
 
-            # The key condition: `current_steps` is None only on the end-of-episode reset call from the collector.
-            if current_steps is None:
-                world_model = self._collect_model.world_model
-                for eid in env_ids_to_reset:
-                    # ==================== BUG FIX: Refactored Cache Clearing ====================
-                    # Clear the specific environment's initial inference cache.
-                    if hasattr(world_model, 'use_new_cache_manager') and world_model.use_new_cache_manager:
-                        # NEW SYSTEM: Use KVCacheManager to clear per-environment cache
-                        if eid < world_model.env_num:
-                            world_model.kv_cache_manager.init_pools[eid].clear()
-                            print(f'>>> [Collector] Cleared KV cache for env_id: {eid} at episode end (NEW system).')
-                    else:
-                        # OLD SYSTEM: Use legacy cache dictionary
-                        if eid < len(world_model.past_kv_cache_init_infer_envs):
-                            world_model.past_kv_cache_init_infer_envs[eid].clear()
-                            print(f'>>> [Collector] Cleared KV cache for env_id: {eid} at episode end (OLD system).')
-                    # =============================================================================
-
         # ======== TODO: 20251015 ========
         # Determine the clear interval based on the environment's sample type
         # clear_interval = 2000 if getattr(self._cfg, 'sample_type', '') == 'episode' else 200
@@ -1718,31 +1700,6 @@ class UniZeroPolicy(MuZeroPolicy):
 
             # The key condition: `current_steps` is None only on the end-of-episode reset call from the evaluator.
             if current_steps is None:
-                world_model = self._eval_model.world_model
-                for eid in env_ids_to_reset:
-                    # ==================== BUG FIX: Refactored Cache Clearing ====================
-                    # Clear the specific environment's initial inference cache.
-                    if hasattr(world_model, 'use_new_cache_manager') and world_model.use_new_cache_manager:
-                        # NEW SYSTEM: Use KVCacheManager to clear per-environment cache
-                        if eid < world_model.env_num:
-                            world_model.kv_cache_manager.init_pools[eid].clear()
-                            print(f'>>> [Evaluator] Cleared KV cache for env_id: {eid} at episode end (NEW system).')
-                    else:
-                        # OLD SYSTEM: Use legacy cache dictionary
-                        if eid < len(world_model.past_kv_cache_init_infer_envs):
-                            world_model.past_kv_cache_init_infer_envs[eid].clear()
-                            print(f'>>> [Evaluator] Cleared KV cache for env_id: {eid} at episode end (OLD system).')
-                    # =============================================================================
-
-                # The recurrent cache is global.
-                # ==================== Phase 1.5: Use unified clear_caches() method ====================
-                # This automatically handles both old and new cache systems
-                world_model.clear_caches()
-                # ======================================================================================
-
-                if hasattr(world_model, 'keys_values_wm_list'):
-                    world_model.keys_values_wm_list.clear()
-
                 torch.cuda.empty_cache()
                 return
             # --- END ROBUST FIX ---
@@ -1986,8 +1943,5 @@ class UniZeroPolicy(MuZeroPolicy):
             Clear the caches and precompute positional embedding matrices in the model.
         """
         for model in [self._collect_model, self._target_model]:
-            if not self._cfg.model.world_model_cfg.rotary_emb:
-                # If rotary_emb is False, nn.Embedding is used for absolute position encoding.
-                model.world_model.precompute_pos_emb_diff_kv()
             model.world_model.clear_caches()
         torch.cuda.empty_cache()

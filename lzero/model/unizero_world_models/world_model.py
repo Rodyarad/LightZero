@@ -931,52 +931,44 @@ class WorldModel(nn.Module):
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
-        latent_state_list = []
-        if not self.continuous_action_space:
-            token = action.reshape(-1, 1)
+        max_history_len = self.max_blocks
+        if len(state_action_history) > max_history_len:
+            state_action_history = state_action_history[-max_history_len:]
+
+        history_states = []
+        history_actions = []
+
+        for state, act in state_action_history:
+            if isinstance(state, np.ndarray):
+                state = torch.from_numpy(state).to(self.device)
+            if isinstance(act, np.ndarray):
+                act = torch.from_numpy(act).to(self.device)
+
+            if not isinstance(state, torch.Tensor):
+                state = torch.tensor(state, device=self.device)
+            if not isinstance(act, torch.Tensor):
+                act = torch.tensor(act, device=self.device)
+            history_states.append(state)
+            history_actions.append(act)
+
+        obs_embeddings = torch.stack(history_states, dim=1)  # (B, L, K, E)
+
+        if self.continuous_action_space:
+            act_tokens = torch.stack(history_actions, dim=1)  # (B, L, action_space_size)
         else:
-            token = action.reshape(-1, self.action_space_size)
+            act_tokens = torch.stack(history_actions, dim=1)  # (B, L)
+            act_tokens = act_tokens.unsqueeze(-1)  # (B, L, 1)
 
-        aggregated_latent_for_pred = torch.zeros(latest_state.shape[0], 1, self.embed_dim, device=self.device)
+        outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)})
 
-        for k in range(self.tokens_per_block):
-            # action_token obs_token
-            if k == 0:
-                obs_embeddings_or_act_tokens = {'act_tokens': token}
-            else:
-                obs_embeddings_or_act_tokens = {'obs_embeddings': token}
+        reward = outputs_wm.logits_rewards[:, -1, :]  # (B, support_size)
+        policy = outputs_wm.logits_policy[:, -1, :]  # (B, action_space_size)
+        value = outputs_wm.logits_value[:, -1, :]  # (B, support_size)
+        next_latent = outputs_wm.logits_observations[:, -self.num_observations_tokens:, :]
 
-            # Perform forward pass
-            outputs_wm = self.forward(
-                obs_embeddings_or_act_tokens,
-                is_init_infer=False,
-                search_depth=search_depth # List containing depth of latent states in the search tree.
-            )
+        self.latent_state = next_latent
 
-            if k == 0:
-                reward = outputs_wm.logits_rewards  # (B,)
-
-            if k < self.num_observations_tokens:
-                token = outputs_wm.logits_observations
-                if self.model_type == 'slot':
-                    if len(token.shape) == 4:
-                        token = token.squeeze(1)
-                else:
-                    if len(token.shape) != 3:
-                        token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
-                latent_state_list.append(token)
-
-            if k > 0:
-                aggregated_latent_for_pred = aggregated_latent_for_pred + outputs_wm.output_sequence
-
-
-        del self.latent_state  # Very important to minimize cuda memory usage
-        self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
-
-        policy = self.head_policy.head_module(aggregated_latent_for_pred)
-        value  = self.head_value.head_module(aggregated_latent_for_pred)
-
-        return (outputs_wm.output_sequence, self.latent_state, reward, policy, value)
+        return (None, self.latent_state, reward, policy, value)
 
 
     def compute_loss(self, batch, target_tokenizer: Tokenizer = None, inverse_scalar_transform_handle=None,

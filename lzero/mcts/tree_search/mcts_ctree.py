@@ -179,7 +179,7 @@ class UniZeroMCTSCtree(object):
                         network_output = model.recurrent_inference(state_action_history, simulation_index, search_depth, task_id=task_id)
                     else:
                         # single task setting
-                        network_output = model.recurrent_inference(state_action_history, simulation_index, search_depth, timestep)
+                        network_output = model.recurrent_inference(state_action_history, simulation_index, search_depth)
 
                 network_output.latent_state = to_detach_cpu_numpy(network_output.latent_state)
                 network_output.policy_logits = to_detach_cpu_numpy(network_output.policy_logits)

@@ -572,7 +572,7 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
                 m_output = model.initial_inference(batch_obs, batch_action, task_id=self.task_id)
 
             else:
-                m_output = model.initial_inference(batch_obs, batch_action, start_pos=batch_timestep)
+                m_output = model.initial_inference(batch_obs, batch_action)
 
             # ======================================================================
 
