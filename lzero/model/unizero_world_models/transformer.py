@@ -511,81 +511,10 @@ class Transformer(nn.Module):
         self.ln_f = nn.LayerNorm(config.embed_dim)
 
         self.task_embed = task_embed
-        self.task_embed_option = self.config.task_embed_option
-        self.use_register_token = (self.task_embed_option == "register_task_embed")
-
-        if self.use_register_token:
-            self.register_token_num = getattr(config, "register_token_num", 4)
-            self.register_token_shared = getattr(config, "register_token_shared", True)
-            
-            if self.register_token_shared:
-                # Shared mode: all tasks use the same register_tokens parameter.
-                self.register_tokens = nn.Parameter(torch.empty(self.register_token_num, config.embed_dim))
-                nn.init.xavier_uniform_(self.register_tokens)
-            else:
-                # Non-shared mode: relies on the external `task_embed` module to generate
-                # task-specific embeddings, which are then normalized and expanded.
-                self.task_embed = task_embed
-                self.sim_norm = SimNorm(simnorm_dim=config.embed_dim)
-
-    def add_register_tokens(self, sequences: torch.Tensor, task_id: int) -> torch.Tensor:
-        """
-        Overview:
-            Prepends or appends register tokens to the input sequences.
-        Arguments:
-            - sequences (:obj:`torch.Tensor`): The input sequences, with shape (B, T, C).
-            - task_id (:obj:`int`): The ID of the current task.
-        Returns:
-            - torch.Tensor: The sequences with register tokens concatenated, shape (B, T + register_token_num, C).
-        """
-        B = sequences.size(0)
-        device = sequences.device
-
-        if self.register_token_shared:
-            # Shared mode: use the same set of register tokens for all batches.
-            register_tokens = self.register_tokens.unsqueeze(0).expand(B, -1, -1)
-        else:
-            # Non-shared mode: dynamically generate task embedding and expand it.
-            task_embedding = self.task_embed(torch.tensor([task_id], device=device))
-            task_embedding = self.sim_norm(task_embedding.view(1, -1)).view(-1)
-            register_tokens = task_embedding.unsqueeze(0).expand(self.register_token_num, -1)
-            register_tokens = register_tokens.unsqueeze(0).expand(B, -1, -1)
-
-        # Concatenate register tokens at the end of the sequence.
-        new_sequences = torch.cat([sequences, register_tokens], dim=1)
-        return new_sequences
-
-    def remove_register_tokens_from_kv(self, past_keys_values: Optional[KeysValues]) -> None:
-        """
-        Overview:
-            Removes the register tokens from the key-value cache of all layers.
-            This is called at the end of the forward pass during inference.
-        Arguments:
-            - past_keys_values (:obj:`Optional[KeysValues]`): The key-value cache.
-        """
-        if past_keys_values is not None:
-            past_keys_values.remove_register_tokens(self.register_token_num)
-
-    def generate_empty_keys_values(self, n: int, max_tokens: int) -> KeysValues:
-        """
-        Overview:
-            Generates a placeholder for the key-value cache.
-        Arguments:
-            - n (:obj:`int`): The batch size.
-            - max_tokens (:obj:`int`): The maximum number of tokens in the sequence.
-        Returns:
-            - KeysValues: An object containing empty tensors for keys and values.
-        """
-        device = self.ln_f.weight.device
-        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, self.config.tokens_per_block, device)
 
     def forward(
         self,
         sequences: torch.Tensor,
-        past_keys_values: Optional[KeysValues] = None,
-        valid_context_lengths: Optional[torch.Tensor] = None,
-        task_id: int = 0,
-        start_pos: int = 0
     ) -> torch.Tensor:
         """
         Overview:
@@ -599,25 +528,12 @@ class Transformer(nn.Module):
         Returns:
             - torch.Tensor: The output tensor of shape (B, T, C).
         """
-        if self.use_register_token:
-            sequences = self.add_register_tokens(sequences, task_id)
-
         x = self.drop(sequences)
 
         for i, block in enumerate(self.blocks):
-            kv_cache_layer = None if past_keys_values is None else past_keys_values[i]
-            x = block(x, kv_cache_layer, valid_context_lengths)
+            x = block(x)
 
         x = self.ln_f(x)
-
-        if self.use_register_token:
-            # During inference, remove register tokens from the KV cache to maintain consistency
-            # for external logic that does not expect them.
-            if past_keys_values is not None:
-                self.remove_register_tokens_from_kv(past_keys_values)
-            
-            # TODO: Remove register tokens from the final output to match the input sequence length.
-            x = x[:, :-self.register_token_num, :]
 
         return x
 
@@ -691,8 +607,7 @@ class Block(nn.Module):
                 nn.Dropout(config.resid_pdrop),
             )
 
-    def forward(self, x: torch.Tensor, past_keys_values: Optional[KeysValues] = None,
-                valid_context_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Overview:
             Performs the forward pass of the Transformer block.
@@ -703,7 +618,7 @@ class Block(nn.Module):
         Returns:
             - torch.Tensor: Output tensor of shape (batch_size, seq_length, embed_dim).
         """
-        attn_output = self.attn(self.ln1(x), past_keys_values, valid_context_lengths)
+        attn_output = self.attn(self.ln1(x))
         if self.gru_gating:
             x = self.gate1(x, attn_output)
             ff_output = self.feed_forward(self.ln2(x))
@@ -765,8 +680,7 @@ class SelfAttention(nn.Module):
 
         self.register_buffer('mask', slot_mask if config.model_type == 'slot' else causal_mask)
 
-    def forward(self, x: torch.Tensor, kv_cache: Optional[KeysValues] = None,
-                valid_context_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Overview:
             Performs the forward pass for the self-attention mechanism.
@@ -791,16 +705,6 @@ class SelfAttention(nn.Module):
 
         # Construct the attention mask
         mask = self.mask[past_len:past_len + T, :current_len]
-
-        if valid_context_lengths is not None:
-            # This logic is for a specific use case and may need adjustment.
-            # It creates a custom mask for each item in the batch.
-            batch_mask = torch.zeros(B, T, current_len, device=att.device)
-            for i in range(B):
-                batch_mask[i] = mask.clone()
-                # Zero out attention to invalid past context
-                batch_mask[i, :, :(past_len - valid_context_lengths[i])] = 0
-            mask = batch_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
         # Adjust mask for register tokens if they are in use
         if self.use_register_token and self.register_token_num > 0:
@@ -851,12 +755,6 @@ class SelfAttention(nn.Module):
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
         mask = self.mask[past_len:past_len + T, :current_len]
-        if valid_context_lengths is not None:
-            batch_mask = torch.zeros(B, T, current_len, device=att.device)
-            for i in range(B):
-                batch_mask[i] = mask.clone()
-                batch_mask[i, :, :(past_len - valid_context_lengths[i])] = 0
-            mask = batch_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
         att = att.masked_fill(mask == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
