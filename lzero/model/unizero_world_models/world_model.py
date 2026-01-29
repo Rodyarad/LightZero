@@ -1041,22 +1041,11 @@ class WorldModel(nn.Module):
         x = self._transformer_pass(
             sequences, past_keys_values, kvcache_independent, valid_context_lengths, start_pos=start_pos_adjusted
         )
-
-        if self.model_type == 'slot':
-             num_steps_for_heads = x.size(1)
-             if past_keys_values is not None:
-                 actual_cache_size = past_keys_values.shape[2] if hasattr(past_keys_values, 'shape') else past_keys_values.size
-                 prev_steps_for_heads = actual_cache_size - num_steps_for_heads
-             else:
-                 prev_steps_for_heads = prev_steps
-        else:
-             num_steps_for_heads = num_steps
-             prev_steps_for_heads = prev_steps
         
         # Generate logits for various components.
-        logits_observations = self.head_observations(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
-        logits_rewards = self.head_rewards(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
-        logits_policy = self.head_policy(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
+        logits_observations = self.head_observations(x, num_steps, prev_steps)
+        logits_rewards = self.head_rewards(x, num_steps, prev_steps)
+        logits_policy = self.head_policy(x, num_steps, prev_steps)
 
         # ==================== [NEW] Fix1: Clip Policy Logits ====================
         # Prevent policy logits from exploding, which can cause gradient issues
@@ -1068,7 +1057,7 @@ class WorldModel(nn.Module):
             )
         # ========================================================================
 
-        logits_value = self.head_value(x, num_steps=num_steps_for_heads, prev_steps=prev_steps_for_heads)
+        logits_value = self.head_value(x, num_steps, prev_steps)
 
         # The 'logits_ends' is intentionally set to None.
         return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
