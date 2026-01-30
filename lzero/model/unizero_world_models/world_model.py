@@ -401,7 +401,7 @@ class WorldModel(nn.Module):
         """Initialize patterns for block masks."""
         if self.model_type == 'slot':
             self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
-            self.all_but_last_latent_state_pattern[-2] = 0
+            self.all_but_last_latent_state_pattern[-1] = 0
             self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
             self.act_tokens_pattern[-1] = 1
             self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
