@@ -669,11 +669,11 @@ class SelfAttention(nn.Module):
         causal_mask = torch.tril(torch.ones(mask_size, mask_size))
 
         #block mask
-        #slot_mask = torch.max(causal_mask, torch.block_diag(*[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
+        slot_mask = torch.max(causal_mask, torch.block_diag(*[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
 
-        i = torch.arange(mask_size)
-        b, p = i[:,None]//config.tokens_per_block, i[:,None]%config.tokens_per_block
-        slot_mask = ((b == b.T)|((b.T < b)&(( p== p.T)|(p.T==config.tokens_per_block-1)))).int()
+        # i = torch.arange(mask_size)
+        # b, p = i[:,None]//config.tokens_per_block, i[:,None]%config.tokens_per_block
+        # slot_mask = ((b == b.T)|((b.T < b)&(( p== p.T)|(p.T==config.tokens_per_block-1)))).int()
 
         self.register_buffer('mask', slot_mask if config.model_type == 'slot' else causal_mask)
 
