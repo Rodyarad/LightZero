@@ -426,13 +426,14 @@ class UniZeroModel(nn.Module):
         }
         
         # Perform initial inference using the world model
-        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict)
+        _, obs_token, logits_rewards, logits_policy, logits_value, logits_mask = self.world_model.forward_initial_inference(obs_act_dict)
         
         # Extract and squeeze the outputs for clarity
         latent_state = obs_token
         reward = logits_rewards
         policy_logits = logits_policy.squeeze(1)
         value = logits_value.squeeze(1)
+        mask_logits = logits_mask.squeeze(1) if logits_mask is not None else None
 
         return MZNetworkOutput(
             value=value,
@@ -469,7 +470,7 @@ class UniZeroModel(nn.Module):
             search_depth = []
 
         # Perform recurrent inference using the world model
-        _, logits_observations, logits_rewards, logits_policy, logits_value = self.world_model.forward_recurrent_inference(
+        _, logits_observations, logits_rewards, logits_policy, logits_value, logits_mask = self.world_model.forward_recurrent_inference(
             state_action_history, simulation_index, search_depth)
 
         # Extract and squeeze the outputs for clarity
@@ -477,5 +478,12 @@ class UniZeroModel(nn.Module):
         reward = logits_rewards.squeeze(1)
         policy_logits = logits_policy.squeeze(1)
         value = logits_value.squeeze(1)
+        mask_logits = logits_mask.squeeze(1) if logits_mask is not None else None
 
-        return MZNetworkOutput(value=value, reward=reward, policy_logits=policy_logits, latent_state=next_latent_state)
+        return MZNetworkOutput(
+            value=value,
+            reward=reward,
+            policy_logits=policy_logits,
+            latent_state=next_latent_state,
+            mask_logits=mask_logits,
+        )

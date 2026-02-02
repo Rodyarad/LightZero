@@ -94,6 +94,30 @@ class WorldModel(nn.Module):
         else:
             self.obs_per_embdding_dim = self.config.embed_dim
         self.continuous_action_space = self.config.continuous_action_space
+        self.use_action_absraction = self.config.use_action_absraction
+        # Optional: number of objects for object-level action abstraction.
+        # Must be defined on the instance because multiple parts of the code refer to `self.num_objects`.
+        self.num_objects = None
+
+        # When object-level action abstraction is enabled, enforce a consistent configuration
+        # up-front so that we cannot accidentally run experiments where the mask has no effect.
+        if self.use_action_absraction:
+            if self.continuous_action_space:
+                raise ValueError(
+                    "WorldModel: use_action_absraction=True is only supported for discrete action spaces "
+                    "(continuous_action_space must be False)."
+                )
+            if getattr(self.config, 'num_objects', None) is None:
+                raise ValueError(
+                    "WorldModel: use_action_absraction=True requires `config.num_objects` to be set."
+                )
+            if self.config.action_space_size % self.config.num_objects != 0:
+                raise ValueError(
+                    f"WorldModel: action_space_size ({self.config.action_space_size}) must be divisible by "
+                    f"num_objects ({self.config.num_objects}) when use_action_absraction=True."
+                )
+            # Cache for convenience and to avoid AttributeError.
+            self.num_objects = int(self.config.num_objects)
 
         # Initialize action embedding table
         if self.continuous_action_space:
@@ -135,6 +159,14 @@ class WorldModel(nn.Module):
             self.head_value = self._create_slot_head(self.value_policy_tokens_pattern, self.support_size)
         else:
             self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
+
+        if self.use_action_absraction and not self.continuous_action_space:
+            self.head_mask = self._create_slot_head(
+                self.value_policy_tokens_pattern,
+                self.num_objects,
+            )
+        else:
+            self.head_mask = None
 
         self.head_dict = {}
         for name, module in self.named_children():
@@ -514,12 +546,21 @@ class WorldModel(nn.Module):
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
                 module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
+                # Also zero-init the optional mask head if it exists.
+                if self.use_action_absraction:
+                    module_to_initialize.append(self.head_mask)
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
-                        nn.init.zeros_(layer.weight)
-                        if layer.bias is not None:
-                            nn.init.zeros_(layer.bias)
+                        if head == self.head_mask and self.use_action_absraction:
+                            nn.init.xavier_uniform_(layer.weight)
+                            if layer.bias is not None:
+                                nn.init.zeros_(layer.bias)
+                        else:
+                            # Standard zero initialization for other heads
+                            nn.init.zeros_(layer.weight)
+                            if layer.bias is not None:
+                                nn.init.zeros_(layer.bias)
                         break
 
 
@@ -683,9 +724,20 @@ class WorldModel(nn.Module):
         # ========================================================================
 
         logits_value = self.head_value(x, num_steps, 0)
+        logits_mask = None
+        if self.use_action_absraction:
+            logits_mask = self.head_mask(x, num_steps, 0)
 
         # The 'logits_ends' is intentionally set to None.
-        return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
+        return WorldModelOutput(
+            x,
+            logits_observations,
+            logits_rewards,
+            None,
+            logits_policy,
+            logits_value,
+            logits_mask,
+        )
 
     #@profile
     def _add_position_embeddings(self, embeddings, num_steps):
@@ -912,7 +964,7 @@ class WorldModel(nn.Module):
         # =============================================================================
 
         return (outputs_wm.output_sequence, latent_state, outputs_wm.logits_rewards,
-                outputs_wm.logits_policy, outputs_wm.logits_value)
+                outputs_wm.logits_policy, outputs_wm.logits_value, outputs_wm.logits_mask)
 
     #@profile
     @torch.no_grad()
@@ -965,10 +1017,11 @@ class WorldModel(nn.Module):
         policy = outputs_wm.logits_policy[:, -1, :]  # (B, action_space_size)
         value = outputs_wm.logits_value[:, -1, :]  # (B, support_size)
         next_latent = outputs_wm.logits_observations[:, -self.num_observations_tokens:, :]
+        mask = outputs_wm.logits_mask[:, -1, :]
 
         self.latent_state = next_latent
 
-        return (None, self.latent_state, reward, policy, value)
+        return (None, self.latent_state, reward, policy, value, mask)
 
 
     def compute_loss(self, batch, target_tokenizer: Tokenizer = None, inverse_scalar_transform_handle=None,
@@ -1289,6 +1342,27 @@ class WorldModel(nn.Module):
 
         loss_value = self.compute_cross_entropy_loss(outputs, labels_value, batch, element='value')
 
+        if self.use_action_absraction and not self.continuous_action_space and outputs.logits_mask is not None:
+            logits_mask = outputs.logits_mask
+            target_policy_full = batch['target_policy']
+
+            B, T, A = target_policy_full.shape
+            num_objects = self.num_objects
+            actions_per_obj = A // num_objects
+
+            target_policy_obj = target_policy_full.view(B, T, num_objects, actions_per_obj).sum(dim=-1)
+
+            logits_flat = logits_mask.view(B * T, num_objects)
+            targets_flat = target_policy_obj.view(B * T, num_objects)
+
+            mask_padding_flat = batch['mask_padding'].contiguous().view(-1).float()
+
+            targets_idx = targets_flat.argmax(dim=1)
+            mask_loss = F.cross_entropy(logits_flat, targets_idx, reduction='none')
+            mask_loss = mask_loss * mask_padding_flat
+        else:
+            mask_loss = torch.zeros_like(loss_value)
+
         # ==== TODO: calculate the new priorities for each transition. ====
         # value_priority = L1Loss(reduction='none')(labels_value.squeeze(-1), outputs['logits_value'][:, 0])
         # value_priority = value_priority.data.cpu().numpy() + 1e-6
@@ -1345,6 +1419,11 @@ class WorldModel(nn.Module):
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
 
+        # Discounted mask loss over timesteps (same discount schedule).
+        discounted_mask_loss = (
+            mask_loss.view(-1, batch['actions'].shape[1]) * discounts
+        ).sum() / batch['mask_padding'].sum()
+
         # 为了让外部的训练循环能够获取encoder的输出，我们将其加入返回字典
         # 使用 .detach() 是因为这个张量仅用于后续的clip操作，不应影响梯度计算
         detached_obs_embeddings = obs_embeddings.detach()
@@ -1396,11 +1475,13 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
+                mask_loss_weight=float(getattr(self.config, 'mask_loss_weight', 0.0)),
                 continuous_action_space=False,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_mask=discounted_mask_loss,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,

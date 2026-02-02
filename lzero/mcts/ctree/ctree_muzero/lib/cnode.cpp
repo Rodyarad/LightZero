@@ -146,6 +146,118 @@ namespace tree
         #endif
     }
 
+    void CNode::expand_with_action_mask(
+        int to_play,
+        int current_latent_state_index,
+        int batch_index,
+        float reward,
+        const std::vector<float> &policy_logits,
+        const std::vector<float> &action_mask
+    )
+    {
+        /*
+        Overview:
+            Expand the child nodes of the current node with a per-action validity mask.
+            Invalid actions will receive zero prior probability (equivalent to -inf logit before softmax),
+            but children entries are still created for consistency.
+        */
+        this->to_play = to_play;
+        this->current_latent_state_index = current_latent_state_index;
+        this->batch_index = batch_index;
+        this->reward = reward;
+
+        int action_num = policy_logits.size();
+        if (this->legal_actions.size() == 0)
+        {
+            for (int i = 0; i < action_num; ++i)
+            {
+                this->legal_actions.push_back(i);
+            }
+        }
+
+        // Build validity mask (default: all valid). Index by action id.
+        this->action_valid = std::vector<uint8_t>(action_num, 1);
+        if ((int)action_mask.size() == action_num)
+        {
+            for (int a = 0; a < action_num; ++a)
+            {
+                this->action_valid[a] = (action_mask[a] > 0.0f) ? 1 : 0;
+            }
+        }
+
+        // If all legal actions are masked out, ignore the mask (fallback).
+        bool any_valid = false;
+        for (auto a : this->legal_actions)
+        {
+            if (a >= 0 && a < action_num && this->action_valid[a])
+            {
+                any_valid = true;
+                break;
+            }
+        }
+        if (!any_valid)
+        {
+            for (int a = 0; a < action_num; ++a)
+            {
+                this->action_valid[a] = 1;
+            }
+        }
+
+        float temp_policy;
+        float policy_sum = 0.0;
+
+        #ifdef _WIN32
+        float* policy = new float[action_num];
+        #else
+        float policy[action_num];
+        #endif
+
+        float policy_max = FLOAT_MIN;
+        for (auto a : this->legal_actions)
+        {
+            if (a < 0 || a >= action_num) { continue; }
+            if (!this->action_valid[a]) { continue; }
+            if (policy_max < policy_logits[a])
+            {
+                policy_max = policy_logits[a];
+            }
+        }
+
+        for (auto a : this->legal_actions)
+        {
+            if (a < 0 || a >= action_num) { continue; }
+            if (!this->action_valid[a])
+            {
+                policy[a] = 0.0f;
+                continue;
+            }
+            temp_policy = exp(policy_logits[a] - policy_max);
+            policy_sum += temp_policy;
+            policy[a] = temp_policy;
+        }
+
+        float prior;
+        for (auto a : this->legal_actions)
+        {
+            if (a < 0 || a >= action_num) { continue; }
+            if (policy_sum > 0.0f)
+            {
+                prior = policy[a] / policy_sum;
+            }
+            else
+            {
+                prior = 0.0f;
+            }
+            std::vector<int> tmp_empty;
+            this->children[a] = CNode(prior, tmp_empty);
+        }
+
+        #ifdef _WIN32
+        delete[] policy;
+        #else
+        #endif
+    }
+
     void CNode::add_exploration_noise(float exploration_fraction, const std::vector<float> &noises)
     {
         /*
@@ -357,6 +469,39 @@ namespace tree
         }
     }
 
+    void CRoots::prepare_with_action_masks(
+        float root_noise_weight,
+        const std::vector<std::vector<float> > &noises,
+        const std::vector<float> &rewards,
+        const std::vector<std::vector<float> > &policies,
+        const std::vector<std::vector<float> > &action_masks,
+        std::vector<int> &to_play_batch
+    )
+    {
+        for (int i = 0; i < this->root_num; ++i)
+        {
+            const std::vector<float> &mask = action_masks[i];
+            this->roots[i].expand_with_action_mask(to_play_batch[i], 0, i, rewards[i], policies[i], mask);
+            this->roots[i].add_exploration_noise(root_noise_weight, noises[i]);
+            this->roots[i].visit_count += 1;
+        }
+    }
+
+    void CRoots::prepare_no_noise_with_action_masks(
+        const std::vector<float> &rewards,
+        const std::vector<std::vector<float> > &policies,
+        const std::vector<std::vector<float> > &action_masks,
+        std::vector<int> &to_play_batch
+    )
+    {
+        for (int i = 0; i < this->root_num; ++i)
+        {
+            const std::vector<float> &mask = action_masks[i];
+            this->roots[i].expand_with_action_mask(to_play_batch[i], 0, i, rewards[i], policies[i], mask);
+            this->roots[i].visit_count += 1;
+        }
+    }
+
     void CRoots::clear()
     {
         /*
@@ -499,6 +644,25 @@ namespace tree
         }
     }
 
+    void cbatch_backpropagate_with_action_masks(
+        int current_latent_state_index,
+        float discount_factor,
+        const std::vector<float> &rewards,
+        const std::vector<float> &values,
+        const std::vector<std::vector<float> > &policies,
+        const std::vector<std::vector<float> > &action_masks,
+        tools::CMinMaxStatsList *min_max_stats_lst,
+        CSearchResults &results,
+        std::vector<int> &to_play_batch
+    )
+    {
+        for (int i = 0; i < results.num; ++i)
+        {
+            results.nodes[i]->expand_with_action_mask(to_play_batch[i], current_latent_state_index, i, rewards[i], policies[i], action_masks[i]);
+            cbackpropagate(results.search_paths[i], min_max_stats_lst->stats_lst[i], to_play_batch[i], values[i], discount_factor);
+        }
+    }
+
     void cbatch_backpropagate_with_reuse(int current_latent_state_index, float discount_factor, const std::vector<float> &value_prefixs, const std::vector<float> &values, const std::vector<std::vector<float> > &policies, tools::CMinMaxStatsList *min_max_stats_lst, CSearchResults &results, std::vector<int> &to_play_batch, std::vector<int> &no_inference_lst, std::vector<int> &reuse_lst, std::vector<float> &reuse_value_lst)
     {
         /*
@@ -567,8 +731,19 @@ namespace tree
         float max_score = FLOAT_MIN;
         const float epsilon = 0.000001;
         std::vector<int> max_index_lst;
+
+        const bool has_mask = (root->action_valid.size() > 0);
+
+        // First pass: respect action mask (invalid actions are treated as -inf).
         for (auto a : root->legal_actions)
         {
+            if (has_mask)
+            {
+                if (a < 0 || a >= (int)root->action_valid.size() || root->action_valid[a] == 0)
+                {
+                    continue;
+                }
+            }
 
             CNode *child = root->get_child(a);
             float temp_score = cucb_score(child, min_max_stats, mean_q, root->visit_count - 1, pb_c_base, pb_c_init, discount_factor, players);
@@ -576,13 +751,34 @@ namespace tree
             if (max_score < temp_score)
             {
                 max_score = temp_score;
-
                 max_index_lst.clear();
                 max_index_lst.push_back(a);
             }
             else if (temp_score >= max_score - epsilon)
             {
                 max_index_lst.push_back(a);
+            }
+        }
+
+        // Fallback: if mask blocked everything, ignore the mask.
+        if (max_index_lst.size() == 0 && has_mask)
+        {
+            max_score = FLOAT_MIN;
+            for (auto a : root->legal_actions)
+            {
+                CNode *child = root->get_child(a);
+                float temp_score = cucb_score(child, min_max_stats, mean_q, root->visit_count - 1, pb_c_base, pb_c_init, discount_factor, players);
+
+                if (max_score < temp_score)
+                {
+                    max_score = temp_score;
+                    max_index_lst.clear();
+                    max_index_lst.push_back(a);
+                }
+                else if (temp_score >= max_score - epsilon)
+                {
+                    max_index_lst.push_back(a);
+                }
             }
         }
 
@@ -616,8 +812,19 @@ namespace tree
         float max_score = FLOAT_MIN;
         const float epsilon = 0.000001;
         std::vector<int> max_index_lst;
+
+        const bool has_mask = (root->action_valid.size() > 0);
+
+        // First pass: respect action mask (invalid actions are treated as -inf).
         for (auto a : root->legal_actions)
         {
+            if (has_mask)
+            {
+                if (a < 0 || a >= (int)root->action_valid.size() || root->action_valid[a] == 0)
+                {
+                    continue;
+                }
+            }
 
             CNode *child = root->get_child(a);
             float temp_score = 0.0;
@@ -633,13 +840,42 @@ namespace tree
             if (max_score < temp_score)
             {
                 max_score = temp_score;
-
                 max_index_lst.clear();
                 max_index_lst.push_back(a);
             }
             else if (temp_score >= max_score - epsilon)
             {
                 max_index_lst.push_back(a);
+            }
+        }
+
+        // Fallback: if mask blocked everything, ignore the mask.
+        if (max_index_lst.size() == 0 && has_mask)
+        {
+            max_score = FLOAT_MIN;
+            for (auto a : root->legal_actions)
+            {
+                CNode *child = root->get_child(a);
+                float temp_score = 0.0;
+                if (a == true_action)
+                {
+                    temp_score = carm_score(child, min_max_stats, mean_q, reuse_value, root->visit_count - 1, pb_c_base, pb_c_init, discount_factor, players);
+                }
+                else
+                {
+                    temp_score = cucb_score(child, min_max_stats, mean_q, root->visit_count - 1, pb_c_base, pb_c_init, discount_factor, players);
+                }
+
+                if (max_score < temp_score)
+                {
+                    max_score = temp_score;
+                    max_index_lst.clear();
+                    max_index_lst.push_back(a);
+                }
+                else if (temp_score >= max_score - epsilon)
+                {
+                    max_index_lst.push_back(a);
+                }
             }
         }
 

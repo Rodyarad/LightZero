@@ -769,3 +769,24 @@ def mz_network_output_unpack(network_output: Dict) -> Tuple:
     value = network_output.value  # shape: (batch_size, support_support_size)
     policy_logits = network_output.policy_logits  # shape: (batch_size, action_space_size)
     return latent_state, reward, value, policy_logits
+
+
+def mz_network_output_unpack_with_mask(network_output: Dict) -> Tuple:
+    """
+    Overview:
+        Unpack the network output of MuZero, including an optional mask head.
+    Arguments:
+        - network_output (:obj:`Tuple`): the network output of muzero
+    Returns:
+        - latent_state
+        - reward
+        - value
+        - policy_logits
+        - mask_logits (or None if not present)
+    """
+    latent_state = network_output.latent_state  # shape:（batch_size, ...）
+    reward = network_output.reward  # shape: (batch_size, support_support_size)
+    value = network_output.value  # shape: (batch_size, support_support_size)
+    policy_logits = network_output.policy_logits  # shape: (batch_size, action_space_size)
+    mask_logits = network_output.mask_logits  # shape: (batch_size, num_action_variables)
+    return latent_state, reward, value, policy_logits, mask_logits

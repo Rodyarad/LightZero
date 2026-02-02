@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn as nn
+from typing import Optional, Tuple
 import time
 from .kv_caching import KeysValues
 
@@ -226,6 +227,7 @@ class WorldModelOutput:
     logits_ends: torch.FloatTensor
     logits_policy: torch.FloatTensor
     logits_value: torch.FloatTensor
+    logits_mask: Optional[torch.FloatTensor] = None
 
 
 def init_weights(module, norm_type='BN',liner_weight_zero=False):
@@ -323,7 +325,14 @@ class LossWithIntermediateLosses:
     Returns:
         - None
     """
-    def __init__(self, latent_recon_loss_weight=0, perceptual_loss_weight=0, continuous_action_space=False, **kwargs):
+    def __init__(
+        self,
+        latent_recon_loss_weight=0,
+        perceptual_loss_weight=0,
+        mask_loss_weight: float = 0.0,
+        continuous_action_space: bool = False,
+        **kwargs
+    ):
         # Ensure that kwargs is not empty
         if not kwargs:
             raise ValueError("At least one loss must be provided")
@@ -349,6 +358,7 @@ class LossWithIntermediateLosses:
 
         self.latent_recon_loss_weight = latent_recon_loss_weight
         self.perceptual_loss_weight = perceptual_loss_weight
+        self.mask_loss_weight = mask_loss_weight
 
         # Initialize the total loss tensor on the correct device
         self.loss_total = torch.tensor(0., device=device)
@@ -359,6 +369,8 @@ class LossWithIntermediateLosses:
                 self.loss_total += self.reward_loss_weight * v
             elif k == 'loss_policy':
                 self.loss_total += self.policy_loss_weight * v
+            elif k == 'loss_mask':
+                self.loss_total += self.mask_loss_weight * v
             elif k == 'loss_value':
                 self.loss_total += self.value_loss_weight * v
             elif k == 'loss_ends':

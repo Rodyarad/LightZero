@@ -5,6 +5,7 @@ import comet_ml
 
 def main(env_id='Navigation5x5-v0', seed=0):
     action_space_size = shapes2d_env_action_space_map[env_id]
+    num_objects = action_space_size // 4
 
     # ==============================================================
     # begin of the most frequently changed config specified by the user
@@ -73,6 +74,8 @@ def main(env_id='Navigation5x5-v0', seed=0):
                 observation_shape=(num_slots, slot_dim),
                 model_type='slot',
                 action_space_size=action_space_size,
+                # Object-level action abstraction needs this at model-level for UniZeroPolicy init.
+                num_objects=num_objects,
                 reward_support_range=(-300., 301., 1.),
                 value_support_range=(-300., 301., 1.),
                 norm_type=norm_type,
@@ -130,6 +133,10 @@ def main(env_id='Navigation5x5-v0', seed=0):
                     policy_loss_temperature=1.5,
                     use_continuous_label_smoothing=True,
                     continuous_ls_eps=0.05,
+                    # ===== Object-level action abstraction & mask head =====
+                    use_action_absraction=True,
+                    num_objects=num_objects,
+                    mask_loss_weight=1.0,
                 ),
             ),
             optim_type='AdamW_mix_lr_wdecay',
@@ -197,6 +204,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
             buffer_reanalyze_freq=buffer_reanalyze_freq,
             reanalyze_batch_size=reanalyze_batch_size,
             reanalyze_partition=reanalyze_partition,
+            causal_puct_start_step=25_000,
         ),
     )
     shapes2d_unizero_config = EasyDict(shapes2d_unizero_config)
@@ -210,7 +218,7 @@ def main(env_id='Navigation5x5-v0', seed=0):
         env_manager=dict(type='subprocess'),
         policy=dict(
             type='unizero',
-            import_names=['lzero.policy.unizero'],
+            import_names=['lzero.policy.unizero_masking'],
         ),
     )
     shapes2d_unizero_create_config = EasyDict(shapes2d_unizero_create_config)
