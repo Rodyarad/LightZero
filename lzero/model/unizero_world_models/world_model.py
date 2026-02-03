@@ -859,22 +859,24 @@ class WorldModel(nn.Module):
         """
         n = last_obs_embeddings.shape[0]
         if n <= self.env_num and current_obs_embeddings is not None:
-            if self.continuous_action_space:
-                first_step_flag = not isinstance(batch_action[0], np.ndarray)
-            else:
-                first_step_flag = max(batch_action) == -1
-            if first_step_flag:
-                outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
-            else:
-                ready_env_num = current_obs_embeddings.shape[0]
-                batch_action = batch_action[:ready_env_num]
-                if self.continuous_action_space:
-                    act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1).unsqueeze(1)
-                else:
-                    act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1).unsqueeze(1)
-
-                obs_embeddings = torch.cat((last_obs_embeddings, current_obs_embeddings), dim=1)
-                outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
+            #TODO make right version
+            # if self.continuous_action_space:
+            #     first_step_flag = not isinstance(batch_action[0], np.ndarray)
+            # else:
+            #     first_step_flag = max(batch_action) == -1
+            # if first_step_flag:
+            #     outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
+            # else:
+            #     ready_env_num = current_obs_embeddings.shape[0]
+            #     batch_action = batch_action[:ready_env_num]
+            #     if self.continuous_action_space:
+            #         act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1).unsqueeze(1)
+            #     else:
+            #         act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1).unsqueeze(1)
+            #
+            #     obs_embeddings = torch.cat((last_obs_embeddings, current_obs_embeddings), dim=1)
+            #     outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
+            outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
 
         elif batch_action is not None and current_obs_embeddings is None:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
