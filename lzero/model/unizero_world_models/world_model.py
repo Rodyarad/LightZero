@@ -177,6 +177,10 @@ class WorldModel(nn.Module):
         # Hit count and query count statistics
         self._initialize_statistics()
 
+        self.obs_history: List = []
+        self.act_history: List = []
+        self.context_length_in_blocks = self.context_length // self.tokens_per_block
+
         self.latent_recon_loss = torch.tensor(0., device=self.device)
         self.perceptual_loss = torch.tensor(0., device=self.device)
 
@@ -582,8 +586,6 @@ class WorldModel(nn.Module):
         self,
         obs_embeddings_or_act_tokens: Dict[str, Union[torch.Tensor, Tuple]],
         is_init_infer: bool = True,
-        valid_context_lengths: Optional[torch.Tensor] = None,
-        search_depth: Optional[List[int]] = None,
     ) -> "WorldModelOutput":
         """
         Overview:
@@ -661,6 +663,14 @@ class WorldModel(nn.Module):
                 sequences, num_steps = self._process_obs_act_combined_cont(obs_embeddings_or_act_tokens)
             else:
                 sequences, num_steps = self._process_obs_act_combined(obs_embeddings_or_act_tokens)
+
+        elif "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
+            # Process combined inputs for continue epsiodes for root in mcts
+            # if self.continuous_action_space:
+            #     sequences, num_steps = self._process_obs_act_combined_cont(obs_embeddings_or_act_tokens)
+            # else:
+            sequences, num_steps = self._process_obs_act_combined(obs_embeddings_or_act_tokens, True)
+
         else:
             raise ValueError("Input dictionary must contain one of 'obs_embeddings', 'act_tokens', or 'obs_embeddings_and_act_tokens'.")
 
@@ -683,6 +693,12 @@ class WorldModel(nn.Module):
         # ========================================================================
 
         logits_value = self.head_value(x, num_steps, 0)
+
+        if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
+            logits_observations = logits_observations[:,-self.num_observations_tokens:,:]
+            logits_rewards = logits_rewards[:,-1:,:]
+            logits_policy = logits_rewards[:,-1:,:]
+            logits_value = logits_rewards[:,-1:,:]
 
         # The 'logits_ends' is intentionally set to None.
         return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
@@ -757,7 +773,7 @@ class WorldModel(nn.Module):
         return return_result, num_steps
 
     #@profile
-    def _process_obs_act_combined(self, obs_embeddings_or_act_tokens):
+    def _process_obs_act_combined(self, obs_embeddings_or_act_tokens, eval_init_inference = False):
         """
         Process combined observation embeddings and action tokens.
 
@@ -766,12 +782,16 @@ class WorldModel(nn.Module):
         Returns:
             - torch.Tensor: Combined observation and action embeddings with position information added.
         """
-        obs_embeddings, act_tokens = obs_embeddings_or_act_tokens['obs_embeddings_and_act_tokens']
-        if len(obs_embeddings.shape) == 3:
-            obs_embeddings = obs_embeddings.view(act_tokens.shape[0], act_tokens.shape[1], self.num_observations_tokens,
-                                                 -1)
+        if eval_init_inference:
+            obs_embeddings, act_tokens = obs_embeddings_or_act_tokens['last_obs_embeddings_act_tokens_and_current_obs']
+            current_obs_embeddings = obs_embeddings[:,-1,:,:]
+            obs_embeddings = obs_embeddings[:,:-1,:,:]
+        else:
+            obs_embeddings, act_tokens = obs_embeddings_or_act_tokens['obs_embeddings_and_act_tokens']
+            if len(obs_embeddings.shape) == 3:
+                obs_embeddings = obs_embeddings.view(act_tokens.shape[0], act_tokens.shape[1], self.num_observations_tokens,
+                                                     -1)
 
-        num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
         act_embeddings = self.act_embedding_table(act_tokens)
 
         B, L, K, E = obs_embeddings.size()
@@ -782,8 +802,14 @@ class WorldModel(nn.Module):
             act = act_embeddings[:, i, 0, :].unsqueeze(1)
             obs_act = torch.cat([obs, act], dim=1)
             obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
-            
-        return_result = obs_act_embeddings
+
+        if eval_init_inference:
+            return_result = torch.cat((obs_act_embeddings, current_obs_embeddings), dim=1)
+            num_steps = return_result.size(1)
+        else:
+            return_result = obs_act_embeddings
+            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
+
         if not self.config.rotary_emb:
             token_indices = torch.arange(num_steps, device=self.device)
             if self.model_type == 'slot':
@@ -859,24 +885,31 @@ class WorldModel(nn.Module):
         """
         n = last_obs_embeddings.shape[0]
         if n <= self.env_num and current_obs_embeddings is not None:
-            #TODO make right version
-            # if self.continuous_action_space:
-            #     first_step_flag = not isinstance(batch_action[0], np.ndarray)
-            # else:
-            #     first_step_flag = max(batch_action) == -1
-            # if first_step_flag:
-            #     outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
-            # else:
-            #     ready_env_num = current_obs_embeddings.shape[0]
-            #     batch_action = batch_action[:ready_env_num]
-            #     if self.continuous_action_space:
-            #         act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1).unsqueeze(1)
-            #     else:
-            #         act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1).unsqueeze(1)
-            #
-            #     obs_embeddings = torch.cat((last_obs_embeddings, current_obs_embeddings), dim=1)
-            #     outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
-            outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
+            if self.continuous_action_space:
+                first_step_flag = not isinstance(batch_action[0], np.ndarray)
+            else:
+                first_step_flag = max(batch_action) == -1
+            if first_step_flag:
+                self._reset_env_history()
+                outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
+                self._append_obs_to_history(current_obs_embeddings)
+            else:
+                ready_env_num = current_obs_embeddings.shape[0]
+                batch_action = batch_action[:ready_env_num]
+
+                self._append_obs_to_history(current_obs_embeddings)
+
+                if self.continuous_action_space:
+                    act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1)
+                else:
+                    act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1)
+
+                self._append_act_to_history(act_tokens)
+
+                obs_seq = torch.stack(self.obs_history, dim=1).to(self.device)
+                act_seq = torch.stack(self.act_history, dim=1).to(self.device)
+
+                outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_seq, act_seq)}, is_init_infer=True)
 
         elif batch_action is not None and current_obs_embeddings is None:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
@@ -930,6 +963,24 @@ class WorldModel(nn.Module):
 
         return (outputs_wm.output_sequence, latent_state, outputs_wm.logits_rewards,
                 outputs_wm.logits_policy, outputs_wm.logits_value)
+
+    def _reset_env_history(self) -> None:
+            self.obs_history = []
+            self.act_history = []
+
+    def _append_obs_to_history(self, next_obs_embedding: torch.Tensor) -> None:
+
+        self.obs_history.append(next_obs_embedding.detach())
+
+        if len(self.obs_history) > self.context_length_in_blocks:
+            excess = len(self.obs_history) - self.context_length_in_blocks
+            self.obs_history = self.obs_history[excess:]
+
+    def _append_act_to_history(self, action: Any) -> None:
+        self.act_history.append(action.detach())
+
+        if len(self.act_history) == self.context_length_in_blocks:
+            self.act_history = self.act_history[1:]
 
     #@profile
     @torch.no_grad()
