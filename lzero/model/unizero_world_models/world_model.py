@@ -110,38 +110,40 @@ class WorldModel(nn.Module):
 
         # Head modules
         self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
-        # self.head_observations = self._create_head(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
-        #                                             self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-        #                                           )
-        # if self.model_type == 'slot':
-        #     self.head_observations = self._create_head_for_slots(self.act_tokens_pattern, self.obs_per_embdding_dim, \
-        #                                             self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-        #                                            )
-        # else:
-        self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
+
+        if self.model_type == 'slot':
+            self.head_observations = self._create_head_for_latent(self.value_obs_tokens_pattern, self.obs_per_embdding_dim, \
                                                 self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
                                                )
+        else:
+            self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
+                                                self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
+                                               )
+
         if self.continuous_action_space:
             self.sigma_type = self.config.sigma_type
             self.bound_type = self.config.bound_type
             self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
         else:
             if self.model_type == 'slot':
-                self.head_policy = self._create_slot_head(self.value_policy_tokens_pattern, self.action_space_size)
+                self.heads_policy == nn.ModuleDict()
+                for i in range(self.num_observations_tokens):
+                    head_policy = self.head_policy = self._create_head(self.policy_tokens_patterns[i], self.action_space_size)
+                    self.heads_policy[f'policy_{i}'] = head_policy
             else:
                 self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
         
         if self.model_type == 'slot':
-            self.head_value = self._create_slot_head(self.value_policy_tokens_pattern, self.support_size)
+            self.head_value = self._create_slot_head(self.value_obs_tokens_pattern, self.support_size)
         else:
             self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
-        self.head_dict = {}
-        for name, module in self.named_children():
-            if name.startswith("head_"):
-                self.head_dict[name] = module
-        if self.head_dict:
-            self.head_dict = nn.ModuleDict(self.head_dict)
+        # self.head_dict = {}
+        # for name, module in self.named_children():
+        #     if name.startswith("head_"):
+        #         self.head_dict[name] = module
+        # if self.head_dict:
+        #     self.head_dict = nn.ModuleDict(self.head_dict)
 
         # Apply weight initialization, the order is important
         # self.apply(lambda module: init_weights(module, norm_type=self.config.norm_type))
@@ -404,11 +406,15 @@ class WorldModel(nn.Module):
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
         if self.model_type == 'slot':
-            self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
-            self.all_but_last_latent_state_pattern[-1] = 0
             self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
             self.act_tokens_pattern[-1] = 1
-            self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
+            self.value_obs_tokens_pattern = 1 - self.act_tokens_pattern
+            self.policy_tokens_patterns = []
+            for i in range(self.num_observations_tokens):
+                pattern = torch.zeros(self.config.tokens_per_block)
+                pattern[i] = 1
+                self.policy_tokens_patterns.append(pattern)
+
         else:
             self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
             self.all_but_last_latent_state_pattern[-2] = 0
@@ -517,7 +523,15 @@ class WorldModel(nn.Module):
             if self.continuous_action_space:
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
-                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
+                module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
+
+        if hasattr(self, "head_policy"):
+            module_to_initialize.append(self.head_policy)
+
+        if hasattr(self, "heads_policy"):
+            module_to_initialize.extend(self.head_strategy.values())
+
+
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
@@ -680,7 +694,12 @@ class WorldModel(nn.Module):
         # Generate logits for various components.
         logits_observations = self.head_observations(x, num_steps, 0)
         logits_rewards = self.head_rewards(x, num_steps, 0)
-        logits_policy = self.head_policy(x, num_steps, 0)
+        if self.model_type == 'slot':
+            logits_policy = {}
+            for name, head in self.heads_policy.items():
+                logits_policy[name] = head(x, num_steps, 0)
+        else:
+            logits_policy = self.head_policy(x, num_steps, 0)
 
         # ==================== [NEW] Fix1: Clip Policy Logits ====================
         # Prevent policy logits from exploding, which can cause gradient issues
@@ -697,7 +716,7 @@ class WorldModel(nn.Module):
         if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
             logits_observations = logits_observations[:,-self.num_observations_tokens:,:]
             logits_rewards = logits_rewards[:,-1:,:]
-            logits_policy = logits_rewards[:,-1:,:]
+            logits_policy = logits_policy[:,-1:,:]
             logits_value = logits_rewards[:,-1:,:]
 
         # The 'logits_ends' is intentionally set to None.
