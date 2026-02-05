@@ -179,7 +179,6 @@ class WorldModel(nn.Module):
 
         self.obs_history: List = []
         self.act_history: List = []
-        self.context_length_in_blocks = self.context_length // self.tokens_per_block
 
         self.latent_recon_loss = torch.tensor(0., device=self.device)
         self.perceptual_loss = torch.tensor(0., device=self.device)
@@ -972,14 +971,14 @@ class WorldModel(nn.Module):
 
         self.obs_history.append(next_obs_embedding.detach())
 
-        if len(self.obs_history) > self.context_length_in_blocks:
-            excess = len(self.obs_history) - self.context_length_in_blocks
+        if len(self.obs_history) > self.max_blocks:
+            excess = len(self.obs_history) - self.max_blocks
             self.obs_history = self.obs_history[excess:]
 
     def _append_act_to_history(self, action: Any) -> None:
         self.act_history.append(action.detach())
 
-        if len(self.act_history) == self.context_length_in_blocks:
+        if len(self.act_history) == self.max_blocks:
             self.act_history = self.act_history[1:]
 
     #@profile
@@ -999,9 +998,8 @@ class WorldModel(nn.Module):
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
-        max_history_len = self.max_blocks
-        if len(state_action_history) > max_history_len:
-            state_action_history = state_action_history[-max_history_len:]
+        if len(state_action_history) > self.max_blocks:
+            state_action_history = state_action_history[-self.max_blocks:]
 
         history_states = []
         history_actions = []
