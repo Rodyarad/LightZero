@@ -697,8 +697,8 @@ class WorldModel(nn.Module):
         if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
             logits_observations = logits_observations[:,-self.num_observations_tokens:,:]
             logits_rewards = logits_rewards[:,-1:,:]
-            logits_policy = logits_rewards[:,-1:,:]
-            logits_value = logits_rewards[:,-1:,:]
+            logits_policy = logits_policy[:,-1:,:]
+            logits_value = logits_value[:,-1:,:]
 
         # The 'logits_ends' is intentionally set to None.
         return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
