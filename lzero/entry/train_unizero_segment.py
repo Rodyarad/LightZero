@@ -1,26 +1,25 @@
-import logging
 import os
 from functools import partial
+
 from typing import Tuple, Optional
 import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
-from ding.envs import create_env_manager
-from ding.envs import get_vec_env_setting
+from ding.envs import create_env_manager, get_vec_env_setting
 from ding.policy import create_policy
 from ding.rl_utils import get_epsilon_greedy_fn
-from ding.utils import EasyTimer
-from ding.utils import set_pkg_seed, get_rank, get_world_size
+from ding.utils import EasyTimer, get_rank, get_world_size, set_pkg_seed
 from ding.worker import BaseLearner
-from torch.utils.tensorboard import SummaryWriter
-
+from ditk import logging
 from lzero.entry.utils import log_buffer_memory_usage
 from lzero.policy import visit_count_temperature
 from lzero.policy.random_policy import LightZeroRandomPolicy
 from lzero.worker import MuZeroEvaluator as Evaluator
 from lzero.worker import MuZeroSegmentCollector as Collector
-from .utils import random_collect, calculate_update_per_collect
+from torch.utils.tensorboard import SummaryWriter
+
+from .utils import calculate_update_per_collect, random_collect
 
 timer = EasyTimer()
 
@@ -75,7 +74,6 @@ def train_unizero_segment(
     evaluator_env = create_env_manager(cfg.env.manager, [partial(env_fn, cfg=c) for c in evaluator_env_cfg])
 
     collector_env.seed(cfg.seed)
-    # collector_env.seed(cfg.seed, dynamic_seed=False)
     evaluator_env.seed(cfg.seed, dynamic_seed=False)
     set_pkg_seed(cfg.seed, use_cuda=torch.cuda.is_available())
 
@@ -187,7 +185,7 @@ def train_unizero_segment(
 
 
         if learner.train_iter == 0 and not did_initial_eval:
-            save_ckpt_with_state('last_ckpt.pth.tar')       
+            save_ckpt_with_state('last_ckpt.pth.tar')
             did_initial_eval = True
 
         # Collect new data

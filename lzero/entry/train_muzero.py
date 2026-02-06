@@ -1,4 +1,3 @@
-import logging
 import os
 from functools import partial
 from typing import Optional, Tuple
@@ -6,20 +5,21 @@ import comet_ml
 import torch
 import wandb
 from ding.config import compile_config
-from ding.envs import create_env_manager
-from ding.envs import get_vec_env_setting
+from ding.envs import create_env_manager, get_vec_env_setting
 from ding.policy import create_policy
 from ding.rl_utils import get_epsilon_greedy_fn
-from ding.utils import set_pkg_seed, get_rank
+from ding.utils import get_rank, set_pkg_seed
 from ding.worker import BaseLearner
 from torch.utils.tensorboard import SummaryWriter
 
+from ditk import logging
 from lzero.entry.utils import log_buffer_memory_usage, log_buffer_run_time
 from lzero.policy import visit_count_temperature
 from lzero.policy.random_policy import LightZeroRandomPolicy
 from lzero.worker import MuZeroCollector as Collector
 from lzero.worker import MuZeroEvaluator as Evaluator
-from .utils import random_collect, calculate_update_per_collect
+
+from .utils import calculate_update_per_collect, random_collect
 
 
 def train_muzero(
@@ -152,7 +152,7 @@ def train_muzero(
         _resume_meta = try_load_training_state(model_path, replay_buffer)
         learner._last_iter.update(int(_resume_meta['train_iter']))
         collector._total_envstep_count = int(_resume_meta['envstep'])
-        
+
     # Learner's before_run hook.
     learner.call_hook('before_run')
     if policy_config.use_wandb:
@@ -247,7 +247,6 @@ def train_muzero(
 
             if cfg.policy.use_priority:
                 replay_buffer.update_priority(train_data, log_vars[0]['value_priority_orig'])
-
 
         if collector.envstep >= max_env_step or learner.train_iter >= max_train_iter:
             if cfg.policy.eval_offline:

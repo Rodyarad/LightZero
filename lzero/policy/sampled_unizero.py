@@ -1,22 +1,21 @@
 import copy
 import logging
 from collections import defaultdict
-from typing import List, Dict, Tuple, Union, Any
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
 import wandb
 from ding.model import model_wrap
 from ding.utils import POLICY_REGISTRY
-
 from lzero.mcts import SampledUniZeroMCTSCtree as MCTSCtree
 from lzero.model import ImageTransforms
-from lzero.policy import scalar_transform, InverseScalarTransform, phi_transform, \
-    DiscreteSupport, to_torch_float_tensor, mz_network_output_unpack, select_action, prepare_obs, \
-    prepare_obs_stack_for_unizero
+from lzero.policy import (DiscreteSupport, InverseScalarTransform,
+                          mz_network_output_unpack, phi_transform, prepare_obs,
+                          prepare_obs_stack_for_unizero, scalar_transform,
+                          select_action, to_torch_float_tensor)
 from lzero.policy.unizero import UniZeroPolicy
 from .utils import configure_optimizers_nanogpt
-from lzero.entry.utils import initialize_zeros_batch
 
 
 def get_action(roots_sampled_actions, i, action):
@@ -333,6 +332,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
 
         if self._cfg.cos_lr_scheduler:
             from torch.optim.lr_scheduler import CosineAnnealingLR
+
             # TODO: check the total training steps
             self.lr_scheduler = CosineAnnealingLR(self._optimizer_world_model, 1e5, eta_min=0, last_epoch=-1)
 
@@ -377,9 +377,24 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         self.l2_norm_after = 0.
         self.grad_norm_before = 0.
         self.grad_norm_after = 0.
-        self.pad_token_id = 0 # for compatibility
 
+        if self._cfg.model.model_type == 'conv':
+            # for image-input env
+            self.pad_token_id = -1
+        else:
+            # for text-input env and vector-input env
+            # Retrieve the tokenizer from the encoder module if it exists
+            encoder_tokenizer = getattr(self._model.tokenizer.encoder, 'tokenizer', None)
 
+            # Extract the padding token ID from the tokenizer if available, otherwise use 0 as default. Used in _reset_collect()
+            # The pad_token_id is used to identify padding tokens in sequences, which is essential for:
+            # 1. Masking padded positions during attention computation to prevent them from affecting the output
+            # 2. Properly handling variable-length sequences in batch processing
+            # 3. Distinguishing between actual tokens and padding in loss calculation
+            # Default value 0 is a common convention when no specific padding token is defined
+            self.pad_token_id = encoder_tokenizer.pad_token_id if encoder_tokenizer is not None else 0
+        
+        
     # @profile
     def _forward_learn(self, data: Tuple[torch.Tensor]) -> Dict[str, Union[float, int]]:
         """
@@ -1058,30 +1073,3 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 'reconstruction_loss',
                 'perceptual_loss',
             ]
-
-    def _state_dict_learn(self) -> Dict[str, Any]:
-        """
-        Overview:
-            Return the state_dict of learn mode, usually including model, target_model and optimizer.
-        Returns:
-            - state_dict (:obj:`Dict[str, Any]`): The dict of current policy learn state, for saving and restoring.
-        """
-        return {
-            'model': self._learn_model.state_dict(),
-            'target_model': self._target_model.state_dict(),
-            'optimizer_world_model': self._optimizer_world_model.state_dict(),
-            'lr_scheduler': self.lr_scheduler.state_dict() if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler else None,
-        }
-
-    def _load_state_dict_learn(self, state_dict: Dict[str, Any]) -> None:
-        """
-        Overview:
-            Load the state_dict variable into policy learn mode.
-        Arguments:
-            - state_dict (:obj:`Dict[str, Any]`): The dict of policy learn state saved before.
-        """
-        self._learn_model.load_state_dict(state_dict['model'])
-        self._target_model.load_state_dict(state_dict['target_model'])
-        self._optimizer_world_model.load_state_dict(state_dict['optimizer_world_model'])
-        if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler:
-            self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
