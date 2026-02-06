@@ -1,8 +1,9 @@
 from easydict import EasyDict
+from zoo.shapes2d.config.shapes2d_env_action_space_map import shapes2d_env_action_space_map
 import comet_ml
 
 def main(env_id, seed):
-    action_space_size = 4
+    action_space_size = shapes2d_env_action_space_map[env_id]
 
     # ==============================================================
     # begin of the most frequently changed config specified by the user
@@ -32,7 +33,7 @@ def main(env_id, seed):
     # end of the most frequently changed config specified by the user
     # ==============================================================
 
-    vizdoom_unizero_config = dict(
+    shapes2d_unizero_config = dict(
         env=dict(
             stop_value=int(1e6),
             env_id=env_id,
@@ -99,13 +100,13 @@ def main(env_id, seed):
             replay_buffer_size=int(5e5),
         ),
     )
-    vizdoom_unizero_config = EasyDict(vizdoom_unizero_config)
-    main_config = vizdoom_unizero_config
+    shapes2d_unizero_config = EasyDict(shapes2d_unizero_config)
+    main_config = shapes2d_unizero_config
 
-    vizdoom_unizero_create_config = dict(
+    shapes2d_unizero_create_config = dict(
         env=dict(
-            type='vizdoom_lightzero',
-            import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
+            type='shapes2d_lightzero',
+            import_names=['zoo.shapes2d.env.shapes2d_lightzero_env'],
         ),
         env_manager=dict(type='subprocess'),
         policy=dict(
@@ -113,8 +114,8 @@ def main(env_id, seed):
             import_names=['lzero.policy.unizero'],
         ),
     )
-    vizdoom_unizero_create_config = EasyDict(vizdoom_unizero_create_config  )
-    create_config = vizdoom_unizero_create_config
+    shapes2d_unizero_create_config = EasyDict(shapes2d_unizero_create_config)
+    create_config = shapes2d_unizero_create_config
 
     # ============ use muzero_segment_collector instead of muzero_collector =============
     from lzero.entry import train_unizero_segment
@@ -126,7 +127,7 @@ def main(env_id, seed):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Process different environments and seeds.')
-    parser.add_argument('--env', type=str, help='The environment to use', default='VizdoomDefendLine-v0')
+    parser.add_argument('--env', type=str, help='The environment to use', default='Navigation5x5-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
     args = parser.parse_args()
 
