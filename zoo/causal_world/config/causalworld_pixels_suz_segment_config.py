@@ -62,6 +62,7 @@ def main(seed):
         ),
         run_id_comet_ml=None,
         policy=dict(
+            store_obs_int8=True,
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6,),),),  # default is 10000
             model=dict(
                 observation_shape=(3, 84, 84),
