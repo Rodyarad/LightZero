@@ -10,7 +10,7 @@ def main(env_id, seed):
     # ==============================================================
     collector_env_num = 8
     num_segments = 8
-    evaluator_env_num = 3
+    evaluator_env_num = 30
 
     game_segment_length = 20
     num_unroll_steps = 10
