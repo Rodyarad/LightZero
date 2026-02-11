@@ -1347,6 +1347,9 @@ class UniZeroPolicy(MuZeroPolicy):
                 [self.collector_env_num, self._cfg.model.observation_shape], fill_value=self.pad_token_id,
             ).to(self._cfg.device)
             self.last_batch_action_collect = [-1 for i in range(self.collector_env_num)]
+        elif self._cfg.model.model_type ==  'slot':
+            self.last_batch_obs_collect = torch.zeros([self.collector_env_num, self._cfg.model.observation_shape[0], self._cfg.model.observation_shape[1]]).to(self._cfg.device)
+            self.last_batch_action_collect = [-1 for i in range(self.collector_env_num)]
 
     def _forward_collect(
             self,
@@ -1517,6 +1520,9 @@ class UniZeroPolicy(MuZeroPolicy):
                 [self.evaluator_env_num, self._cfg.model.observation_shape], fill_value=self.pad_token_id,
             ).to(self._cfg.device)
             self.last_batch_action_eval = [-1 for i in range(self.evaluator_env_num)]
+        elif self._cfg.model.model_type ==  'slot':
+            self.last_batch_obs_collect = torch.zeros([self.collector_env_num, self._cfg.model.observation_shape[0], self._cfg.model.observation_shape[1]]).to(self._cfg.device)
+            self.last_batch_action_collect = [-1 for i in range(self.collector_env_num)]
 
     def _forward_eval(self, data: torch.Tensor, action_mask: list, to_play: int = -1,
                       ready_env_id: np.array = None, timestep: List = [0], task_id: int = None,) -> Dict:

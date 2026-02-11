@@ -1529,7 +1529,7 @@ class WorldModel(nn.Module):
         self.keys_values_wm_size_list = self.trim_and_pad_kv_cache(is_init_infer=False)
         self.keys_values_wm_size_list_current = self.keys_values_wm_size_list
 
-        for k in range(self.tokens_per_block):
+        for k in range(2):
             # action_token obs_token
             if k == 0:
                 obs_embeddings_or_act_tokens = {'act_tokens': token}
@@ -1546,7 +1546,7 @@ class WorldModel(nn.Module):
                 search_depth=search_depth # List containing depth of latent states in the search tree. 
             )
 
-            self.keys_values_wm_size_list_current = [i + 1 for i in self.keys_values_wm_size_list_current]
+            self.keys_values_wm_size_list_current = [i + self.num_observations_tokens for i in self.keys_values_wm_size_list_current]
 
             if k == 0:
                 reward = outputs_wm.logits_rewards  # (B,)

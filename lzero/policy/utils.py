@@ -487,36 +487,54 @@ def prepare_obs(obs_batch_ori: np.ndarray, cfg: EasyDict, task_id = None) -> Tup
         - obs_target_batch (:obj:`torch.Tensor`): The tensor containing the observations for calculating
                                                    the consistency loss, if applicable.
     """
-    # Convert the numpy array of original observations to a PyTorch tensor and transfer it to the specified device.
-    # Also, ensure the tensor is of the correct floating-point type for the model.
-    obs_batch_ori = torch.from_numpy(obs_batch_ori).to(cfg.device)
+    if cfg.model.model_type == 'slot':
+        obs_batch_ori = torch.from_numpy(obs_batch_ori).to(cfg.device)
+        num_slots, slot_dim = cfg.model.observation_shape  # (S, D)
 
-    # Calculate the dimension size to slice based on the model configuration.
-    # For convolutional models ('conv'), use the number of frames to stack times the number of channels.
-    # For multi-layer perceptron models ('mlp'), use the number of frames to stack times the size of the observation space.
-    if task_id is None:
-        stack_dim = cfg.model.frame_stack_num * (
-        cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape)
-    else:
-        stack_dim = cfg.model.frame_stack_num * (
-            cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape_list[task_id])
-    # Slice the original observation tensor to obtain the batch for the initial inference.
-    obs_batch = obs_batch_ori[:, :stack_dim]
-
-    # Initialize the target batch for consistency loss as `None`. It will only be set if consistency loss calculation is enabled.
-    obs_target_batch = None
-    # If the model configuration specifies the use of self-supervised learning loss, prepare the target batch for the consistency loss.
-    if cfg.model.self_supervised_learning_loss:
-        # Determine the starting dimension to exclude based on the model type.
-        # For 'conv', exclude the first 'image_channel' dimensions.
-        # For 'mlp', exclude the first 'observation_shape' dimensions.
-        if task_id is None:
-            exclude_dim = cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape
+        if obs_batch_ori.ndim == 3:
+            B, TS, D = obs_batch_ori.shape
+            assert D == slot_dim and TS % num_slots == 0, (obs_batch_ori.shape, cfg.model.observation_shape)
+            obs_seq = obs_batch_ori.view(B, TS // num_slots, num_slots, slot_dim)  # (B, T, S, D)
+        elif obs_batch_ori.ndim == 4:
+            obs_seq = obs_batch_ori
         else:
-            exclude_dim = cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape_list[task_id]
+            raise ValueError(f"Unexpected slot obs shape: {tuple(obs_batch_ori.shape)}")
 
-        # Slice the original observation tensor to obtain the batch for consistency loss calculation.
-        obs_target_batch = obs_batch_ori[:, exclude_dim:]
+        obs_batch = obs_seq[:, :1]
+        obs_target_batch = None
+        if cfg.model.self_supervised_learning_loss:
+            obs_target_batch = obs_seq[:, 1:]
+    else:
+        # Convert the numpy array of original observations to a PyTorch tensor and transfer it to the specified device.
+        # Also, ensure the tensor is of the correct floating-point type for the model.
+        obs_batch_ori = torch.from_numpy(obs_batch_ori).to(cfg.device)
+
+        # Calculate the dimension size to slice based on the model configuration.
+        # For convolutional models ('conv'), use the number of frames to stack times the number of channels.
+        # For multi-layer perceptron models ('mlp'), use the number of frames to stack times the size of the observation space.
+        if task_id is None:
+            stack_dim = cfg.model.frame_stack_num * (
+            cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape)
+        else:
+            stack_dim = cfg.model.frame_stack_num * (
+                cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape_list[task_id])
+        # Slice the original observation tensor to obtain the batch for the initial inference.
+        obs_batch = obs_batch_ori[:, :stack_dim]
+
+        # Initialize the target batch for consistency loss as `None`. It will only be set if consistency loss calculation is enabled.
+        obs_target_batch = None
+        # If the model configuration specifies the use of self-supervised learning loss, prepare the target batch for the consistency loss.
+        if cfg.model.self_supervised_learning_loss:
+            # Determine the starting dimension to exclude based on the model type.
+            # For 'conv', exclude the first 'image_channel' dimensions.
+            # For 'mlp', exclude the first 'observation_shape' dimensions.
+            if task_id is None:
+                exclude_dim = cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape
+            else:
+                exclude_dim = cfg.model.image_channel if cfg.model.model_type in ['conv', 'conv_context'] else cfg.model.observation_shape_list[task_id]
+
+            # Slice the original observation tensor to obtain the batch for consistency loss calculation.
+            obs_target_batch = obs_batch_ori[:, exclude_dim:]
 
     # Return the prepared batches: one for the initial inference and one for the consistency loss calculation (if applicable).
     return obs_batch, obs_target_batch
