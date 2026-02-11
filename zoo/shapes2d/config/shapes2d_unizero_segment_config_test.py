@@ -55,6 +55,7 @@ def main(env_id, seed):
                 num_res_blocks=2,
                 num_channels=128,
                 world_model_cfg=dict(
+                    model_type='conv',
                     latent_recon_loss_weight=0.0,
                     perceptual_loss_weight=0.0,
                     norm_type=norm_type,
