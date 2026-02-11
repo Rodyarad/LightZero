@@ -20,7 +20,7 @@ from torch.distributions import (Categorical, Independent, Normal,
                                  TanhTransform, TransformedDistribution)
 
 from .kv_caching import KeysValues
-from .slicer import Head, PolicyHeadCont
+from .slicer import Head, PolicyHeadCont, AggregationHead
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
 from .utils import (LossWithIntermediateLosses, WorldModelOutput, hash_state,
@@ -76,7 +76,10 @@ class WorldModel(nn.Module):
 
         # Position embedding
         if not self.config.rotary_emb:
-            self.pos_emb = nn.Embedding(config.max_tokens, config.embed_dim, device=self.device)
+            if self.model_type == 'slot':
+                self.pos_emb = nn.Embedding(config.max_blocks, config.embed_dim, device=self.device)
+            else:
+                self.pos_emb = nn.Embedding(config.max_tokens, config.embed_dim, device=self.device)
             self.precompute_pos_emb_diff_kv()
             print(f"self.pos_emb.weight.device: {self.pos_emb.weight.device}")
 
@@ -97,21 +100,37 @@ class WorldModel(nn.Module):
             # for discrete action space
             self.act_embedding_table = nn.Embedding(config.action_space_size, config.embed_dim, device=self.device)
             logging.info(f"self.act_embedding_table.weight.device: {self.act_embedding_table.weight.device}")
-
-        self.final_norm_option_in_obs_head = getattr(config, 'final_norm_option_in_obs_head', 'LayerNorm')
+            
+        if self.model_type == 'slot':
+            self.final_norm_option_in_obs_head = None
+        else:
+            self.final_norm_option_in_obs_head = getattr(config, 'final_norm_option_in_obs_head', 'LayerNorm')
 
         # Head modules
-        self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
-        self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
-                                                    self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-                                                   )
-        if self.continuous_action_space:
-            self.sigma_type = self.config.sigma_type
-            self.bound_type = self.config.bound_type
-            self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
+        if self.model_type == 'slot':
+            self.head_rewards = self._create_agg_head(self.act_tokens_pattern, self.support_size)
+            self.head_observations = self._create_head_for_latent(self.act_tokens_pattern, self.obs_per_embdding_dim, \
+                                                        self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
+                                                       )
+            if self.continuous_action_space:
+                self.sigma_type = self.config.sigma_type
+                self.bound_type = self.config.bound_type
+                self.head_policy = self._create_agg_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
+            else:
+                self.head_policy = self._create_agg_head(self.value_policy_tokens_pattern, self.action_space_size)
+            self.head_value = self._create_agg_head(self.value_policy_tokens_pattern, self.support_size)
         else:
-            self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
-        self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
+            self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
+            self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
+                                                        self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
+                                                       )
+            if self.continuous_action_space:
+                self.sigma_type = self.config.sigma_type
+                self.bound_type = self.config.bound_type
+                self.head_policy = self._create_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
+            else:
+                self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
+            self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
         self.head_dict = {}
         for name, module in self.named_children():
@@ -422,6 +441,8 @@ class WorldModel(nn.Module):
             return nn.LayerNorm(self.config.embed_dim, eps=1e-5)
         elif norm_option == 'SimNorm':
             return SimNorm(simnorm_dim=self.config.group_size)
+        elif norm_option is None:
+            return None
         else:
             raise ValueError(f"Unsupported final_norm_option_in_obs_head: {norm_option}")
 
@@ -436,7 +457,8 @@ class WorldModel(nn.Module):
             - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
         """
         src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
-        
+        src_tokens_per_block = src_kv._keys_values[0]._k_cache._tokens_per_block
+
         if self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]] is None:
             self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]] = KeysValues(
                 src_kv_shape[0],  # Number of elements (n)
@@ -444,7 +466,8 @@ class WorldModel(nn.Module):
                 src_kv_shape[2],  # Maximum number of tokens (max_tokens)
                 src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
                 len(src_kv),  # Number of layers (num_layers)
-                src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
+                src_tokens_per_block,  # tokens_per_block
+                src_kv._keys_values[0]._k_cache._device,  # Device where the cache is stored
             )
         
         dst_kv = self.shared_pool_init_infer[env_id][self.shared_pool_index_init_envs[env_id]]
@@ -471,6 +494,7 @@ class WorldModel(nn.Module):
             - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
         """
         src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
+        src_tokens_per_block = src_kv._keys_values[0]._k_cache._tokens_per_block
 
         if self.shared_pool_wm[self.shared_pool_index_wm] is None:
             self.shared_pool_wm[self.shared_pool_index_wm] = KeysValues(
@@ -479,6 +503,7 @@ class WorldModel(nn.Module):
                 src_kv_shape[2],  # Maximum number of tokens (max_tokens)
                 src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
                 len(src_kv),  # Number of layers (num_layers)
+                src_tokens_per_block,
                 src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
             )
         
@@ -505,7 +530,8 @@ class WorldModel(nn.Module):
             - index (:obj:`int`): The index in the shared pool where the KeysValues object is stored.
         """
         src_kv_shape = src_kv._keys_values[0]._k_cache._cache.shape
-        
+        src_tokens_per_block = src_kv._keys_values[0]._k_cache._tokens_per_block
+
         if self.shared_pool_recur_infer[self.shared_pool_index] is None:
             self.shared_pool_recur_infer[self.shared_pool_index] = KeysValues(
                 src_kv_shape[0],  # Number of elements (n)
@@ -513,6 +539,7 @@ class WorldModel(nn.Module):
                 src_kv_shape[2],  # Maximum number of tokens (max_tokens)
                 src_kv_shape[3] * src_kv_shape[1],  # Embedding dimension (embed_dim)
                 len(src_kv),  # Number of layers (num_layers)
+                src_tokens_per_block,
                 src_kv._keys_values[0]._k_cache._cache.device,  # Device where the cache is stored
             )
         
@@ -543,6 +570,7 @@ class WorldModel(nn.Module):
         self.context_length = self.config.context_length
         self.dormant_threshold = self.config.dormant_threshold
         self.analysis_dormant_ratio_weight_rank = self.config.analysis_dormant_ratio_weight_rank
+        self.tokens_per_block = self.config.tokens_per_block
         self.num_observations_tokens = self.config.tokens_per_block - 1
         self.latent_recon_loss_weight = self.config.latent_recon_loss_weight
         self.perceptual_loss_weight = self.config.perceptual_loss_weight
@@ -552,6 +580,9 @@ class WorldModel(nn.Module):
         self.env_num = self.config.env_num
         self.num_layers = self.config.num_layers
         self.sim_norm = SimNorm(simnorm_dim=self.group_size)
+        self.model_type = self.config.model_type
+        self.max_blocks = self.config.max_blocks
+        self.max_tokens = self.config.max_tokens
 
         # ==================== [NEW] Policy Stability Fix Options ====================
         # Load fix options from config (with defaults for backward compatibility)
@@ -599,12 +630,17 @@ class WorldModel(nn.Module):
 
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
-        self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
-        self.all_but_last_latent_state_pattern[-2] = 0
-        self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
-        self.act_tokens_pattern[-1] = 1
-        self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
-        self.value_policy_tokens_pattern[-2] = 1
+        if self.model_type == 'slot':
+            self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.act_tokens_pattern[self.num_observations_tokens:] = 1
+            self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
+        else:
+            self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
+            self.all_but_last_latent_state_pattern[-2] = 0
+            self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.act_tokens_pattern[-1] = 1
+            self.value_policy_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+            self.value_policy_tokens_pattern[-2] = 1
 
     def _apply_policy_logits_control(self, logits_policy: torch.Tensor) -> torch.Tensor:
         """
@@ -753,6 +789,26 @@ class WorldModel(nn.Module):
             head_module=nn.Sequential(*modules)
         )
 
+    def _create_agg_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> SlotHead:
+        """
+        Create head module for slot-based models (policy/value).
+        Aggregates K slots per block using mean pooling, then passes to MLP.
+        """
+        modules = [
+            nn.LayerNorm(self.config.embed_dim),
+            nn.Linear(self.config.embed_dim, self.config.embed_dim*4),
+            nn.LayerNorm(self.config.embed_dim*4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim*4, output_dim)
+        ]
+        if norm_layer:
+            modules.append(norm_layer)
+        return AggregationHead(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=nn.Sequential(*modules)
+        )
+
     def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
         from ding.model.common import ReparameterizationHead
@@ -804,6 +860,9 @@ class WorldModel(nn.Module):
                 self.projection_input_dim = self.config.embed_dim
             else:
                 self.projection_input_dim = self.config.embed_dim
+        else:
+            self.projection_input_dim = self.config.embed_dim
+
 
     def _initialize_statistics(self) -> None:
         """Initialize counters for hit count and query count statistics."""
@@ -825,7 +884,7 @@ class WorldModel(nn.Module):
 
     def precompute_pos_emb_diff_kv(self):
         """ Precompute positional embedding differences for key and value. """
-        if self.context_length <= 2:
+        if self.context_length <= self.tokens_per_block:
             # If context length is 2 or less, no context is present
             return
         # Precompute positional embedding matrices for inference in collect/eval stages, not for training
@@ -846,7 +905,7 @@ class WorldModel(nn.Module):
             layer_pos_emb_diff_k = {}
             layer_pos_emb_diff_v = {}
 
-            for start in [2]:
+            for start in [self.tokens_per_block]:
                 for end in [self.context_length - 1]:
                     original_pos_emb_k = self.positional_embedding_k[layer][:, :, start:end, :]
                     new_pos_emb_k = self.positional_embedding_k[layer][:, :, :end - start, :]
@@ -872,14 +931,19 @@ class WorldModel(nn.Module):
          - torch.Tensor: The positional embedding tensor.
          """
         attn_func = getattr(self.transformer.blocks[layer].attn, attn_type)
-        if torch.cuda.is_available():
-            return attn_func(self.pos_emb.weight).view(
-                1, self.config.max_tokens, self.num_heads, self.embed_dim // self.num_heads
-            ).transpose(1, 2).to(self.device).detach()
+        if self.model_type == 'slot':
+            token_positions = torch.arange(self.config.max_tokens, device=self.pos_emb.weight.device)
+            block_positions = torch.div(token_positions, self.tokens_per_block, rounding_mode='floor')
+            pos_matrix = self.pos_emb(block_positions)
         else:
-            return attn_func(self.pos_emb.weight).view(
-                1, self.config.max_tokens, self.num_heads, self.embed_dim // self.num_heads
-            ).transpose(1, 2).detach()
+            pos_matrix = self.pos_emb.weight
+
+        out = attn_func(pos_matrix).view(
+            1, self.config.max_tokens, self.num_heads, self.embed_dim // self.num_heads
+        ).transpose(1, 2)
+        if torch.cuda.is_available():
+            out = out.to(self.device)
+        return out.detach()
 
     def forward(
         self,
@@ -1094,17 +1158,26 @@ class WorldModel(nn.Module):
         Returns:
             - torch.Tensor: Embeddings with position information added.
         """
+        def _token_to_pos_index(token_indices: torch.Tensor) -> torch.Tensor:
+            if self.model_type == 'slot':
+                return torch.div(token_indices, self.tokens_per_block, rounding_mode='floor')
+            else:
+                return token_indices
+
         if kvcache_independent:
             steps_indices = prev_steps + torch.arange(num_steps, device=embeddings.device)
             position_embeddings = self.pos_emb(steps_indices).view(-1, num_steps, embeddings.shape[-1])
             return embeddings + position_embeddings
         else:
             if is_init_infer:
-                return embeddings + self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
+                token_indices = prev_steps + torch.arange(num_steps, device=self.device)
+                pos_indices = _token_to_pos_index(token_indices)
+                return embeddings + self.pos_emb(pos_indices)
             else:
                 valid_context_lengths = torch.tensor(self.keys_values_wm_size_list_current, device=self.device)
-                position_embeddings = self.pos_emb(
-                    valid_context_lengths + torch.arange(num_steps, device=self.device)).unsqueeze(1)
+                token_indices = valid_context_lengths.unsqueeze(-1) + torch.arange(num_steps, device=self.device).unsqueeze(0)
+                pos_indices = _token_to_pos_index(token_indices)
+                position_embeddings = self.pos_emb(pos_indices)
                 return embeddings + position_embeddings
 
     #@profile
@@ -1144,7 +1217,12 @@ class WorldModel(nn.Module):
 
         return_result = obs_act_embeddings
         if not self.config.rotary_emb:
-            return_result += self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
+            token_indices = prev_steps + torch.arange(num_steps, device=self.device)
+            if self.model_type == 'slot':
+                pos_indices = torch.div(token_indices, self.tokens_per_block, rounding_mode='floor')
+            else:
+                pos_indices = token_indices
+            return_result += self.pos_emb(pos_indices)
         return return_result, num_steps
 
     #@profile
@@ -1177,7 +1255,12 @@ class WorldModel(nn.Module):
             
         return_result = obs_act_embeddings
         if not self.config.rotary_emb:
-            return_result += self.pos_emb(prev_steps + torch.arange(num_steps, device=self.device))
+            token_indices = prev_steps + torch.arange(num_steps, device=self.device)
+            if self.model_type == 'slot':
+                pos_indices = torch.div(token_indices, self.tokens_per_block, rounding_mode='floor')
+            else:
+                pos_indices = token_indices
+            return_result += self.pos_emb(pos_indices)
         return return_result, num_steps
 
     def _transformer_pass(self, sequences, past_keys_values, kvcache_independent, valid_context_lengths, start_pos: int = 0):
@@ -1321,7 +1404,7 @@ class WorldModel(nn.Module):
                                                       past_keys_values=self.keys_values_wm_single_env,
                                                       is_init_infer=True, start_pos=start_pos[i].item())
                             self.keys_values_wm_list.append(self.keys_values_wm_single_env)
-                            self.keys_values_wm_size_list.append(1)
+                            self.keys_values_wm_size_list.append(self.keys_values_wm_single_env.size)
 
                     # Input self.keys_values_wm_list, output self.keys_values_wm
                     self.keys_values_wm_size_list_current = self.trim_and_pad_kv_cache(is_init_infer=True)
@@ -1442,27 +1525,11 @@ class WorldModel(nn.Module):
         else:
             token = action.reshape(-1, self.action_space_size)
 
-        # ======= Print statistics for debugging =============
-        # min_size = min(self.keys_values_wm_size_list)
-        # if min_size >= self.config.max_tokens - 5:
-        #     self.length_largethan_maxminus5_context_cnt += len(self.keys_values_wm_size_list)
-        # if min_size >= self.config.max_tokens - 7:
-        #     self.length_largethan_maxminus7_context_cnt += len(self.keys_values_wm_size_list)
-        # if self.total_query_count > 0 and self.total_query_count % 10000 == 0:
-        #     self.hit_freq = self.hit_count / self.total_query_count
-        #     print('total_query_count:', self.total_query_count)
-        #     length_largethan_maxminus5_context_cnt_ratio = self.length_largethan_maxminus5_context_cnt / self.total_query_count
-        #     print('recurrent largethan_maxminus5_context:', self.length_largethan_maxminus5_context_cnt)
-        #     print('recurrent largethan_maxminus5_context_ratio:', length_largethan_maxminus5_context_cnt_ratio)
-        #     length_largethan_maxminus7_context_cnt_ratio = self.length_largethan_maxminus7_context_cnt / self.total_query_count
-        #     print('recurrent largethan_maxminus7_context_ratio:', length_largethan_maxminus7_context_cnt_ratio)
-        #     print('recurrent largethan_maxminus7_context:', self.length_largethan_maxminus7_context_cnt)
-
         # Trim and pad kv_cache: modify self.keys_values_wm in-place
         self.keys_values_wm_size_list = self.trim_and_pad_kv_cache(is_init_infer=False)
         self.keys_values_wm_size_list_current = self.keys_values_wm_size_list
 
-        for k in range(2):
+        for k in range(self.tokens_per_block):
             # action_token obs_token
             if k == 0:
                 obs_embeddings_or_act_tokens = {'act_tokens': token}
@@ -1486,8 +1553,12 @@ class WorldModel(nn.Module):
 
             if k < self.num_observations_tokens:
                 token = outputs_wm.logits_observations
-                if len(token.shape) != 3:
-                    token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
+                if self.model_type == 'slot':
+                    if len(token.shape) == 4:
+                        token = token.squeeze(1)
+                else:
+                    if len(token.shape) != 3:
+                        token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
                 latent_state_list.append(token)
 
         del self.latent_state  # Very important to minimize cuda memory usage
@@ -1568,7 +1639,7 @@ class WorldModel(nn.Module):
             - search_depth (:obj:`list`): List of depth indices in the search tree.
             - valid_context_lengths (:obj:`list`): List of valid context lengths.
         """
-        if self.context_length <= 2:
+        if self.context_length <= self.tokens_per_block:
             # No context to update if the context length is less than or equal to 2.
             return
         for i in range(latent_state.size(0)):
@@ -1618,13 +1689,13 @@ class WorldModel(nn.Module):
                         v_cache_current = self.keys_values_wm_single_env._keys_values[layer]._v_cache._cache
 
                         # Remove the first 2 steps, keep the last self.context_length-3 steps
-                        k_cache_trimmed = k_cache_current[:, :, 2:context_length - 1, :].squeeze(0)
-                        v_cache_trimmed = v_cache_current[:, :, 2:context_length - 1, :].squeeze(0)
+                        k_cache_trimmed = k_cache_current[:, :, self.tokens_per_block:context_length - 1, :].squeeze(0)
+                        v_cache_trimmed = v_cache_current[:, :, self.tokens_per_block:context_length - 1, :].squeeze(0)
 
                         if not self.config.rotary_emb:
                             # Index pre-computed positional encoding differences
-                            pos_emb_diff_k = self.pos_emb_diff_k[layer][(2, context_length - 1)]
-                            pos_emb_diff_v = self.pos_emb_diff_v[layer][(2, context_length - 1)]
+                            pos_emb_diff_k = self.pos_emb_diff_k[layer][(self.tokens_per_block, context_length - 1)]
+                            pos_emb_diff_v = self.pos_emb_diff_v[layer][(self.tokens_per_block, context_length - 1)]
                             # ============ NOTE: Very Important ============
                             # Apply positional encoding correction to k and v
                             k_cache_trimmed += pos_emb_diff_k.squeeze(0)
@@ -1632,15 +1703,15 @@ class WorldModel(nn.Module):
 
                         # Pad the last 3 steps along the third dimension with zeros
                         # F.pad parameters (0, 0, 0, 3) specify padding amounts for each dimension: (left, right, top, bottom). For 3D tensor, they correspond to (dim2 left, dim2 right, dim1 left, dim1 right).
-                        padding_size = (0, 0, 0, 3)
+                        padding_size = (0, 0, 0, self.tokens_per_block+1)
                         k_cache_padded = F.pad(k_cache_trimmed, padding_size, 'constant', 0)
                         v_cache_padded = F.pad(v_cache_trimmed, padding_size, 'constant', 0)
                         # Update single environment cache
                         self.keys_values_wm_single_env._keys_values[layer]._k_cache._cache = k_cache_padded.unsqueeze(0)
                         self.keys_values_wm_single_env._keys_values[layer]._v_cache._cache = v_cache_padded.unsqueeze(0)
 
-                        self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 3
-                        self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 3
+                        self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 1 - self.tokens_per_block
+                        self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 1 - self.tokens_per_block
 
             else:
                 # ============ Root Node ============
@@ -1665,13 +1736,13 @@ class WorldModel(nn.Module):
                         v_cache_current = self.keys_values_wm._keys_values[layer]._v_cache._cache[i]
 
                         # Remove the first 2 steps, keep the last self.context_length-3 steps
-                        k_cache_trimmed = k_cache_current[:, 2:context_length - 1, :]
-                        v_cache_trimmed = v_cache_current[:, 2:context_length - 1, :]
+                        k_cache_trimmed = k_cache_current[:, self.tokens_per_block:context_length - 1, :]
+                        v_cache_trimmed = v_cache_current[:, self.tokens_per_block:context_length - 1, :]
 
                         if not self.config.rotary_emb:
                             # Index pre-computed positional encoding differences
-                            pos_emb_diff_k = self.pos_emb_diff_k[layer][(2, context_length - 1)]
-                            pos_emb_diff_v = self.pos_emb_diff_v[layer][(2, context_length - 1)]
+                            pos_emb_diff_k = self.pos_emb_diff_k[layer][(self.tokens_per_block, context_length - 1)]
+                            pos_emb_diff_v = self.pos_emb_diff_v[layer][(self.tokens_per_block, context_length - 1)]
                             # ============ NOTE: Very Important ============
                             # Apply positional encoding correction to k and v
                             k_cache_trimmed += pos_emb_diff_k.squeeze(0)
@@ -1679,15 +1750,15 @@ class WorldModel(nn.Module):
 
                         # Pad the last 3 steps along the third dimension with zeros
                         # F.pad parameters (0, 0, 0, 3) specify padding amounts for each dimension: (left, right, top, bottom). For 3D tensor, they correspond to (dim2 left, dim2 right, dim1 left, dim1 right).
-                        padding_size = (0, 0, 0, 3)
+                        padding_size = (0, 0, 0, self.tokens_per_block+1)
                         k_cache_padded = F.pad(k_cache_trimmed, padding_size, 'constant', 0)
                         v_cache_padded = F.pad(v_cache_trimmed, padding_size, 'constant', 0)
                         # Update cache of self.keys_values_wm_single_env
                         self.keys_values_wm_single_env._keys_values[layer]._k_cache._cache = k_cache_padded.unsqueeze(0)
                         self.keys_values_wm_single_env._keys_values[layer]._v_cache._cache = v_cache_padded.unsqueeze(0)
                         # Update size of self.keys_values_wm_single_env
-                        self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 3
-                        self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 3
+                        self.keys_values_wm_single_env._keys_values[layer]._k_cache._size = context_length - 1 - self.tokens_per_block
+                        self.keys_values_wm_single_env._keys_values[layer]._v_cache._size = context_length - 1 - self.tokens_per_block
 
             if self.use_new_cache_manager:
                 # NEW SYSTEM: Use KVCacheManager for cache storage
@@ -1844,7 +1915,7 @@ class WorldModel(nn.Module):
                     past_keys_values=self.keys_values_wm_single_env, is_init_infer=True, start_pos=start_pos_adjusted
                 )
                 self.keys_values_wm_list.append(self.keys_values_wm_single_env)
-                self.keys_values_wm_size_list.append(1)
+                self.keys_values_wm_size_list.append(self.keys_values_wm_single_env.size)
 
         return self.keys_values_wm_size_list
 
@@ -1980,6 +2051,11 @@ class WorldModel(nn.Module):
                 latent_recon_loss = self.latent_recon_loss
                 perceptual_loss = self.perceptual_loss
 
+        elif self.obs_type == 'slot':
+            latent_recon_loss = self.latent_recon_loss
+            perceptual_loss = self.perceptual_loss
+
+
         elif self.obs_type == 'vector':
             perceptual_loss = torch.tensor(0., device=batch['observations'].device,
                                            dtype=batch['observations'].dtype)
@@ -2048,7 +2124,7 @@ class WorldModel(nn.Module):
                                                                                            batch['mask_padding'])
 
         # Reshape the logits and labels for observations
-        logits_observations = rearrange(outputs.logits_observations[:, :-1], 'b t o -> (b t) o')
+        logits_observations = rearrange(outputs.logits_observations[:, :-self.num_observations_tokens], 'b t o -> (b t) o')
         labels_observations = labels_observations.reshape(-1, self.projection_input_dim)
 
         # Compute prediction loss for observations. Options: MSE and Group KL
@@ -2078,7 +2154,10 @@ class WorldModel(nn.Module):
             loss_obs = cosine_sim_loss
 
         # Apply mask to loss_obs
-        mask_padding_expanded = batch['mask_padding'][:, 1:].contiguous().view(-1)
+        if self.model_type == 'slot':
+            mask_padding_expanded = batch['mask_padding'][:, 1:].unsqueeze(-1).repeat(1, 1, self.num_observations_tokens).contiguous().view(-1)
+        else:
+            mask_padding_expanded = batch['mask_padding'][:, 1:].contiguous().view(-1)
         loss_obs = (loss_obs * mask_padding_expanded)
 
         # ==================== [NEW] Fix3: Load re-smooth options from config ====================
@@ -2132,14 +2211,20 @@ class WorldModel(nn.Module):
             if loss_name == 'loss_obs':
                 seq_len = batch['actions'].shape[1] - 1
                 # Get the corresponding mask_padding
-                mask_padding = batch['mask_padding'][:, 1:seq_len]
+                if self.model_type == "slot":
+                    mask_padding = batch['mask_padding'][:, 1:seq_len].unsqueeze(-1).repeat(1, 1, self.num_observations_tokens)
+                else:
+                    mask_padding = batch['mask_padding'][:, 1:seq_len]
             else:
                 seq_len = batch['actions'].shape[1]
                 # Get the corresponding mask_padding
                 mask_padding = batch['mask_padding'][:, :seq_len]
 
             # Adjust loss shape to (batch_size, seq_len)
-            loss_tmp = loss_tmp.view(-1, seq_len)
+            if self.model_type == 'slot' and loss_name == 'loss_obs':
+                loss_tmp = loss_tmp.view(batch['actions'].shape[0], seq_len, -1)
+            else:
+                loss_tmp = loss_tmp.view(-1, seq_len)
 
             # First step loss
             first_step_mask = mask_padding[:, 0]
@@ -2437,7 +2522,11 @@ class WorldModel(nn.Module):
         mask_fill = torch.logical_not(mask_padding)
 
         # Prepare observation labels
-        labels_observations = obs_embeddings.contiguous().view(rewards.shape[0], -1, self.projection_input_dim)[:, 1:]
+        if self.model_type == 'slot':
+            obs_embeddings = obs_embeddings[:, 1:]
+            labels_observations = obs_embeddings.contiguous().view(rewards.shape[0], -1, self.projection_input_dim)
+        else:
+            labels_observations = obs_embeddings.contiguous().view(rewards.shape[0], -1, self.projection_input_dim)[:, 1:]
 
         # Fill the masked areas of rewards
         mask_fill_rewards = mask_fill.unsqueeze(-1).expand_as(rewards)

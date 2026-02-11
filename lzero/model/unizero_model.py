@@ -77,7 +77,7 @@ class UniZeroModel(nn.Module):
         self.activation = activation
         self.downsample = downsample
         world_model_cfg.norm_type = norm_type
-        assert world_model_cfg.max_tokens == 2 * world_model_cfg.max_blocks, 'max_tokens should be 2 * max_blocks, because each timestep has 2 tokens: obs and action'
+        assert world_model_cfg.max_tokens == world_model_cfg.tokens_per_block * world_model_cfg.max_blocks, 'max_tokens should be tokens_per_block * max_blocks, because each timestep has 2 tokens: obs and action'
 
         if world_model_cfg.obs_type == 'vector':
             self.representation_network = RepresentationNetworkMLP(
@@ -134,13 +134,22 @@ class UniZeroModel(nn.Module):
             self.world_model = WorldModel(config=world_model_cfg, tokenizer=self.tokenizer)
 
             # --- Log parameter counts for analysis ---
-            self._log_model_parameters(obs_type)
+            self._log_model_parameters(world_model_cfg.obs_type)
 
-            logging.info(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
-            logging.info('==' * 20)
-            logging.info(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')
-            logging.info(f'{sum(p.numel() for p in self.tokenizer.encoder.parameters())} parameters in agent.tokenizer.encoder')
-            logging.info('==' * 20)
+            print(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
+            print('==' * 20)
+            print(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')
+            print(f'{sum(p.numel() for p in self.tokenizer.encoder.parameters())} parameters in agent.tokenizer.encoder')
+            print('==' * 20)
+        elif world_model_cfg.obs_type == 'slot':
+            self.representation_network = nn.Identity()
+            self.decoder_network = None
+            self.tokenizer = Tokenizer(encoder=self.representation_network, decoder=self.decoder_network, with_lpips=False, obs_type=world_model_cfg.obs_type)
+            self.world_model = WorldModel(config=world_model_cfg, tokenizer=self.tokenizer)
+            print(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
+            print('==' * 20)
+            print(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')
+            print('==' * 20)
         elif world_model_cfg.obs_type == 'image':
             if world_model_cfg.encoder_type == "resnet":
                 self.representation_network = RepresentationNetworkUniZero(

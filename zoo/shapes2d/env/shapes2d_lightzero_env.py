@@ -66,6 +66,11 @@ class Shapes2dEnvLightZero(BaseEnv):
         manager=dict(shared_memory=False, ),
         # (int) The value of the cumulative reward at which the training stops.
         stop_value=int(1e6),
+        ocr_config_path='LightZero/zoo/ocr/slate/config/navigation5x5.yaml',
+        chekpoint_path='LightZero/zoo/ocr/slate_weights/navigation5х5.pth',
+        num_slots=6,
+        slot_dim=64,
+        oc_model=False
     )
 
     @classmethod
@@ -107,20 +112,34 @@ class Shapes2dEnvLightZero(BaseEnv):
             # Create and return the wrapped environment for Atari LightZero.
             self._env = wrap_lightzero(self.cfg)
 
-            self._observation_space = gym.spaces.Dict({
-                'observation': gym.spaces.Box(
-                    low=0, high=1, shape=self.cfg.observation_shape, dtype=np.float32
-                ),
-                'action_mask': gym.spaces.Box(
-                    low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
-                ),
-                'to_play': gym.spaces.Box(
-                    low=-1, high=2, shape=(), dtype=np.int8
-                ),
-                'timestep': gym.spaces.Box(
-                    low=0, high=self.cfg.collect_max_episode_steps, shape=(), dtype=np.int32
-                ),
-            })
+            if self.cfg.oc_model:
+                self._observation_space = gym.spaces.Dict({
+                    'observation': self._env.env.observation_space,
+                    'action_mask': gym.spaces.Box(
+                        low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
+                    ),
+                    'to_play': gym.spaces.Box(
+                        low=-1, high=2, shape=(), dtype=np.int8
+                    ),
+                    'timestep': gym.spaces.Box(
+                        low=0, high=self.cfg.collect_max_episode_steps, shape=(), dtype=np.int32
+                    ),
+                })
+            else:
+                self._observation_space = gym.spaces.Dict({
+                    'observation': gym.spaces.Box(
+                        low=0, high=1, shape=self.cfg.observation_shape, dtype=np.float32
+                    ),
+                    'action_mask': gym.spaces.Box(
+                        low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
+                    ),
+                    'to_play': gym.spaces.Box(
+                        low=-1, high=2, shape=(), dtype=np.int8
+                    ),
+                    'timestep': gym.spaces.Box(
+                        low=0, high=self.cfg.collect_max_episode_steps, shape=(), dtype=np.int32
+                    ),
+                })
 
             self._action_space = self._env.env.action_space
             self._reward_space = gym.spaces.Box(
@@ -176,7 +195,7 @@ class Shapes2dEnvLightZero(BaseEnv):
             - observation (:obj:`dict`): The dictionary containing current observation, action mask, and to_play flag.
         """
         observation = self.obs
-        if self.cfg.from_pixels:
+        if self.cfg.from_pixels and not self.cfg.oc_model:
             if not self.channel_last:
                 # move the channel dim to the fist axis
                 # (96, 96, 3) -> (3, 96, 96)

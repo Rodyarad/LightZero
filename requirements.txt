@@ -28,5 +28,4 @@ openai
 nltk
 pyecharts
 comet_ml
-torchvision
 colormath

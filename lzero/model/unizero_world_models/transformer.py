@@ -416,7 +416,7 @@ class Transformer(nn.Module):
             - KeysValues: An object containing empty tensors for keys and values.
         """
         device = self.ln_f.weight.device
-        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, device)
+        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, self.config.tokens_per_block, device)
 
     def forward(
         self,
@@ -591,7 +591,27 @@ class SelfAttention(nn.Module):
         if self.use_register_token:
             mask_size += self.register_token_num * 5
         causal_mask = torch.tril(torch.ones(mask_size, mask_size))
-        self.register_buffer('mask', causal_mask)
+
+        #slot_mask = torch.max(causal_mask, torch.block_diag(*[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
+
+        #i = torch.arange(mask_size)
+        #b, p = i[:,None]//config.tokens_per_block, i[:,None]%config.tokens_per_block
+        #slot_mask = ((b == b.T)|((b.T < b)&(( p== p.T)|(p.T==config.tokens_per_block-1)))).int()
+
+        i = torch.arange(mask_size)
+        b, p = i[:, None] // config.tokens_per_block, i[:, None] % config.tokens_per_block
+        h = config.tokens_per_block // 2
+
+        slot_mask = ((
+                        ((b == b.T) & (p < h) & (p.T < h))
+                        | ((b == b.T) & (p >= h) & (p == p.T))
+                        | ((b == b.T) & (p >= h) & (p.T == (p - h))))
+                        |
+                        ((b > b.T) & (p < h) &
+                        ((p.T < h)| (p.T == h)))
+        ).int()
+
+        self.register_buffer('mask', slot_mask if config.model_type == 'slot' else causal_mask)
 
     def forward(self, x: torch.Tensor, kv_cache: Optional[KeysValues] = None,
                 valid_context_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
