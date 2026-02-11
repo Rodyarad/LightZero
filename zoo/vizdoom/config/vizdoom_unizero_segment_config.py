@@ -43,6 +43,7 @@ def main(env_id, seed):
             n_evaluator_episode=evaluator_env_num,
             manager=dict(shared_memory=False, ),
         ),
+        run_id_comet_ml=None,
         policy=dict(
             store_obs_int8=True,
             model=dict(
