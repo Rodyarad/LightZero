@@ -559,6 +559,9 @@ class WorldModel(nn.Module):
 
     def _initialize_config_parameters(self) -> None:
         """Initialize configuration parameters."""
+        self.model_type = self.config.model_type
+        self.max_blocks = self.config.max_blocks
+        self.max_tokens = self.config.max_tokens
         self.policy_entropy_weight = self.config.policy_entropy_weight
         self.predict_latent_loss_type = self.config.predict_latent_loss_type
         self.group_size = self.config.group_size
@@ -571,7 +574,10 @@ class WorldModel(nn.Module):
         self.dormant_threshold = self.config.dormant_threshold
         self.analysis_dormant_ratio_weight_rank = self.config.analysis_dormant_ratio_weight_rank
         self.tokens_per_block = self.config.tokens_per_block
-        self.num_observations_tokens = self.config.tokens_per_block - 1
+        if self.model_type == 'slot':
+            self.num_observations_tokens = self.config.tokens_per_block // 2
+        else:
+            self.num_observations_tokens = self.config.tokens_per_block - 1
         self.latent_recon_loss_weight = self.config.latent_recon_loss_weight
         self.perceptual_loss_weight = self.config.perceptual_loss_weight
         self.support_size = self.config.support_size
@@ -580,9 +586,6 @@ class WorldModel(nn.Module):
         self.env_num = self.config.env_num
         self.num_layers = self.config.num_layers
         self.sim_norm = SimNorm(simnorm_dim=self.group_size)
-        self.model_type = self.config.model_type
-        self.max_blocks = self.config.max_blocks
-        self.max_tokens = self.config.max_tokens
 
         # ==================== [NEW] Policy Stability Fix Options ====================
         # Load fix options from config (with defaults for backward compatibility)
@@ -1069,6 +1072,9 @@ class WorldModel(nn.Module):
                 if len(act_tokens.shape) == 3:
                     act_tokens = act_tokens.squeeze(1)
                 num_steps = act_tokens.size(1)
+            if self.model_type == 'slot':
+                act_tokens = act_tokens.repeat(1, self.num_observations_tokens)
+                num_steps = act_tokens.size(1)
             # Convert action tokens to embeddings using the action embedding table.
             act_embeddings = self.act_embedding_table(act_tokens)
             if not self.config.rotary_emb:
@@ -1241,17 +1247,29 @@ class WorldModel(nn.Module):
             obs_embeddings = obs_embeddings.view(act_tokens.shape[0], act_tokens.shape[1], self.num_observations_tokens,
                                                  -1)
 
-        num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
+        if self.model_type == 'slot':
+            act_tokens = act_tokens.repeat(1, 1, self.num_observations_tokens)
+            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) * 2))
+        else:
+            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
         act_embeddings = self.act_embedding_table(act_tokens)
 
         B, L, K, E = obs_embeddings.size()
-        obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
+        if self.model_type == 'slot':
+            obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
+        else:
+            obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
 
         for i in range(L):
             obs = obs_embeddings[:, i, :, :]
-            act = act_embeddings[:, i, 0, :].unsqueeze(1)
-            obs_act = torch.cat([obs, act], dim=1)
-            obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
+            if self.model_type == 'slot':
+                act = act_embeddings[:, i, :, :]
+                obs_act = torch.cat([obs, act], dim=1)
+                obs_act_embeddings[:, i * (K * 2):(i + 1) * (K * 2), :] = obs_act
+            else:
+                act = act_embeddings[:, i, 0, :].unsqueeze(1)
+                obs_act = torch.cat([obs, act], dim=1)
+                obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
             
         return_result = obs_act_embeddings
         if not self.config.rotary_emb:
@@ -1551,15 +1569,16 @@ class WorldModel(nn.Module):
             if k == 0:
                 reward = outputs_wm.logits_rewards  # (B,)
 
-            if k < self.num_observations_tokens:
-                token = outputs_wm.logits_observations
-                if self.model_type == 'slot':
-                    if len(token.shape) == 4:
-                        token = token.squeeze(1)
-                else:
+            if self.model_type == 'slot':
+                if k == 0:
+                    token = outputs_wm.logits_observations
+                    latent_state_list.append(token)
+            else:
+                if k < self.num_observations_tokens:
+                    token = outputs_wm.logits_observations
                     if len(token.shape) != 3:
                         token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
-                latent_state_list.append(token)
+                    latent_state_list.append(token)
 
         del self.latent_state  # Very important to minimize cuda memory usage
         self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
