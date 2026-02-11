@@ -278,19 +278,28 @@ class UniZeroModel(nn.Module):
         wm_params = sum(p.numel() for p in self.world_model.parameters())
         wm_trainable = sum(p.numel() for p in self.world_model.parameters() if p.requires_grad)
         logging.info(f'{"World Model Total":<40} {wm_params:>15,} parameters')
-        logging.info(f'{"  └─ Trainable":<40} {wm_trainable:>15,} parameters ({100*wm_trainable/wm_params:.1f}%)')
+        if wm_params > 0:
+            logging.info(f'{"  └─ Trainable":<40} {wm_trainable:>15,} parameters ({100*wm_trainable/wm_params:.1f}%)')
+        else:
+            logging.info(f'{"  └─ Trainable":<40} {wm_trainable:>15,} parameters (N/A)')
 
         # --- Encoder ---
         encoder_params = sum(p.numel() for p in self.tokenizer.encoder.parameters())
         encoder_trainable = sum(p.numel() for p in self.tokenizer.encoder.parameters() if p.requires_grad)
         logging.info(f'\n{"1. ENCODER (Tokenizer)":<40} {encoder_params:>15,} parameters')
-        logging.info(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters ({100*encoder_trainable/encoder_params:.1f}%)')
+        if encoder_params > 0:
+            logging.info(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters ({100*encoder_trainable/encoder_params:.1f}%)')
+        else:
+            logging.info(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters (N/A)')
 
         # --- Transformer Backbone ---
         transformer_params = sum(p.numel() for p in self.world_model.transformer.parameters())
         transformer_trainable = sum(p.numel() for p in self.world_model.transformer.parameters() if p.requires_grad)
         logging.info(f'\n{"2. TRANSFORMER BACKBONE":<40} {transformer_params:>15,} parameters')
-        logging.info(f'{"  └─ Trainable":<40} {transformer_trainable:>15,} parameters ({100*transformer_trainable/transformer_params:.1f}%)')
+        if transformer_params > 0:
+            logging.info(f'{"  └─ Trainable":<40} {transformer_trainable:>15,} parameters ({100*transformer_trainable/transformer_params:.1f}%)')
+        else:
+            logging.info(f'{"  └─ Trainable":<40} {transformer_trainable:>15,} parameters (N/A)')
 
         # --- Prediction Heads (Detailed Breakdown) ---
         logging.info(f'\n{"3. PREDICTION HEADS":<40}')
@@ -303,7 +312,10 @@ class UniZeroModel(nn.Module):
             total_heads_params = sum(p.numel() for module in head_dict.values() for p in module.parameters())
             total_heads_trainable = sum(p.numel() for module in head_dict.values() for p in module.parameters() if p.requires_grad)
             logging.info(f'{"  Total (All Heads)":<40} {total_heads_params:>15,} parameters')
-            logging.info(f'{"  └─ Trainable":<40} {total_heads_trainable:>15,} parameters ({100*total_heads_trainable/total_heads_params:.1f}%)')
+            if total_heads_params > 0:
+                logging.info(f'{"  └─ Trainable":<40} {total_heads_trainable:>15,} parameters ({100*total_heads_trainable/total_heads_params:.1f}%)')
+            else:
+                logging.info(f'{"  └─ Trainable":<40} {total_heads_trainable:>15,} parameters (N/A)')
 
             # Breakdown by head type
             head_names_map = {

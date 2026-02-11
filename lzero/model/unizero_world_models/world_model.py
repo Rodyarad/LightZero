@@ -789,7 +789,7 @@ class WorldModel(nn.Module):
             head_module=nn.Sequential(*modules)
         )
 
-    def _create_agg_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> SlotHead:
+    def _create_agg_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> AggregationHead:
         """
         Create head module for slot-based models (policy/value).
         Aggregates K slots per block using mean pooling, then passes to MLP.
