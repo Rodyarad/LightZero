@@ -719,7 +719,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         output = {i: None for i in ready_env_id}
 
         with torch.no_grad():
-            network_output = self._collect_model.initial_inference(self.last_batch_obs, self.last_batch_action, data, timestep)
+            network_output = self._collect_model.initial_inference(self.last_batch_obs, self.last_batch_action, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
@@ -871,7 +871,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             ready_env_id = np.arange(active_eval_env_num)
         output = {i: None for i in ready_env_id}
         with torch.no_grad():
-            network_output = self._eval_model.initial_inference(self.last_batch_obs, self.last_batch_action, data, timestep)
+            network_output = self._eval_model.initial_inference(self.last_batch_obs, self.last_batch_action, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             # if not in training, obtain the scalars of the value/reward

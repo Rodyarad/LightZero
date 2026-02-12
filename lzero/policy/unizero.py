@@ -1398,7 +1398,7 @@ class UniZeroPolicy(MuZeroPolicy):
         output = {i: None for i in ready_env_id}
 
         with torch.no_grad():
-            network_output = self._collect_model.initial_inference(self.last_batch_obs_collect, self.last_batch_action_collect, data, timestep)
+            network_output = self._collect_model.initial_inference(self.last_batch_obs_collect, self.last_batch_action_collect, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
@@ -1557,7 +1557,7 @@ class UniZeroPolicy(MuZeroPolicy):
             ready_env_id = np.arange(active_eval_env_num)
         output = {i: None for i in ready_env_id}
         with torch.no_grad():
-            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action_eval, data, timestep)
+            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action_eval, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             # if not in training, obtain the scalars of the value/reward
@@ -1968,11 +1968,8 @@ class UniZeroPolicy(MuZeroPolicy):
     def recompute_pos_emb_diff_and_clear_cache(self) -> None:
         """
         Overview:
-            Clear the caches and precompute positional embedding matrices in the model.
+            Clear the caches.
         """
         for model in [self._collect_model, self._target_model]:
-            if not self._cfg.model.world_model_cfg.rotary_emb:
-                # If rotary_emb is False, nn.Embedding is used for absolute position encoding.
-                model.world_model.precompute_pos_emb_diff_kv()
             model.world_model.clear_caches()
         torch.cuda.empty_cache()

@@ -306,7 +306,7 @@ class SampledUniZeroModel(nn.Module):
         print(f'{"=" * 80}\n')
 
     def initial_inference(self, obs_batch: torch.Tensor, action_batch: Optional[torch.Tensor] = None, 
-                          current_obs_batch: Optional[torch.Tensor] = None, start_pos: int = 0) -> MZNetworkOutput:
+                          current_obs_batch: Optional[torch.Tensor] = None) -> MZNetworkOutput:
         """
         Overview:
             Initial inference of the UniZero model, which is the first step of the UniZero model.
@@ -335,7 +335,7 @@ class SampledUniZeroModel(nn.Module):
          """
         batch_size = obs_batch.size(0)
         obs_act_dict = {'obs': obs_batch, 'action': action_batch, 'current_obs': current_obs_batch}
-        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict, start_pos)
+        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict)
         latent_state, reward, policy_logits, value = obs_token, logits_rewards, logits_policy, logits_value
         policy_logits = policy_logits.squeeze(1)
         value = value.squeeze(1)
@@ -348,7 +348,7 @@ class SampledUniZeroModel(nn.Module):
         )
 
     def recurrent_inference(self, state_action_history: torch.Tensor, simulation_index: int = 0,
-                            search_depth: list = None, start_pos: int = 0) -> MZNetworkOutput:
+                            search_depth: list = None) -> MZNetworkOutput:
         """
         Overview:
             Recurrent inference of Sampled UniZero model. To perform the recurrent inference, we concurrently predict the latent dynamics (reward/next_latent_state)
@@ -378,7 +378,7 @@ class SampledUniZeroModel(nn.Module):
         if search_depth is None:
             search_depth = []
         _, logits_observations, logits_rewards, logits_policy, logits_value = self.world_model.forward_recurrent_inference(
-            state_action_history, simulation_index, search_depth, start_pos)
+            state_action_history, simulation_index, search_depth)
         next_latent_state, reward, policy_logits, value = logits_observations, logits_rewards, logits_policy, logits_value
         policy_logits = policy_logits.squeeze(1)
         value = value.squeeze(1)

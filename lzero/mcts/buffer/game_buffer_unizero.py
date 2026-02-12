@@ -451,7 +451,7 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
                 m_output = model.initial_inference(batch_obs, batch_action[:self.reanalyze_num], task_id=self.task_id)  # NOTE: :self.reanalyze_num
 
             else:
-                m_output = model.initial_inference(batch_obs, batch_action[:self.reanalyze_num], start_pos=batch_timestep[:self.reanalyze_num])  # NOTE: :self.reanalyze_num
+                m_output = model.initial_inference(batch_obs, batch_action[:self.reanalyze_num])  # NOTE: :self.reanalyze_num
 
             # =======================================================================
 
@@ -572,7 +572,7 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
                 m_output = model.initial_inference(batch_obs, batch_action, task_id=self.task_id)
 
             else:
-                m_output = model.initial_inference(batch_obs, batch_action, start_pos=batch_timestep)
+                m_output = model.initial_inference(batch_obs, batch_action)
 
             # ======================================================================
 
