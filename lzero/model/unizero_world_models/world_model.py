@@ -754,10 +754,10 @@ class WorldModel(nn.Module):
 
         elif "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
             # Process combined inputs for continue epsiodes for root in mcts
-            # if self.continuous_action_space:
-            #     sequences, num_steps = self._process_obs_act_combined_cont(obs_embeddings_or_act_tokens)
-            # else:
-            sequences, num_steps = self._process_obs_act_combined(obs_embeddings_or_act_tokens, True)
+            if self.continuous_action_space:
+                sequences, num_steps = self._process_obs_act_combined_cont(obs_embeddings_or_act_tokens)
+            else:
+                sequences, num_steps = self._process_obs_act_combined(obs_embeddings_or_act_tokens, True)
 
         else:
             raise ValueError("Input dictionary must contain one of 'obs_embeddings', 'act_tokens', or 'obs_embeddings_and_act_tokens'.")
@@ -780,8 +780,6 @@ class WorldModel(nn.Module):
         logits_value = self.head_value(x, num_steps, 0)
 
         if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
-            logits_observations = logits_observations[:,-self.num_observations_tokens:,:]
-            logits_rewards = logits_rewards[:,-1:,:]
             logits_policy = logits_policy[:,-1:,:]
             logits_value = logits_value[:,-1:,:]
 
@@ -1122,10 +1120,12 @@ class WorldModel(nn.Module):
             history_actions.append(act)
 
         latent_state_list = []
-        if not self.continuous_action_space:
-            token = action.reshape(-1, 1)
+        obs_embeddings = torch.stack(history_states, dim=1)  # (B, L, K, E)
+        if self.continuous_action_space:
+            act_tokens = torch.stack(history_actions, dim=1)  # (B, L, action_space_size)
         else:
-            token = action.reshape(-1, self.action_space_size)
+            act_tokens = torch.stack(history_actions, dim=1)  # (B, L)
+            act_tokens = act_tokens.unsqueeze(-1)  # (B, L, 1)
 
         for k in range(2):
 
@@ -1133,14 +1133,18 @@ class WorldModel(nn.Module):
             if k == 0:
                 outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)})
             else:
+                obs_embeddings = torch.cat([obs_embeddings, token.unsqueeze(1)], dim=1)
+                if obs_embeddings.shape[1] > self.max_blocks:
+                    obs_embeddings = obs_embeddings[:, 1:, :, :]
+                    act_tokens = act_tokens[:, 1:, :]
                 outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
 
             if k == 0:
-                reward = outputs_wm.logits_rewards  # (B,)
+                reward = outputs_wm.logits_rewards[:,-1:,:]  # (B,)
 
             if self.model_type == 'slot':
                 if k == 0:
-                    token = outputs_wm.logits_observations
+                    token = outputs_wm.logits_observations[:,-self.num_observations_tokens:,:]
                     latent_state_list.append(token)
             else:
                 if k < self.num_observations_tokens:

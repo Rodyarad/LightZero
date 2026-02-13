@@ -1650,24 +1650,6 @@ class UniZeroPolicy(MuZeroPolicy):
             else: # Assumes it's a list
                 env_ids_to_reset = env_id
 
-            # The key condition: `current_steps` is None only on the end-of-episode reset call from the collector.
-            if current_steps is None:
-                world_model = self._collect_model.world_model
-                for eid in env_ids_to_reset:
-                    # ==================== BUG FIX: Refactored Cache Clearing ====================
-                    # Clear the specific environment's initial inference cache.
-                    if hasattr(world_model, 'use_new_cache_manager') and world_model.use_new_cache_manager:
-                        # NEW SYSTEM: Use KVCacheManager to clear per-environment cache
-                        if eid < world_model.env_num:
-                            world_model.kv_cache_manager.init_pools[eid].clear()
-                            logging.info(f'>>> [Collector] Cleared KV cache for env_id: {eid} at episode end (NEW system).')
-                    else:
-                        # OLD SYSTEM: Use legacy cache dictionary
-                        if eid < len(world_model.past_kv_cache_init_infer_envs):
-                            world_model.past_kv_cache_init_infer_envs[eid].clear()
-                            logging.info(f'>>> [Collector] Cleared KV cache for env_id: {eid} at episode end (OLD system).')
-                    # =============================================================================
-
         # Determine the clear interval based on the environment's sample type
         clear_interval = 2000 if getattr(self._cfg, 'sample_type', '') == 'episode' else self._cfg.game_segment_length
 
@@ -1731,28 +1713,12 @@ class UniZeroPolicy(MuZeroPolicy):
             # The key condition: `current_steps` is None only on the end-of-episode reset call from the evaluator.
             if current_steps is None:
                 world_model = self._eval_model.world_model
-                for eid in env_ids_to_reset:
-                    # ==================== BUG FIX: Refactored Cache Clearing ====================
-                    # Clear the specific environment's initial inference cache.
-                    if hasattr(world_model, 'use_new_cache_manager') and world_model.use_new_cache_manager:
-                        # NEW SYSTEM: Use KVCacheManager to clear per-environment cache
-                        if eid < world_model.env_num:
-                            world_model.kv_cache_manager.init_pools[eid].clear()
-                            logging.info(f'>>> [Evaluator] Cleared KV cache for env_id: {eid} at episode end (NEW system).')
-                    else:
-                        # OLD SYSTEM: Use legacy cache dictionary
-                        if eid < len(world_model.past_kv_cache_init_infer_envs):
-                            world_model.past_kv_cache_init_infer_envs[eid].clear()
-                            logging.info(f'>>> [Evaluator] Cleared KV cache for env_id: {eid} at episode end (OLD system).')
-                    # =============================================================================
 
                 # The recurrent cache is global.
                 # ==================== Phase 1.5: Use unified clear_caches() method ====================
                 # This automatically handles both old and new cache systems
                 world_model.clear_caches()
                 # ======================================================================================
-
-                world_model.keys_values_wm_list.clear()
                 torch.cuda.empty_cache()
                 return
 
