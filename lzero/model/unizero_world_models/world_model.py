@@ -990,98 +990,29 @@ class WorldModel(nn.Module):
                     first_step_flag = max(batch_action) == -1
                 if first_step_flag:
                     # ------------------------- First Step of an Episode -------------------------
-                    self.keys_values_wm = self.transformer.generate_empty_keys_values(n=current_obs_embeddings.shape[0],
-                                                                                      max_tokens=self.context_length)
-                    # print(f"current_obs_embeddings.device: {current_obs_embeddings.device}")
-                    outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings},
-                                              past_keys_values=self.keys_values_wm, is_init_infer=True, start_pos=start_pos)
-
-                    # Copy and store keys_values_wm for a single environment
-                    self.update_cache_context(current_obs_embeddings, is_init_infer=True)
+                    self._reset_env_history()
+                    outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
+                    self._append_obs_to_history(current_obs_embeddings)
                 else:
                     # --------------------- Continuing an Episode (Multi-environment) ---------------------
                     # current_obs_embeddings is the new latent_state, containing information from ready_env_num environments
                     ready_env_num = current_obs_embeddings.shape[0]
-                    self.keys_values_wm_list = []
-                    self.keys_values_wm_size_list = []
-
-                    for i in range(ready_env_num):
-                        # Retrieve latent state for a single environment
-                        # TODO: len(last_obs_embeddings) may smaller than len(current_obs_embeddings), because some environments may have done
-
-                        state_single_env = last_obs_embeddings[i]
-                        # Compute hash value using latent state for a single environment
-                        cache_key = hash_state(state_single_env.view(-1).cpu().numpy())  # last_obs_embeddings[i] is torch.Tensor
-
-                        # ==================== Storage Layer Integration ====================
-                        # Retrieve cached value
-                        if self.use_new_cache_manager:
-                            # NEW SYSTEM: Use KVCacheManager
-                            matched_value = self.kv_cache_manager.get_init_cache(env_id=i, cache_key=cache_key)
-                        else:
-                            # OLD SYSTEM: Use legacy cache dictionaries
-                            cache_index = self.past_kv_cache_init_infer_envs[i].get(cache_key)
-                            if cache_index is not None:
-                                matched_value = self.shared_pool_init_infer[i][cache_index]
-                            else:
-                                matched_value = None
-                        # =============================================================================
-
-                        self.root_total_query_cnt += 1
-                        if matched_value is not None:
-                            # If a matching value is found, add it to the list
-                            self.root_hit_cnt += 1
-                            # ==================== BUG FIX: Cache Corruption Prevention ====================
-                            # Perform a deep copy because the transformer's forward pass modifies matched_value in-place.
-                            if self.use_new_cache_manager:
-                                # NEW SYSTEM: Use KeysValues.clone() for deep copy
-                                cached_copy = matched_value.clone()
-                                self.keys_values_wm_list.append(cached_copy)
-                            else:
-                                # OLD SYSTEM: Use custom_copy_kv_cache_to_shared_wm
-                                self.keys_values_wm_list.append(self.custom_copy_kv_cache_to_shared_wm(matched_value))
-                            # =============================================================================
-                            self.keys_values_wm_size_list.append(matched_value.size)
-                        else:
-                            # Reset using zero values
-                            self.keys_values_wm_single_env = self.transformer.generate_empty_keys_values(n=1, max_tokens=self.context_length)
-                            # If using RoPE positional encoding, then at reset, the pos_embed should use the absolute position start_pos[i].
-                            outputs_wm = self.forward({'obs_embeddings': state_single_env.unsqueeze(0)},
-                                                      past_keys_values=self.keys_values_wm_single_env,
-                                                      is_init_infer=True, start_pos=start_pos[i].item())
-                            self.keys_values_wm_list.append(self.keys_values_wm_single_env)
-                            self.keys_values_wm_size_list.append(self.keys_values_wm_single_env.size)
-
-                    # Input self.keys_values_wm_list, output self.keys_values_wm
-                    self.keys_values_wm_size_list_current = self.trim_and_pad_kv_cache(is_init_infer=True)
-
-                    start_pos = start_pos[:ready_env_num]
-                    # TODO: len(last_obs_embeddings) may smaller than len(current_obs_embeddings), because some environments may have done
-                    # TODO: the order may be not correct?  len(batch_action) may smaller than len(current_obs_embeddings), because some environments may have done
                     batch_action = batch_action[:ready_env_num]
-                    
-                    # TODO: only for debug
-                    # if ready_env_num < self.env_num:
-                    #     print(f'init inference ready_env_num: {ready_env_num} < env_num: {self.env_num}')
-                    #     print(f"ready_env_num: {ready_env_num}")
-                    #     print(f"start_pos: {start_pos}")
-                    #     print(f"batch_action: {batch_action}")
-                    #     print(f"len(last_obs_embeddings): {len(last_obs_embeddings)}")
-                    #     print(f"len(batch_action): {len(batch_action)}")
-                    #     print(f"len(current_obs_embeddings): {len(current_obs_embeddings)}")
+
+                    self._append_obs_to_history(current_obs_embeddings)
 
                     if self.continuous_action_space:
                         act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1)
                     else:
                         act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1)
-                    
-                    outputs_wm = self.forward({'act_tokens': act_tokens}, past_keys_values=self.keys_values_wm,
-                                              is_init_infer=True, start_pos=start_pos)
-                    outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings},
-                                              past_keys_values=self.keys_values_wm, is_init_infer=True, start_pos=start_pos)
 
-                    # Copy and store keys_values_wm for a single environment
-                    self.update_cache_context(current_obs_embeddings, is_init_infer=True)
+                    self._append_act_to_history(act_tokens)
+
+                    obs_seq = torch.stack(self.obs_history, dim=1).to(self.device)
+                    act_seq = torch.stack(self.act_history, dim=1).to(self.device)
+
+                    outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_seq, act_seq)},
+                                              is_init_infer=True)
 
         elif batch_action is not None and current_obs_embeddings is None:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
@@ -1171,9 +1102,24 @@ class WorldModel(nn.Module):
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
-        self.keys_values_wm_list = []
-        self.keys_values_wm_size_list = []
-        self.keys_values_wm_size_list = self.retrieve_or_generate_kvcache(latest_state, ready_env_num, simulation_index, start_pos)
+        if len(state_action_history) > self.max_blocks:
+            state_action_history = state_action_history[-self.max_blocks:]
+
+        history_states = []
+        history_actions = []
+
+        for state, act in state_action_history:
+            if isinstance(state, np.ndarray):
+                state = torch.from_numpy(state).to(self.device)
+            if isinstance(act, np.ndarray):
+                act = torch.from_numpy(act).to(self.device)
+
+            if not isinstance(state, torch.Tensor):
+                state = torch.tensor(state, device=self.device)
+            if not isinstance(act, torch.Tensor):
+                act = torch.tensor(act, device=self.device)
+            history_states.append(state)
+            history_actions.append(act)
 
         latent_state_list = []
         if not self.continuous_action_space:
@@ -1181,28 +1127,13 @@ class WorldModel(nn.Module):
         else:
             token = action.reshape(-1, self.action_space_size)
 
-        # Trim and pad kv_cache: modify self.keys_values_wm in-place
-        self.keys_values_wm_size_list = self.trim_and_pad_kv_cache(is_init_infer=False)
-        self.keys_values_wm_size_list_current = self.keys_values_wm_size_list
-
         for k in range(2):
-            # action_token obs_token
-            if k == 0:
-                obs_embeddings_or_act_tokens = {'act_tokens': token}
-            else:
-                obs_embeddings_or_act_tokens = {'obs_embeddings': token}
 
             # Perform forward pass
-            outputs_wm = self.forward(
-                obs_embeddings_or_act_tokens,
-                past_keys_values=self.keys_values_wm,
-                kvcache_independent=False,
-                is_init_infer=False,
-                start_pos=start_pos,
-                search_depth=search_depth # List containing depth of latent states in the search tree. 
-            )
-
-            self.keys_values_wm_size_list_current = [i + self.num_observations_tokens for i in self.keys_values_wm_size_list_current]
+            if k == 0:
+                outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)})
+            else:
+                outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
 
             if k == 0:
                 reward = outputs_wm.logits_rewards  # (B,)
@@ -1220,12 +1151,6 @@ class WorldModel(nn.Module):
 
         del self.latent_state  # Very important to minimize cuda memory usage
         self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
-
-        self.update_cache_context(
-            self.latent_state,
-            is_init_infer=False,
-            simulation_index=simulation_index,
-        )
 
         return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
 
