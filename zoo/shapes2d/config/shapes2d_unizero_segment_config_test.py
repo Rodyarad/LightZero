@@ -46,7 +46,7 @@ def main(env_id, seed):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            store_obs_int8=True,
+            #store_obs_int8=True,
             model=dict(
                 observation_shape=(3, 64, 64),
                 action_space_size=action_space_size,
