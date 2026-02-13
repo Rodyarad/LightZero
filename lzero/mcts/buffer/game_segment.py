@@ -55,7 +55,7 @@ class GameSegment:
         self.sampled_algo = config.sampled_algo
         self.gumbel_algo = config.gumbel_algo
         self.use_ture_chance_label_in_chance_encoder = config.use_ture_chance_label_in_chance_encoder
-        self.store_obs_int8 = getattr(config, 'store_obs_int8', False)
+        # self.store_obs_int8 = getattr(config, 'store_obs_int8', False)
 
         if task_id is None:
             if isinstance(config.model.observation_shape, int) or len(config.model.observation_shape) == 1:
@@ -119,11 +119,11 @@ class GameSegment:
                 stacked_obs = np.concatenate((stacked_obs, pad_frames))
         if self.transform2string:
             stacked_obs = [jpeg_data_decompressor(obs, self.gray_scale) for obs in stacked_obs]
-        if self.store_obs_int8:
-            stacked_obs = [
-                (obs.astype(np.float32) / 255.0) if isinstance(obs, np.ndarray) else obs
-                for obs in stacked_obs
-            ]
+        # if self.store_obs_int8:
+        #     stacked_obs = [
+        #         (obs.astype(np.float32) / 255.0) if isinstance(obs, np.ndarray) else obs
+        #         for obs in stacked_obs
+        #     ]
         return stacked_obs
 
     def zero_obs(self) -> List:
@@ -151,11 +151,11 @@ class GameSegment:
         stacked_obs = self.obs_segment[timestep:timestep + self.frame_stack_num]
         if self.transform2string:
             stacked_obs = [jpeg_data_decompressor(obs, self.gray_scale) for obs in stacked_obs]
-        if self.store_obs_int8:
-            stacked_obs = [
-                (obs.astype(np.float32) / 255.0) if isinstance(obs, np.ndarray) else obs
-                for obs in stacked_obs
-            ]
+        # if self.store_obs_int8:
+        #     stacked_obs = [
+        #         (obs.astype(np.float32) / 255.0) if isinstance(obs, np.ndarray) else obs
+        #         for obs in stacked_obs
+        #     ]
         return stacked_obs
 
     def append(
@@ -173,8 +173,8 @@ class GameSegment:
             Append a transition tuple, including a_t, o_{t+1}, r_{t}, action_mask_{t}, to_play_{t}.
         """
         self.action_segment.append(action)
-        if self.store_obs_int8 and isinstance(obs, np.ndarray) and np.issubdtype(obs.dtype, np.floating):
-            obs = (np.clip(obs, 0.0, 1.0) * 255.0).astype(np.uint8)
+        # if self.store_obs_int8 and isinstance(obs, np.ndarray) and np.issubdtype(obs.dtype, np.floating):
+        #     obs = (np.clip(obs, 0.0, 1.0) * 255.0).astype(np.uint8)
         self.obs_segment.append(obs)
         self.reward_segment.append(reward)
 
