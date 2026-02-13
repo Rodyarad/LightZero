@@ -62,7 +62,6 @@ def main(env_id, seed):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            store_obs_int8=False,
             model=dict(
                 observation_shape=(num_slots, slot_dim),
                 model_type='slot',
