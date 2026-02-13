@@ -728,8 +728,12 @@ class UniZeroPolicy(MuZeroPolicy):
         # ===================== END: Target Entropy Regularization Initialization =====================
 
         # ==================== START: Initialize Encoder-Clip Annealing Parameters ====================
-        self.use_encoder_clip_annealing = self._cfg.use_encoder_clip_annealing
-        self.latent_norm_clip_threshold = self._cfg.latent_norm_clip_threshold  # TODO
+        if self._cfg.model.model_type == 'slot':
+            self.use_encoder_clip_annealing = False
+            self.latent_norm_clip_threshold = 0
+        else:
+            self.use_encoder_clip_annealing = self._cfg.use_encoder_clip_annealing
+            self.latent_norm_clip_threshold = self._cfg.latent_norm_clip_threshold  # TODO
         if self.use_encoder_clip_annealing:
             self.encoder_clip_anneal_type = self._cfg.encoder_clip_anneal_type
             self.encoder_clip_start = self._cfg.encoder_clip_start_value
