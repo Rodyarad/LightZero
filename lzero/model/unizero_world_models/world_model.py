@@ -118,6 +118,7 @@ class WorldModel(nn.Module):
             else:
                 self.head_policy = self._create_agg_head(self.value_policy_tokens_pattern, self.action_space_size)
             self.head_value = self._create_agg_head(self.value_policy_tokens_pattern, self.support_size)
+            self.head_proj = self._create_slot_act_head(self.obs_per_embdding_dim)
         else:
             self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
@@ -131,12 +132,12 @@ class WorldModel(nn.Module):
                 self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
             self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
-        self.head_dict = {}
-        for name, module in self.named_children():
-            if name.startswith("head_"):
-                self.head_dict[name] = module
-        if self.head_dict:
-            self.head_dict = nn.ModuleDict(self.head_dict)
+        # self.head_dict = {}
+        # for name, module in self.named_children():
+        #     if name.startswith("head_"):
+        #         self.head_dict[name] = module
+        # if self.head_dict:
+        #     self.head_dict = nn.ModuleDict(self.head_dict)
 
         # Build the set of modules to skip during re-initialization.
         # This is compatible with cases where self.tokenizer.encoder does not have 'pretrained_model',
@@ -578,6 +579,17 @@ class WorldModel(nn.Module):
             block_mask=block_mask,
             head_module=nn.Sequential(*modules)
         )
+    
+    def _create_slot_act_head(self, output_dim: int):
+        modules = [
+            nn.LayerNorm(self.config.embed_dim * 2),
+            nn.Linear(self.config.embed_dim * 2, self.config.embed_dim*4),
+            nn.LayerNorm(self.config.embed_dim*4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim*4, output_dim)
+        ]
+
+        return nn.Sequential(*modules)
 
     def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
@@ -887,6 +899,11 @@ class WorldModel(nn.Module):
             obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
         else:
             obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
+
+        act_embeddings = act_embeddings[:, :L, :, :]
+        slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
+        slot_acts = slot_acts.view(-1, E * 2)
+        act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
 
         for i in range(L):
             obs = obs_embeddings[:, i, :, :]
