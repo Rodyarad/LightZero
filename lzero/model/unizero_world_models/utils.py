@@ -211,6 +211,7 @@ class WorldModelOutput:
     logits_ends: torch.FloatTensor
     logits_policy: torch.FloatTensor
     logits_value: torch.FloatTensor
+    scores_alpha: torch.FloatTensor
 
 
 def init_weights(module, norm_type='BN',liner_weight_zero=False):
@@ -280,6 +281,7 @@ class LossWithIntermediateLosses:
             self.reward_loss_weight = 1.
             self.policy_loss_weight = 1.
             self.ends_loss_weight = 0.
+            self.alpha_loss_weight = 1.
         else:
             # like TD-MPC2 for DMC
             self.obs_loss_weight = 10
@@ -287,6 +289,7 @@ class LossWithIntermediateLosses:
             self.reward_loss_weight = 0.1
             self.policy_loss_weight = 0.1
             self.ends_loss_weight = 0.
+            self.alpha_loss_weight = 0.1
 
         self.latent_recon_loss_weight = latent_recon_loss_weight
         self.perceptual_loss_weight = perceptual_loss_weight
@@ -304,6 +307,8 @@ class LossWithIntermediateLosses:
                 self.loss_total += self.value_loss_weight * v
             elif k == 'loss_ends':
                 self.loss_total += self.ends_loss_weight * v
+            elif k == 'loss_alpha':
+                self.loss_total += self.alpha_loss_weight * v
             elif k == 'latent_recon_loss':
                 self.loss_total += self.latent_recon_loss_weight * v
             elif k == 'perceptual_loss':

@@ -436,19 +436,24 @@ class UniZeroModel(nn.Module):
         }
         
         # Perform initial inference using the world model
-        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict)
+        _, obs_token, logits_rewards, logits_policy, logits_value, scores_alpha = self.world_model.forward_initial_inference(obs_act_dict)
         
         # Extract and squeeze the outputs for clarity
         latent_state = obs_token
         reward = logits_rewards
-        policy_logits = logits_policy.squeeze(1)
+        for name, logits in logits_policy.items():
+            logits_policy[name] = logits.squeeze(1)
+        #policy_logits = logits_policy.squeeze(1)
         value = logits_value.squeeze(1)
+        scores_alpha = scores_alpha.squeeze(1)
 
         return MZNetworkOutput(
             value=value,
             reward=[0. for _ in range(batch_size)],  # Initialize reward to zero vector
-            policy_logits=policy_logits,
+            #policy_logits=policy_logits,
+            policy_logits=logits_policy,
             latent_state=latent_state,
+            scores_alpha=scores_alpha,
         )
 
     def recurrent_inference(self, state_action_history: torch.Tensor, simulation_index: int = 0,
@@ -479,13 +484,21 @@ class UniZeroModel(nn.Module):
             search_depth = []
 
         # Perform recurrent inference using the world model
-        _, logits_observations, logits_rewards, logits_policy, logits_value = self.world_model.forward_recurrent_inference(
+        _, logits_observations, logits_rewards, logits_policy, logits_value, scores_alpha = self.world_model.forward_recurrent_inference(
             state_action_history, simulation_index, search_depth)
 
         # Extract and squeeze the outputs for clarity
         next_latent_state = logits_observations
         reward = logits_rewards.squeeze(1)
-        policy_logits = logits_policy.squeeze(1)
+        for name, logits in logits_policy.items():
+            logits_policy[name] = logits.squeeze(1)
+        #policy_logits = logits_policy.squeeze(1)
         value = logits_value.squeeze(1)
+        scores_alpha = scores_alpha.squeeze(1)
 
-        return MZNetworkOutput(value=value, reward=reward, policy_logits=policy_logits, latent_state=next_latent_state)
+        return MZNetworkOutput(value=value,
+                               reward=reward,
+                               #policy_logits=policy_logits,
+                               policy_logits=logits_policy,
+                               latent_state=next_latent_state,
+                               scores_alpha=scores_alpha)

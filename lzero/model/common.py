@@ -138,6 +138,7 @@ class MZNetworkOutput:
     reward: torch.Tensor
     policy_logits: torch.Tensor
     latent_state: torch.Tensor
+    scores_alpha: torch.Tensor
 
 
 # --- Core Network Components ---

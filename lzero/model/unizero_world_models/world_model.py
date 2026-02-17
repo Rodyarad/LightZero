@@ -116,8 +116,12 @@ class WorldModel(nn.Module):
                 self.bound_type = self.config.bound_type
                 self.head_policy = self._create_agg_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
             else:
-                self.head_policy = self._create_agg_head(self.value_policy_tokens_pattern, self.action_space_size)
-            self.head_value = self._create_agg_head(self.value_policy_tokens_pattern, self.support_size)
+                self.heads_policy = nn.ModuleDict()
+                for i in range(self.num_observations_tokens):
+                    head_policy = self._create_head(self.policy_tokens_patterns[i], self.action_space_size)
+                    self.heads_policy[f'policy_{i}'] = head_policy
+            self.head_value = self._create_agg_head(self.value_tokens_pattern, self.support_size)
+            self.head_alpha = self._create_alpha_head(self.value_tokens_pattern, self.num_observations_tokens)
         else:
             self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
@@ -131,12 +135,12 @@ class WorldModel(nn.Module):
                 self.head_policy = self._create_head(self.value_policy_tokens_pattern, self.action_space_size)
             self.head_value = self._create_head(self.value_policy_tokens_pattern, self.support_size)
 
-        self.head_dict = {}
-        for name, module in self.named_children():
-            if name.startswith("head_"):
-                self.head_dict[name] = module
-        if self.head_dict:
-            self.head_dict = nn.ModuleDict(self.head_dict)
+        # self.head_dict = {}
+        # for name, module in self.named_children():
+        #     if name.startswith("head_"):
+        #         self.head_dict[name] = module
+        # if self.head_dict:
+        #     self.head_dict = nn.ModuleDict(self.head_dict)
 
         # Build the set of modules to skip during re-initialization.
         # This is compatible with cases where self.tokenizer.encoder does not have 'pretrained_model',
@@ -403,7 +407,12 @@ class WorldModel(nn.Module):
         if self.model_type == 'slot':
             self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
             self.act_tokens_pattern[self.num_observations_tokens:] = 1
-            self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
+            self.value_tokens_pattern = 1 - self.act_tokens_pattern
+            self.policy_tokens_patterns = []
+            for i in range(self.num_observations_tokens):
+                pattern = torch.zeros(self.config.tokens_per_block)
+                pattern[i] = 1
+                self.policy_tokens_patterns.append(pattern)
         else:
             self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
             self.all_but_last_latent_state_pattern[-2] = 0
@@ -562,7 +571,7 @@ class WorldModel(nn.Module):
     def _create_agg_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> AggregationHead:
         """
         Create head module for slot-based models (policy/value).
-        Aggregates K slots per block using mean pooling, then passes to MLP.
+        Aggregates K slots per block using sum, then passes to MLP.
         """
         modules = [
             nn.LayerNorm(self.config.embed_dim),
@@ -574,6 +583,31 @@ class WorldModel(nn.Module):
         if norm_layer:
             modules.append(norm_layer)
         return AggregationHead(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=nn.Sequential(*modules)
+        )
+
+
+    def _create_alpha_head(self, block_mask: torch.Tensor, output_dim: int) -> Head:
+        modules = [
+            nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=self.config.embed_dim,
+                    nhead=8,
+                    batch_first=True
+                ),
+                num_layers=1
+            ),
+            nn.Flatten(start_dim=1),
+            nn.LayerNorm(self.config.embed_dim * self.num_observations_tokens),
+            nn.Linear(self.config.embed_dim * self.num_observations_tokens, self.config.embed_dim*4),
+            nn.LayerNorm(self.config.embed_dim*4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim*4, output_dim),
+            nn.Softmax(dim=-1)
+        ]
+        return Head(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
             head_module=nn.Sequential(*modules)
@@ -605,7 +639,15 @@ class WorldModel(nn.Module):
             if self.continuous_action_space:
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
             else:
-                module_to_initialize = [self.head_policy, self.head_value, self.head_rewards, self.head_observations]
+                module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
+
+        if hasattr(self, "head_policy"):
+            module_to_initialize.append(self.head_policy)
+
+        if hasattr(self, "heads_policy"):
+            module_to_initialize.extend(self.heads_policy.values())
+
+
             for head in module_to_initialize:
                 for layer in reversed(head.head_module):
                     if isinstance(layer, nn.Linear):
@@ -768,23 +810,35 @@ class WorldModel(nn.Module):
         # Generate logits for various components.
         logits_observations = self.head_observations(x, num_steps, 0)
         logits_rewards = self.head_rewards(x, num_steps, 0)
-        logits_policy = self.head_policy(x, num_steps, 0)
+        if self.model_type == 'slot':
+            logits_policy = {}
+            for name, head in self.heads_policy.items():
+                logits_policy[name] = head(x, num_steps, 0)
+        else:
+            logits_policy = self.head_policy(x, num_steps, 0)
+
+        scores_alhpa = self.head_alpha(x, num_steps, 0)
 
         # ==================== [NEW] Advanced Policy Logits Control ====================
         # Apply configurable policy logits control to prevent explosion
         # Multiple methods available: hard, soft_tanh, soft_sigmoid, normalize_max, etc.
         if self.use_policy_logits_clip:
-            logits_policy = self._apply_policy_logits_control(logits_policy)
+            if self.model_type == 'slot':
+                for name, logits in self.logits_policy.items():
+                    logits_policy[name] = self._apply_policy_logits_control(logits)
+            else:
+                logits_policy = self._apply_policy_logits_control(logits_policy)
         # ================================================================================
 
         logits_value = self.head_value(x, num_steps, 0)
 
         if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
-            logits_policy = logits_policy[:,-1:,:]
+            for name, logits in self.logits_policy.items():
+                logits_policy[name] = logits[:,-1:,:]
             logits_value = logits_value[:,-1:,:]
 
         # The 'logits_ends' is intentionally set to None.
-        return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
+        return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value, scores_alhpa)
 
     #@profile
     def _add_position_embeddings(self, embeddings, num_steps):
@@ -1063,7 +1117,7 @@ class WorldModel(nn.Module):
         # =============================================================================
 
         return (outputs_wm.output_sequence, latent_state, outputs_wm.logits_rewards,
-                outputs_wm.logits_policy, outputs_wm.logits_value)
+                outputs_wm.logits_policy, outputs_wm.logits_value, outputs_wm.scores_alpha)
 
     def _reset_env_history(self) -> None:
             self.obs_history = []
@@ -1156,7 +1210,7 @@ class WorldModel(nn.Module):
         del self.latent_state  # Very important to minimize cuda memory usage
         self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
+        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value, outputs_wm.scores_alpha)
 
 
     def compute_loss(self, batch, target_tokenizer: Tokenizer = None, inverse_scalar_transform_handle=None,
@@ -1402,9 +1456,35 @@ class WorldModel(nn.Module):
         loss_rewards = self.compute_cross_entropy_loss(outputs, labels_rewards, batch, element='rewards')
 
         if not self.continuous_action_space:
-            loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(outputs, labels_policy,
-                                                                                            batch,
-                                                                                            element='policy')
+            if self.model_type == 'slot':
+                heads_logits_list = [outputs.logits_policy[f'policy_{i}'] for i in range(self.num_observations_tokens)]
+                multi_head_logits = torch.stack(heads_logits_list, dim=2)
+
+                probs_per_head = F.softmax(multi_head_logits, dim=-1)
+
+                pred_alpha = outputs.scores_alpha  # (B, T, H)
+
+                target_policy_raw = batch['target_policy']
+                alpha_target = (probs_per_head.detach() * target_policy_raw.unsqueeze(2)).sum(dim=-1)  # (B, T, H)
+                alpha_target = alpha_target / (alpha_target.sum(dim=-1, keepdim=True) + 1e-8)
+
+                loss_alpha = -(alpha_target.detach() * torch.log(pred_alpha + 1e-8)).sum(dim=-1)  # (B, T)
+                loss_alpha = (loss_alpha * batch['mask_padding'].float()).view(-1)  # (B*T,)
+
+                combined_probs = (pred_alpha.unsqueeze(-1) * probs_per_head).sum(dim=2)  # (B, T, A)
+                outputs.logits_policy = torch.log(combined_probs + 1e-8)  # (B, T, A)
+
+                loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(
+                    outputs, labels_policy, batch, element='policy'
+                )
+            else:
+                loss_alpha = torch.zeros(
+                    batch['actions'].shape[0] * batch['actions'].shape[1],
+                    device=batch['observations'].device
+                )
+                loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(
+                    outputs, labels_policy, batch, element='policy'
+                )
         else:
             # NOTE: for continuous action space
             if self.config.policy_loss_type == 'simple':
@@ -1414,6 +1494,10 @@ class WorldModel(nn.Module):
             
             loss_policy = orig_policy_loss + self.policy_entropy_weight * policy_entropy_loss
             policy_entropy = - policy_entropy_loss
+            loss_alpha = torch.zeros(
+                batch['actions'].shape[0] * batch['actions'].shape[1],
+                device=batch['observations'].device
+            )
 
         loss_value = self.compute_cross_entropy_loss(outputs, labels_value, batch, element='value')
 
@@ -1429,8 +1513,8 @@ class WorldModel(nn.Module):
         # batch['mask_padding'] indicates mask status for future H steps, exclude masked losses to maintain accurate mean statistics
         # Group losses for each loss item
         for loss_name, loss_tmp in zip(
-                ['loss_obs', 'loss_rewards', 'loss_value', 'loss_policy', 'orig_policy_loss', 'policy_entropy'],
-                [loss_obs, loss_rewards, loss_value, loss_policy, orig_policy_loss, policy_entropy]
+                ['loss_obs', 'loss_rewards', 'loss_value', 'loss_policy', 'orig_policy_loss', 'policy_entropy', 'loss_alpha'],
+                [loss_obs, loss_rewards, loss_value, loss_policy, orig_policy_loss, policy_entropy, loss_alpha]
         ):
             if loss_name == 'loss_obs':
                 seq_len = batch['actions'].shape[1] - 1
@@ -1473,6 +1557,7 @@ class WorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
+        discounted_loss_alpha = (loss_alpha.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
 
         # Add encoder output to return dictionary for external training loop access
         # Using .detach() because this tensor is only used for subsequent clip operations and should not affect gradient computation
@@ -1487,6 +1572,7 @@ class WorldModel(nn.Module):
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_alpha=discounted_loss_alpha,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
@@ -1523,6 +1609,7 @@ class WorldModel(nn.Module):
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_alpha=discounted_loss_alpha,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,

@@ -10,6 +10,7 @@ import wandb
 from ding.model import model_wrap
 from ding.utils import POLICY_REGISTRY
 from lzero.mcts import UniZeroMCTSCtree as MCTSCtree
+from lzero.mcts import mix_multihead_policy_with_alpha
 from lzero.model import ImageTransforms
 from lzero.policy import (DiscreteSupport, InverseScalarTransform,
                           mz_network_output_unpack, phi_transform, prepare_obs,
@@ -1012,6 +1013,7 @@ class UniZeroPolicy(MuZeroPolicy):
         perceptual_loss = self.intermediate_losses['perceptual_loss']
         orig_policy_loss = self.intermediate_losses['orig_policy_loss']
         policy_entropy = self.intermediate_losses['policy_entropy']
+        alpha_head_loss = self.intermediate_losses['loss_alpha']
         first_step_losses = self.intermediate_losses['first_step_losses']
         middle_step_losses = self.intermediate_losses['middle_step_losses']
         last_step_losses = self.intermediate_losses['last_step_losses']
@@ -1201,16 +1203,19 @@ class UniZeroPolicy(MuZeroPolicy):
             'analysis/first_step_loss_policy': first_step_losses['loss_policy'].item(),
             'analysis/first_step_loss_rewards': first_step_losses['loss_rewards'].item(),
             'analysis/first_step_loss_obs': first_step_losses['loss_obs'].item(),
+            'analysis/first_step_loss_alpha': first_step_losses['loss_alpha'].item(),
 
             'analysis/middle_step_loss_value': middle_step_losses['loss_value'].item(),
             'analysis/middle_step_loss_policy': middle_step_losses['loss_policy'].item(),
             'analysis/middle_step_loss_rewards': middle_step_losses['loss_rewards'].item(),
             'analysis/middle_step_loss_obs': middle_step_losses['loss_obs'].item(),
+            'analysis/middle_step_loss_alpha': middle_step_losses['loss_alpha'].item(),
 
             'analysis/last_step_loss_value': last_step_losses['loss_value'].item(),
             'analysis/last_step_loss_policy': last_step_losses['loss_policy'].item(),
             'analysis/last_step_loss_rewards': last_step_losses['loss_rewards'].item(),
             'analysis/last_step_loss_obs': last_step_losses['loss_obs'].item(),
+            'analysis/last_step_loss_alpha': last_step_losses['loss_alpha'].item(),
 
             'Current_GPU': current_memory_allocated_gb,
             'Max_GPU': max_memory_allocated_gb,
@@ -1224,6 +1229,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'policy_loss': policy_loss.item(),
             'orig_policy_loss': orig_policy_loss.item(),
             'policy_entropy': policy_entropy.item(),
+            'alpha_head_loss': alpha_head_loss.item(),
             'target_policy_entropy': average_target_policy_entropy.item(),
             'reward_loss': reward_loss.item(),
             'value_loss': value_loss.item(),
@@ -1404,9 +1410,11 @@ class UniZeroPolicy(MuZeroPolicy):
         with torch.no_grad():
             network_output = self._collect_model.initial_inference(self.last_batch_obs_collect, self.last_batch_action_collect, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
+            scores_alpha = getattr(network_output, 'scores_alpha', None)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
             latent_state_roots = latent_state_roots.detach().cpu().numpy()
+            policy_logits = mix_multihead_policy_with_alpha(policy_logits, scores_alpha)
             policy_logits = policy_logits.detach().cpu().numpy().tolist()
 
             legal_actions = [np.nonzero(action_mask[j])[0].tolist() for j in range(active_collect_env_num)]
@@ -1563,10 +1571,12 @@ class UniZeroPolicy(MuZeroPolicy):
         with torch.no_grad():
             network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action_eval, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
+            scores_alpha = getattr(network_output, 'scores_alpha', None)
 
             # if not in training, obtain the scalars of the value/reward
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()  # shape（B, 1）
             latent_state_roots = latent_state_roots.detach().cpu().numpy()
+            policy_logits = mix_multihead_policy_with_alpha(policy_logits, scores_alpha)
             policy_logits = policy_logits.detach().cpu().numpy().tolist()  # list shape（B, A）
 
             legal_actions = [np.nonzero(action_mask[j])[0].tolist() for j in range(active_eval_env_num)]
@@ -1773,14 +1783,17 @@ class UniZeroPolicy(MuZeroPolicy):
             'analysis/first_step_loss_policy',
             'analysis/first_step_loss_rewards',
             'analysis/first_step_loss_obs',
+            'analysis/first_step_loss_alpha',
             'analysis/middle_step_loss_value',
             'analysis/middle_step_loss_policy',
             'analysis/middle_step_loss_rewards',
             'analysis/middle_step_loss_obs',
+            'analysis/middle_step_loss_alpha',
             'analysis/last_step_loss_value',
             'analysis/last_step_loss_policy',
             'analysis/last_step_loss_rewards',
             'analysis/last_step_loss_obs',
+            'analysis/last_step_loss_alpha',
 
             # ==================== System Metrics ====================
             'Current_GPU',
@@ -1795,6 +1808,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'policy_loss',
             'orig_policy_loss',
             'policy_entropy',
+            'alpha_head_loss',
             'latent_recon_loss',
             'perceptual_loss',
             'target_policy_entropy',
