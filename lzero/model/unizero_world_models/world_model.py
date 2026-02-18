@@ -588,29 +588,46 @@ class WorldModel(nn.Module):
             head_module=nn.Sequential(*modules)
         )
 
-
-    def _create_alpha_head(self, block_mask: torch.Tensor, output_dim: int) -> Head:
-        modules = [
-            nn.TransformerEncoder(
+    class AlphaHeadModule(nn.Module):
+        def __init__(self, embed_dim, num_obs_tokens, output_dim):
+            super().__init__()
+            self.num_obs_tokens = num_obs_tokens
+            self.transformer = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(
-                    d_model=self.config.embed_dim,
-                    nhead=8,
-                    batch_first=True
+                    d_model=embed_dim, nhead=8, batch_first=True
                 ),
                 num_layers=1
-            ),
-            nn.Flatten(start_dim=1),
-            nn.LayerNorm(self.config.embed_dim * self.num_observations_tokens),
-            nn.Linear(self.config.embed_dim * self.num_observations_tokens, self.config.embed_dim*4),
-            nn.LayerNorm(self.config.embed_dim*4),
-            nn.GELU(approximate='tanh'),
-            nn.Linear(self.config.embed_dim*4, output_dim),
-            nn.Softmax(dim=-1)
-        ]
+            )
+            self.mlp = nn.Sequential(
+                nn.LayerNorm(embed_dim * num_obs_tokens),
+                nn.Linear(embed_dim * num_obs_tokens, embed_dim * 4),
+                nn.LayerNorm(embed_dim * 4),
+                nn.GELU(approximate='tanh'),
+                nn.Linear(embed_dim * 4, output_dim),
+                nn.Softmax(dim=-1),
+            )
+
+        def forward(self, x):
+            B, L, E = x.shape
+            T = L // self.num_obs_tokens
+            x = x.view(B * T, self.num_obs_tokens, E)
+            x = self.transformer(x)
+            x = x.flatten(start_dim=1)
+            x = self.mlp(x)
+            x = x.view(B, T, -1)
+            return x
+
+
+    def _create_alpha_head(self, block_mask: torch.Tensor, output_dim: int) -> Head:
+        module = self.AlphaHeadModule(
+            embed_dim=self.config.embed_dim,
+            num_obs_tokens=self.num_observations_tokens,
+            output_dim=output_dim,
+        )
         return Head(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
-            head_module=nn.Sequential(*modules)
+            head_module=module
         )
 
     def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
@@ -833,9 +850,10 @@ class WorldModel(nn.Module):
         logits_value = self.head_value(x, num_steps, 0)
 
         if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
-            for name, logits in self.logits_policy.items():
+            for name, logits in logits_policy.items():
                 logits_policy[name] = logits[:,-1:,:]
             logits_value = logits_value[:,-1:,:]
+            scores_alhpa = scores_alhpa[:,-1:,:]
 
         # The 'logits_ends' is intentionally set to None.
         return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value, scores_alhpa)
@@ -1091,13 +1109,22 @@ class WorldModel(nn.Module):
             last_steps_value = outputs_wm.logits_value[:, -1:, :]
             outputs_wm.logits_value = torch.cat((outputs_wm.logits_value, last_steps_value), dim=1)
 
-            last_steps_policy = outputs_wm.logits_policy[:, -1:, :]
-            outputs_wm.logits_policy = torch.cat((outputs_wm.logits_policy, last_steps_policy), dim=1)
+            last_steps_scores_alpha = outputs_wm.scores_alpha[:, -1:, :]
+            outputs_wm.scores_alpha = torch.cat((outputs_wm.scores_alpha, last_steps_scores_alpha), dim=1)
+
+            outputs_wm.scores_alpha = rearrange(outputs_wm.scores_alpha, 'b t h -> (b t) h')
+
+            if self.model_type == 'slot':
+                for name, logits in outputs_wm.logits_policy.items():
+                    last_steps_policy = logits[:, -1:, :]
+                    outputs_wm.logits_policy[name] = torch.cat((outputs_wm.logits_policy[name], last_steps_policy), dim=1)
 
             # Reshape your tensors
             # outputs_wm.logits_value.shape (B, H, 101) = (B*H, 101)
             outputs_wm.logits_value = rearrange(outputs_wm.logits_value, 'b t e -> (b t) e')
-            outputs_wm.logits_policy = rearrange(outputs_wm.logits_policy, 'b t e -> (b t) e')
+            if self.model_type == 'slot':
+                for name, logits in outputs_wm.logits_policy.items():
+                    outputs_wm.logits_policy[name] = rearrange(logits, 'b t e -> (b t) e')
 
         return outputs_wm
 
@@ -1444,7 +1471,7 @@ class WorldModel(nn.Module):
         # ======================================================================================
 
         # Compute labels for policy and value (with optional re-smoothing)
-        labels_policy, labels_value = self.compute_labels_world_model_value_policy(
+        labels_policy, labels_value, smooth_target_policy = self.compute_labels_world_model_value_policy(
             batch['target_value'],
             batch['target_policy'],
             batch['mask_padding'],
@@ -1464,8 +1491,7 @@ class WorldModel(nn.Module):
 
                 pred_alpha = outputs.scores_alpha  # (B, T, H)
 
-                target_policy_raw = batch['target_policy']
-                alpha_target = (probs_per_head.detach() * target_policy_raw.unsqueeze(2)).sum(dim=-1)  # (B, T, H)
+                alpha_target = (probs_per_head.detach() * smooth_target_policy.unsqueeze(2)).sum(dim=-1)  # (B, T, H)
                 alpha_target = alpha_target / (alpha_target.sum(dim=-1, keepdim=True) + 1e-8)
 
                 loss_alpha = -(alpha_target.detach() * torch.log(pred_alpha + 1e-8)).sum(dim=-1)  # (B, T)
@@ -1878,7 +1904,7 @@ class WorldModel(nn.Module):
         if self.continuous_action_space:
             return None, labels_value.reshape(-1, self.support_size)
         else:
-            return labels_policy.reshape(-1, self.action_space_size), labels_value.reshape(-1, self.support_size)
+            return labels_policy.reshape(-1, self.action_space_size), labels_value.reshape(-1, self.support_size), target_policy
 
     def clear_caches(self):
         """

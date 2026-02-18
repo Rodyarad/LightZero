@@ -16,14 +16,6 @@ if TYPE_CHECKING:
     from lzero.mcts.ctree.ctree_gumbel_muzero import gmz_tree as gmz_ctree
 
 
-def mix_multihead_policy_with_alpha(policy_logits: torch.Tensor,
-                                     scores_alpha: torch.Tensor) -> torch.Tensor:
-    import ipdb; ipdb.set_trace()
-    probs = torch.nn.functional.softmax(policy_logits, dim=-1)
-    mixed_probs = (scores_alpha.unsqueeze(-1) * probs).sum(dim=1)
-
-    return torch.log(mixed_probs + 1e-8)
-
 
 class UniZeroMCTSCtree(object):
     """
@@ -181,10 +173,6 @@ class UniZeroMCTSCtree(object):
                     else:
                         # single task setting
                         network_output = model.recurrent_inference(state_action_history, simulation_index, search_depth)
-
-                network_output.policy_logits = mix_multihead_policy_with_alpha(
-                    network_output.policy_logits, network_output.scores_alpha
-                )
 
                 network_output.latent_state = to_detach_cpu_numpy(network_output.latent_state)
                 network_output.policy_logits = to_detach_cpu_numpy(network_output.policy_logits)

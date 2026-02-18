@@ -10,7 +10,6 @@ import wandb
 from ding.model import model_wrap
 from ding.utils import POLICY_REGISTRY
 from lzero.mcts import UniZeroMCTSCtree as MCTSCtree
-from lzero.mcts import mix_multihead_policy_with_alpha
 from lzero.model import ImageTransforms
 from lzero.policy import (DiscreteSupport, InverseScalarTransform,
                           mz_network_output_unpack, phi_transform, prepare_obs,
@@ -331,7 +330,7 @@ class UniZeroPolicy(MuZeroPolicy):
 
         # ==================== START: Monitoring Config ====================
         # (int) Frequency of monitoring model parameter and gradient norms (in training iterations). Set to 0 to disable.
-        monitor_norm_freq=5000,
+        monitor_norm_freq=0,
         # (bool) Whether to enable enhanced policy monitoring (logits statistics, target policy entropy, etc.)
         use_enhanced_policy_monitoring=False,
         # ===================== END: Monitoring Config =====================
@@ -1414,7 +1413,6 @@ class UniZeroPolicy(MuZeroPolicy):
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
             latent_state_roots = latent_state_roots.detach().cpu().numpy()
-            policy_logits = mix_multihead_policy_with_alpha(policy_logits, scores_alpha)
             policy_logits = policy_logits.detach().cpu().numpy().tolist()
 
             legal_actions = [np.nonzero(action_mask[j])[0].tolist() for j in range(active_collect_env_num)]
@@ -1576,7 +1574,6 @@ class UniZeroPolicy(MuZeroPolicy):
             # if not in training, obtain the scalars of the value/reward
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()  # shape（B, 1）
             latent_state_roots = latent_state_roots.detach().cpu().numpy()
-            policy_logits = mix_multihead_policy_with_alpha(policy_logits, scores_alpha)
             policy_logits = policy_logits.detach().cpu().numpy().tolist()  # list shape（B, A）
 
             legal_actions = [np.nonzero(action_mask[j])[0].tolist() for j in range(active_eval_env_num)]

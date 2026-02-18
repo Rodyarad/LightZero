@@ -5,6 +5,8 @@ from ding.utils import (ENV_REGISTRY, MODEL_REGISTRY, SequenceType, get_rank,
                         get_world_size, set_pkg_seed)
 from ditk import logging
 from easydict import EasyDict
+
+from zoo.box2d.lunarlander.config.lunarlander_disc_unizero_config import batch_size
 from .common import (FeatureAndGradientHook, HFLanguageRepresentationNetwork,
                      LatentDecoder, LatentDecoderForMemoryEnv,
                      LatentEncoderForMemoryEnv, MZNetworkOutput, QwenNetwork,
@@ -403,6 +405,15 @@ class UniZeroModel(nn.Module):
         logging.info(f'{"TOTAL":<30} {total_params:>15,} {total_trainable:>15,} {"100.0%":>15}')
         logging.info(f'{"=" * 80}\n')
         
+    def mix_multihead_policy_with_alpha(self, policy_logits: dict, scores_alpha: torch.Tensor, B) -> torch.Tensor:
+        K = len(policy_logits)
+        policy_logits_list = [policy_logits[f'policy_{i}'].view(B, -1, self.action_space_size) for i in range(K)]
+        policy_logits = torch.stack(policy_logits_list, dim=2)
+        scores_alpha = scores_alpha.view(B, policy_logits.size(1), K, 1)
+        probs_per_head = torch.nn.functional.softmax(policy_logits, dim=-1)
+        combined_probs = (scores_alpha * probs_per_head).sum(dim=2).view(-1, self.action_space_size)
+        return torch.log(combined_probs + 1e-8)
+
     def initial_inference(self, obs_batch: torch.Tensor, action_batch: Optional[torch.Tensor] = None, 
                           current_obs_batch: Optional[torch.Tensor] = None) -> MZNetworkOutput:
         """
@@ -441,17 +452,15 @@ class UniZeroModel(nn.Module):
         # Extract and squeeze the outputs for clarity
         latent_state = obs_token
         reward = logits_rewards
-        for name, logits in logits_policy.items():
-            logits_policy[name] = logits.squeeze(1)
-        #policy_logits = logits_policy.squeeze(1)
+        scores_alpha = scores_alpha.squeeze(1)  # (B, H)
+        logits_policy = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
+        policy_logits = self.mix_multihead_policy_with_alpha(logits_policy, scores_alpha, batch_size)  # (B, A)
         value = logits_value.squeeze(1)
-        scores_alpha = scores_alpha.squeeze(1)
 
         return MZNetworkOutput(
             value=value,
             reward=[0. for _ in range(batch_size)],  # Initialize reward to zero vector
-            #policy_logits=policy_logits,
-            policy_logits=logits_policy,
+            policy_logits=policy_logits,
             latent_state=latent_state,
             scores_alpha=scores_alpha,
         )
@@ -480,6 +489,7 @@ class UniZeroModel(nn.Module):
             - policy_logits (:obj:`torch.Tensor`): :math:`(B, action_dim)`, where B is batch_size.
             - next_latent_state (:obj:`torch.Tensor`): :math:`(B, H_, W_)`, where B is batch_size, H_ is the height of latent state, W_ is the width of latent state.
         """
+        batch_size = state_action_history[-1][0].shape[0]
         if search_depth is None:
             search_depth = []
 
@@ -490,15 +500,13 @@ class UniZeroModel(nn.Module):
         # Extract and squeeze the outputs for clarity
         next_latent_state = logits_observations
         reward = logits_rewards.squeeze(1)
-        for name, logits in logits_policy.items():
-            logits_policy[name] = logits.squeeze(1)
-        #policy_logits = logits_policy.squeeze(1)
+        scores_alpha = scores_alpha.squeeze(1)  # (B, H)
+        logits_policy = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
+        policy_logits = self.mix_multihead_policy_with_alpha(logits_policy, scores_alpha, batch_size)  # (B, A)
         value = logits_value.squeeze(1)
-        scores_alpha = scores_alpha.squeeze(1)
 
         return MZNetworkOutput(value=value,
                                reward=reward,
-                               #policy_logits=policy_logits,
-                               policy_logits=logits_policy,
+                               policy_logits=policy_logits,
                                latent_state=next_latent_state,
                                scores_alpha=scores_alpha)
