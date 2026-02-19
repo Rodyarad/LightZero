@@ -1623,8 +1623,7 @@ class UniZeroPolicy(MuZeroPolicy):
             self.last_batch_obs_eval = data
             self.last_batch_action_eval = batch_action
 
-            self._reset_collect(reset_init_data=True)
-
+        self._reset_collect(reset_init_data=True)
         return output
 
     def _reset_collect(self, env_id: int = None, current_steps: int = None, reset_init_data: bool = True, task_id: int = None) -> None:
