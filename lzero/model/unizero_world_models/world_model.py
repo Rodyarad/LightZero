@@ -122,6 +122,7 @@ class WorldModel(nn.Module):
                     self.heads_policy[f'policy_{i}'] = head_policy
             self.head_value = self._create_agg_head(self.value_tokens_pattern, self.support_size)
             self.head_alpha = self._create_alpha_head(self.value_tokens_pattern, self.num_observations_tokens)
+            self.head_proj = self._create_slot_act_head(self.obs_per_embdding_dim)
         else:
             self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
@@ -571,7 +572,7 @@ class WorldModel(nn.Module):
     def _create_agg_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> AggregationHead:
         """
         Create head module for slot-based models (policy/value).
-        Aggregates K slots per block using sum, then passes to MLP.
+        Aggregates K slots per block using mean pooling, then passes to MLP.
         """
         modules = [
             nn.LayerNorm(self.config.embed_dim),
@@ -629,6 +630,17 @@ class WorldModel(nn.Module):
             block_mask=block_mask,
             head_module=module
         )
+    
+    def _create_slot_act_head(self, output_dim: int):
+        modules = [
+            nn.LayerNorm(self.config.embed_dim * 2),
+            nn.Linear(self.config.embed_dim * 2, self.config.embed_dim*4),
+            nn.LayerNorm(self.config.embed_dim*4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim*4, output_dim)
+        ]
+
+        return nn.Sequential(*modules)
 
     def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
@@ -959,6 +971,11 @@ class WorldModel(nn.Module):
             obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
         else:
             obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
+
+        act_embeddings = act_embeddings[:, :L, :, :]
+        slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
+        slot_acts = slot_acts.view(-1, E * 2)
+        act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
 
         for i in range(L):
             obs = obs_embeddings[:, i, :, :]

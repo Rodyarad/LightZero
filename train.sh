@@ -4,4 +4,4 @@ export COMET_PROJECT_NAME='lightzero'
 export CUDA_VISIBLE_DEVICES=0
 export CUDA_LAUNCH_BLOCKING=1
 
-python -u zoo/shapes2d/config/shapes2d_unizero_segment_config.py
+python -u zoo/shapes2d/config/shapes2d_objectzero_segment_config.py

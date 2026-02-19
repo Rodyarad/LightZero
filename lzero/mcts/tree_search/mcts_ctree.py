@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from lzero.mcts.ctree.ctree_gumbel_muzero import gmz_tree as gmz_ctree
 
 
-
 class UniZeroMCTSCtree(object):
     """
     Overview:
