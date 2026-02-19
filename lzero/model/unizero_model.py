@@ -454,7 +454,7 @@ class UniZeroModel(nn.Module):
         reward = logits_rewards
         scores_alpha = scores_alpha.squeeze(1)  # (B, H)
         logits_policy = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
-        policy_logits = self.mix_multihead_policy_with_alpha(logits_policy, scores_alpha, batch_size)  # (B, A)
+        policy_logits = self.mix_multihead_policy_with_alpha(logits_policy, scores_alpha, scores_alpha.shape[0])  # (B, A)
         value = logits_value.squeeze(1)
 
         return MZNetworkOutput(
