@@ -265,7 +265,7 @@ class LossWithIntermediateLosses:
     Returns:
         - None
     """
-    def __init__(self, latent_recon_loss_weight=0, perceptual_loss_weight=0, continuous_action_space=False, **kwargs):
+    def __init__(self, latent_recon_loss_weight=0, perceptual_loss_weight=0, head_selection_loss_weight=1.0, continuous_action_space=False, **kwargs):
         # Ensure that kwargs is not empty
         if not kwargs:
             raise ValueError("At least one loss must be provided")
@@ -281,7 +281,6 @@ class LossWithIntermediateLosses:
             self.reward_loss_weight = 1.
             self.policy_loss_weight = 1.
             self.ends_loss_weight = 0.
-            self.alpha_loss_weight = 1.
         else:
             # like TD-MPC2 for DMC
             self.obs_loss_weight = 10
@@ -289,8 +288,8 @@ class LossWithIntermediateLosses:
             self.reward_loss_weight = 0.1
             self.policy_loss_weight = 0.1
             self.ends_loss_weight = 0.
-            self.alpha_loss_weight = 0.1
 
+        self.head_selection_loss_weight = head_selection_loss_weight
         self.latent_recon_loss_weight = latent_recon_loss_weight
         self.perceptual_loss_weight = perceptual_loss_weight
 
@@ -307,8 +306,8 @@ class LossWithIntermediateLosses:
                 self.loss_total += self.value_loss_weight * v
             elif k == 'loss_ends':
                 self.loss_total += self.ends_loss_weight * v
-            elif k == 'loss_alpha':
-                self.loss_total += self.alpha_loss_weight * v
+            elif k == 'loss_head_selection':
+                self.loss_total += self.head_selection_loss_weight * v
             elif k == 'latent_recon_loss':
                 self.loss_total += self.latent_recon_loss_weight * v
             elif k == 'perceptual_loss':

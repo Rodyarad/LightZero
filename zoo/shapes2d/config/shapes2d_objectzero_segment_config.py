@@ -79,6 +79,7 @@ def main(env_id, seed):
                     norm_type=norm_type,
                     support_size=601,
                     policy_entropy_weight=5e-3,
+                    head_selection_loss_weight=1.0,
                     max_blocks=num_unroll_steps,
                     max_tokens=tokens_per_block * num_unroll_steps,
                     context_length=tokens_per_block * infer_context_length,
@@ -118,7 +119,7 @@ def main(env_id, seed):
             # Environment settings
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
-            eval_freq=int(1e4),
+            eval_freq=int(5e3),
             replay_buffer_size=int(5e5),
         ),
     )

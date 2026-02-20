@@ -184,6 +184,8 @@ class UniZeroPolicy(MuZeroPolicy):
                 perceptual_loss_weight=0.,
                 # (float) The weight of the policy entropy loss.
                 policy_entropy_weight=0,
+                # (float) The weight of the head selection (slot mixing) loss.
+                head_selection_loss_weight=1.0,
                 # (str) The normalization type for the final layer in both the head and the encoder.
                 # This option must be the same for both 'final_norm_option_in_head' and 'final_norm_option_in_encoder'.
                 # Valid options are 'LayerNorm' and 'SimNorm'.
@@ -1012,7 +1014,7 @@ class UniZeroPolicy(MuZeroPolicy):
         perceptual_loss = self.intermediate_losses['perceptual_loss']
         orig_policy_loss = self.intermediate_losses['orig_policy_loss']
         policy_entropy = self.intermediate_losses['policy_entropy']
-        alpha_head_loss = self.intermediate_losses['loss_alpha']
+        head_selection_loss = self.intermediate_losses['loss_head_selection']
         first_step_losses = self.intermediate_losses['first_step_losses']
         middle_step_losses = self.intermediate_losses['middle_step_losses']
         last_step_losses = self.intermediate_losses['last_step_losses']
@@ -1202,19 +1204,19 @@ class UniZeroPolicy(MuZeroPolicy):
             'analysis/first_step_loss_policy': first_step_losses['loss_policy'].item(),
             'analysis/first_step_loss_rewards': first_step_losses['loss_rewards'].item(),
             'analysis/first_step_loss_obs': first_step_losses['loss_obs'].item(),
-            'analysis/first_step_loss_alpha': first_step_losses['loss_alpha'].item(),
+            'analysis/first_step_loss_head_selection': first_step_losses['loss_head_selection'].item(),
 
             'analysis/middle_step_loss_value': middle_step_losses['loss_value'].item(),
             'analysis/middle_step_loss_policy': middle_step_losses['loss_policy'].item(),
             'analysis/middle_step_loss_rewards': middle_step_losses['loss_rewards'].item(),
             'analysis/middle_step_loss_obs': middle_step_losses['loss_obs'].item(),
-            'analysis/middle_step_loss_alpha': middle_step_losses['loss_alpha'].item(),
+            'analysis/middle_step_loss_head_selection': middle_step_losses['loss_head_selection'].item(),
 
             'analysis/last_step_loss_value': last_step_losses['loss_value'].item(),
             'analysis/last_step_loss_policy': last_step_losses['loss_policy'].item(),
             'analysis/last_step_loss_rewards': last_step_losses['loss_rewards'].item(),
             'analysis/last_step_loss_obs': last_step_losses['loss_obs'].item(),
-            'analysis/last_step_loss_alpha': last_step_losses['loss_alpha'].item(),
+            'analysis/last_step_loss_head_selection': last_step_losses['loss_head_selection'].item(),
 
             'Current_GPU': current_memory_allocated_gb,
             'Max_GPU': max_memory_allocated_gb,
@@ -1228,7 +1230,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'policy_loss': policy_loss.item(),
             'orig_policy_loss': orig_policy_loss.item(),
             'policy_entropy': policy_entropy.item(),
-            'alpha_head_loss': alpha_head_loss.item(),
+            'head_selection_loss': head_selection_loss.item(),
             'target_policy_entropy': average_target_policy_entropy.item(),
             'reward_loss': reward_loss.item(),
             'value_loss': value_loss.item(),
@@ -1781,17 +1783,17 @@ class UniZeroPolicy(MuZeroPolicy):
             'analysis/first_step_loss_policy',
             'analysis/first_step_loss_rewards',
             'analysis/first_step_loss_obs',
-            'analysis/first_step_loss_alpha',
+            'analysis/first_step_loss_head_selection',
             'analysis/middle_step_loss_value',
             'analysis/middle_step_loss_policy',
             'analysis/middle_step_loss_rewards',
             'analysis/middle_step_loss_obs',
-            'analysis/middle_step_loss_alpha',
+            'analysis/middle_step_loss_head_selection',
             'analysis/last_step_loss_value',
             'analysis/last_step_loss_policy',
             'analysis/last_step_loss_rewards',
             'analysis/last_step_loss_obs',
-            'analysis/last_step_loss_alpha',
+            'analysis/last_step_loss_head_selection',
 
             # ==================== System Metrics ====================
             'Current_GPU',
@@ -1806,7 +1808,7 @@ class UniZeroPolicy(MuZeroPolicy):
             'policy_loss',
             'orig_policy_loss',
             'policy_entropy',
-            'alpha_head_loss',
+            'head_selection_loss',
             'latent_recon_loss',
             'perceptual_loss',
             'target_policy_entropy',

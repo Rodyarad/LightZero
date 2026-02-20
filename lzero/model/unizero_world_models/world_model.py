@@ -352,6 +352,7 @@ class WorldModel(nn.Module):
             self.num_observations_tokens = self.config.tokens_per_block - 1
         self.latent_recon_loss_weight = self.config.latent_recon_loss_weight
         self.perceptual_loss_weight = self.config.perceptual_loss_weight
+        self.head_selection_loss_weight = getattr(self.config, 'head_selection_loss_weight', 1.0)
         self.support_size = self.config.support_size
         self.action_space_size = self.config.action_space_size
         self.max_cache_size = self.config.max_cache_size
@@ -1511,8 +1512,8 @@ class WorldModel(nn.Module):
                 alpha_target = (probs_per_head.detach() * smooth_target_policy.unsqueeze(2)).sum(dim=-1)  # (B, T, H)
                 alpha_target = alpha_target / (alpha_target.sum(dim=-1, keepdim=True) + 1e-8)
 
-                loss_alpha = -(alpha_target.detach() * torch.log(pred_alpha + 1e-8)).sum(dim=-1)  # (B, T)
-                loss_alpha = (loss_alpha * batch['mask_padding'].float()).view(-1)  # (B*T,)
+                loss_head_selection = -(alpha_target.detach() * torch.log(pred_alpha + 1e-8)).sum(dim=-1)  # (B, T)
+                loss_head_selection = (loss_head_selection * batch['mask_padding'].float()).view(-1)  # (B*T,)
 
                 combined_probs = (pred_alpha.unsqueeze(-1) * probs_per_head).sum(dim=2)  # (B, T, A)
                 outputs.logits_policy = torch.log(combined_probs + 1e-8)  # (B, T, A)
@@ -1521,7 +1522,7 @@ class WorldModel(nn.Module):
                     outputs, labels_policy, batch, element='policy'
                 )
             else:
-                loss_alpha = torch.zeros(
+                loss_head_selection = torch.zeros(
                     batch['actions'].shape[0] * batch['actions'].shape[1],
                     device=batch['observations'].device
                 )
@@ -1537,7 +1538,7 @@ class WorldModel(nn.Module):
             
             loss_policy = orig_policy_loss + self.policy_entropy_weight * policy_entropy_loss
             policy_entropy = - policy_entropy_loss
-            loss_alpha = torch.zeros(
+            loss_head_selection = torch.zeros(
                 batch['actions'].shape[0] * batch['actions'].shape[1],
                 device=batch['observations'].device
             )
@@ -1556,8 +1557,8 @@ class WorldModel(nn.Module):
         # batch['mask_padding'] indicates mask status for future H steps, exclude masked losses to maintain accurate mean statistics
         # Group losses for each loss item
         for loss_name, loss_tmp in zip(
-                ['loss_obs', 'loss_rewards', 'loss_value', 'loss_policy', 'orig_policy_loss', 'policy_entropy', 'loss_alpha'],
-                [loss_obs, loss_rewards, loss_value, loss_policy, orig_policy_loss, policy_entropy, loss_alpha]
+                ['loss_obs', 'loss_rewards', 'loss_value', 'loss_policy', 'orig_policy_loss', 'policy_entropy', 'loss_head_selection'],
+                [loss_obs, loss_rewards, loss_value, loss_policy, orig_policy_loss, policy_entropy, loss_head_selection]
         ):
             if loss_name == 'loss_obs':
                 seq_len = batch['actions'].shape[1] - 1
@@ -1600,7 +1601,7 @@ class WorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
-        discounted_loss_alpha = (loss_alpha.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
+        discounted_loss_head_selection = (loss_head_selection.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
 
         # Add encoder output to return dictionary for external training loop access
         # Using .detach() because this tensor is only used for subsequent clip operations and should not affect gradient computation
@@ -1610,12 +1611,13 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
+                head_selection_loss_weight=self.head_selection_loss_weight,
                 continuous_action_space=True,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
-                loss_alpha=discounted_loss_alpha,
+                loss_head_selection=discounted_loss_head_selection,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
@@ -1647,12 +1649,13 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
+                head_selection_loss_weight=self.head_selection_loss_weight,
                 continuous_action_space=False,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
-                loss_alpha=discounted_loss_alpha,
+                loss_head_selection=discounted_loss_head_selection,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
