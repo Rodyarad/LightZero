@@ -1920,6 +1920,7 @@ class UniZeroPolicy(MuZeroPolicy):
         # ==================== START: Save Alpha Optimizer State ====================
         if self.use_adaptive_entropy_weight:
             state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
+            state_dict['log_alpha'] = self.log_alpha.data.clone()
         # ===================== END: Save Alpha Optimizer State =====================
         return state_dict
 
@@ -1935,6 +1936,14 @@ class UniZeroPolicy(MuZeroPolicy):
         self._optimizer_world_model.load_state_dict(state_dict['optimizer_world_model'])
         if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler:
             self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
+
+        # ==================== START: Load Alpha State ====================
+        if self.use_adaptive_entropy_weight:
+            if 'log_alpha' in state_dict:
+                self.log_alpha.data.copy_(state_dict['log_alpha'])
+            if 'alpha_optimizer' in state_dict:
+                self.alpha_optimizer.load_state_dict(state_dict['alpha_optimizer'])
+        # ===================== END: Load Alpha State =====================
 
     def recompute_pos_emb_diff_and_clear_cache(self) -> None:
         """
