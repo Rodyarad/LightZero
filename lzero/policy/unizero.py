@@ -1083,6 +1083,7 @@ class UniZeroPolicy(MuZeroPolicy):
 
             self.latent_recon_loss_weight = self._cfg.model.world_model_cfg.latent_recon_loss_weight
             self.perceptual_loss_weight = self._cfg.model.world_model_cfg.perceptual_loss_weight
+            self.head_selection_loss_weight = self._cfg.model.world_model_cfg.head_selection_loss_weight
 
             if self.latent_recon_loss_weight>0:
                 total_loss = (
@@ -1091,7 +1092,8 @@ class UniZeroPolicy(MuZeroPolicy):
                     self.policy_loss_weight * weighted_policy_loss +
                     self.obs_loss_weight  * obs_loss +
                     self.latent_recon_loss_weight * latent_recon_loss+
-                    self.perceptual_loss_weight*perceptual_loss
+                    self.perceptual_loss_weight*perceptual_loss +
+                    self.head_selection_loss_weight * head_selection_loss
                 )
             else:
 
@@ -1099,8 +1101,8 @@ class UniZeroPolicy(MuZeroPolicy):
                     self.reward_loss_weight * reward_loss +
                     self.value_loss_weight * value_loss +
                     self.policy_loss_weight * weighted_policy_loss +
-                    self.obs_loss_weight  * obs_loss
-
+                    self.obs_loss_weight  * obs_loss +
+                    self.head_selection_loss_weight * head_selection_loss
                 )
             weighted_total_loss = (weights * total_loss).mean()
         # ===================== END: Target Entropy Regularization Update Logic =====================
