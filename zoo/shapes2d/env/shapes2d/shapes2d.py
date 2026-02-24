@@ -203,7 +203,7 @@ class Shapes2d(gym.Env):
         return result
 
     def render(self, mode=None):
-        self._get_observation().astype(np.uint8)
+        return self.render_shapes().astype(np.uint8)
         #return self._get_observation()[0]
 
     def _get_coordinates_info(self):
