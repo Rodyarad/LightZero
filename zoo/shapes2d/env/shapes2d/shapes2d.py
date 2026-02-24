@@ -203,7 +203,8 @@ class Shapes2d(gym.Env):
         return result
 
     def render(self, mode=None):
-        return self._get_observation()[0]
+        return self._get_observation().astype(np.uint8)
+        #return self._get_observation()[0]
 
     def _get_coordinates_info(self):
         # object coordinates normalized to (-1, 1)
