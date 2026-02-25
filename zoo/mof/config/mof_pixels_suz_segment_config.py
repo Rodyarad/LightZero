@@ -89,6 +89,7 @@ def main(seed):
                     num_layers=num_layers,
                     num_heads=8,
                     embed_dim=768,
+                    game_segment_length=game_segment_length,
                     env_num=max(collector_env_num, evaluator_env_num),
                 ),
             ),

@@ -50,7 +50,7 @@ def main(seed):
         env=dict(
             env_config_path='zoo/causal_world/env/causal_world/cw_envs/config/reaching-hard_orig.yaml',
             from_pixels=True,
-            observation_shape=(3, 84, 84),
+            observation_shape=(3, 64, 64),
             continuous=True,
             gray_scale=False,
             save_replay_gif=False,
@@ -65,12 +65,14 @@ def main(seed):
             #store_obs_int8=True,
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6,),),),  # default is 10000
             model=dict(
-                observation_shape=(3, 84, 84),
+                observation_shape=(3, 64, 64),
                 action_space_size=action_space_size,
                 continuous_action_space=continuous_action_space,
                 num_of_sampled_actions=K,
                 model_type='conv',
                 world_model_cfg=dict(
+                    latent_recon_loss_weight=0.0,
+                    perceptual_loss_weight=0.0,
                     policy_loss_type='kl',
                     obs_type='image',
                     num_unroll_steps=num_unroll_steps,
@@ -90,6 +92,7 @@ def main(seed):
                     num_layers=num_layers,
                     num_heads=8,
                     embed_dim=768,
+                    game_segment_length=game_segment_length,
                     env_num=max(collector_env_num, evaluator_env_num),
                 ),
             ),

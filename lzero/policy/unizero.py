@@ -1936,9 +1936,10 @@ class UniZeroPolicy(MuZeroPolicy):
             'lr_scheduler': self.lr_scheduler.state_dict() if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler else None,
         }
         # ==================== START: Save Alpha Optimizer State ====================
-        if self.use_adaptive_entropy_weight:
-            state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
-            state_dict['log_alpha'] = self.log_alpha.data.clone()
+        if not self._cfg.model.continuous_action_space:
+            if self.use_adaptive_entropy_weight:
+                state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
+                state_dict['log_alpha'] = self.log_alpha.data.clone()
         # ===================== END: Save Alpha Optimizer State =====================
         return state_dict
 
