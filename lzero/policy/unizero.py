@@ -1525,8 +1525,8 @@ class UniZeroPolicy(MuZeroPolicy):
             ).to(self._cfg.device)
             self.last_batch_action_eval = [-1 for i in range(self.evaluator_env_num)]
         elif self._cfg.model.model_type ==  'slot':
-            self.last_batch_obs_collect = torch.zeros([self.evaluator_env_num, self._cfg.model.observation_shape[0], self._cfg.model.observation_shape[1]]).to(self._cfg.device)
-            self.last_batch_action_collect = [-1 for i in range(self.evaluator_env_num)]
+            self.last_batch_obs_eval = torch.zeros([self.evaluator_env_num, self._cfg.model.observation_shape[0], self._cfg.model.observation_shape[1]]).to(self._cfg.device)
+            self.last_batch_action_eval = [-1 for i in range(self.evaluator_env_num)]
 
     def _forward_eval(self, data: torch.Tensor, action_mask: list, to_play: int = -1,
                       ready_env_id: np.array = None, timestep: List = [0], task_id: int = None,) -> Dict:
@@ -1918,9 +1918,10 @@ class UniZeroPolicy(MuZeroPolicy):
             'lr_scheduler': self.lr_scheduler.state_dict() if self._cfg.cos_lr_scheduler or self._cfg.piecewise_decay_lr_scheduler else None,
         }
         # ==================== START: Save Alpha Optimizer State ====================
-        if self.use_adaptive_entropy_weight:
-            state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
-            state_dict['log_alpha'] = self.log_alpha.data.clone()
+        if not self._cfg.model.continuous_action_space:
+            if self.use_adaptive_entropy_weight:
+                state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
+                state_dict['log_alpha'] = self.log_alpha.data.clone()
         # ===================== END: Save Alpha Optimizer State =====================
         return state_dict
 

@@ -469,6 +469,11 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         if isinstance(self._cfg.model.observation_shape, int) or len(self._cfg.model.observation_shape) == 1:
             batch_for_gpt['observations'] = torch.cat((obs_batch, obs_target_batch), dim=1).reshape(
                 self._cfg.batch_size, -1, self._cfg.model.observation_shape)
+        elif len(self._cfg.model.observation_shape) == 2:
+            # slot obs: (num_slots, slot_dim)
+            batch_for_gpt['observations'] = torch.cat((obs_batch, obs_target_batch), dim=1).reshape(
+                self._cfg.batch_size, -1, *self._cfg.model.observation_shape
+            )
         elif len(self._cfg.model.observation_shape) == 3:
             batch_for_gpt['observations'] = torch.cat((obs_batch, obs_target_batch), dim=1).reshape(
                 self._cfg.batch_size, -1, *self._cfg.model.observation_shape)
@@ -672,6 +677,9 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             self.last_batch_obs = torch.zeros([self.collector_env_num, self._cfg.model.observation_shape]).to(
                 self._cfg.device)
             self.last_batch_action = [-1 for i in range(self.collector_env_num)]
+        elif self._cfg.model.model_type ==  'slot':
+            self.last_batch_obs_collect = torch.zeros([self.collector_env_num, self._cfg.model.observation_shape[0], self._cfg.model.observation_shape[1]]).to(self._cfg.device)
+            self.last_batch_action_collect = [-1 for i in range(self.collector_env_num)]
 
     # @profile
     def _forward_collect(
@@ -719,7 +727,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         output = {i: None for i in ready_env_id}
 
         with torch.no_grad():
-            network_output = self._collect_model.initial_inference(self.last_batch_obs, self.last_batch_action, data)
+            network_output = self._collect_model.initial_inference(self.last_batch_obs_collect, self.last_batch_action_collect, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
@@ -810,8 +818,8 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 }
                 batch_action.append(action)
 
-            self.last_batch_obs = data
-            self.last_batch_action = batch_action
+            self.last_batch_obs_collect = data
+            self.last_batch_action_collect = batch_action
 
             # ========= TODO: for muzero_segment_collector now =========
             if active_collect_env_num < self.collector_env_num:
@@ -841,6 +849,9 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             self.last_batch_obs = torch.zeros([self.evaluator_env_num, self._cfg.model.observation_shape]).to(
                 self._cfg.device)
             self.last_batch_action = [-1 for _ in range(self.evaluator_env_num)]
+        elif self._cfg.model.model_type ==  'slot':
+            self.last_batch_obs_eval = torch.zeros([self.evaluator_env_num, self._cfg.model.observation_shape[0], self._cfg.model.observation_shape[1]]).to(self._cfg.device)
+            self.last_batch_action_eval = [-1 for i in range(self.evaluator_env_num)]
 
     def _forward_eval(self, data: torch.Tensor, action_mask: list, to_play: List = [-1],
                       ready_env_id: np.array = None, timestep: int = 0) -> Dict:
@@ -871,7 +882,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             ready_env_id = np.arange(active_eval_env_num)
         output = {i: None for i in ready_env_id}
         with torch.no_grad():
-            network_output = self._eval_model.initial_inference(self.last_batch_obs, self.last_batch_action, data)
+            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action_eval, data)
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             # if not in training, obtain the scalars of the value/reward
@@ -943,9 +954,10 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 }
                 batch_action.append(action)
 
-            self.last_batch_obs = data
-            self.last_batch_action = batch_action
+            self.last_batch_obs_eval = data
+            self.last_batch_action_eval = batch_action
 
+        self._reset_collect(reset_init_data=True)
         return output
 
 

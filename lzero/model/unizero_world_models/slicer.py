@@ -202,3 +202,43 @@ class AggregationHead(Slicer):
         aggregated_tokens = tokens_grouped_by_time.sum(dim=2)
 
         return self.head_module(aggregated_tokens)
+    
+class AggregationPolicyHeadCont(Slicer):
+    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module) -> None:
+        """
+        Overview:
+            Head module extends Slicer to include a head module for processing sliced inputs.
+        Arguments:
+            - max_blocks (:obj:`int`): The maximum number of blocks to process.
+            - block_mask (:obj:`torch.Tensor`): A tensor mask indicating which blocks to keep.
+            - head_module (:obj:`nn.Module`): The head module to process the sliced inputs.
+        """
+        super().__init__(max_blocks, block_mask)
+        assert isinstance(head_module, nn.Module)
+        self.head_module = head_module
+
+    def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int) -> torch.Tensor:
+        """
+        Overview:
+            Forward method processes the input tensor through the head module using computed slices.
+        Arguments:
+            - x (:obj:`torch.Tensor`): The input tensor.
+            - num_steps (:obj:`int`): The number of steps to consider.
+            - prev_steps (:obj:`int | :obj:`torch.Tensor`): The number of previous steps to consider.
+        Returns:
+            - torch.Tensor: The processed tensor.
+        """
+        selected_token_indices = self.compute_slice(num_steps, prev_steps)
+        selected_tokens = x[:, selected_token_indices, :]
+        batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
+        num_timesteps = num_selected_tokens // self.num_kept_tokens
+        if num_selected_tokens % self.num_kept_tokens != 0:
+            selected_tokens = selected_tokens.new_zeros(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
+        tokens_grouped_by_time = selected_tokens.view(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
+        aggregated_tokens = tokens_grouped_by_time.sum(dim=2)
+
+        output = self.head_module(aggregated_tokens)
+
+        output = torch.cat([output['mu'], output['sigma']], dim=-1)
+
+        return output
