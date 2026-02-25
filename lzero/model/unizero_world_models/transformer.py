@@ -517,23 +517,26 @@ class SelfAttention(nn.Module):
         b, p = i[:, None] // config.tokens_per_block, i[:, None] % config.tokens_per_block
         h = config.tokens_per_block // 2
 
-        # slot_mask = ((
-        #                 ((b == b.T) & (p < h) & (p.T < h))
-        #                 | ((b == b.T) & (p >= h) & (p == p.T))
-        #                 | ((b == b.T) & (p >= h) & (p.T == (p - h))))
-        #                 |
-        #                 ((b > b.T) & (p < h) &
-        #                 ((p.T < h)| (p.T == h)))
+        # slot_mask = (
+        #         ((b == b.T) & (p < h) & (p.T < h))
+        #         | ((b == b.T) & (p >= h) & (p.T < h))
+        #         | ((b == b.T) & (p >= h) & (p == p.T))
+        #         | ((b == b.T) & (p >= h) & (p.T == (p - h)))
+        #         |
+        #         ((b > b.T) & (p < h) &
+        #          ((p.T < h) | (p.T == h)))
         # ).int()
-
+        
+        
         slot_mask = (
-                ((b == b.T) & (p < h) & (p.T < h))
-                | ((b == b.T) & (p >= h) & (p.T < h))
-                | ((b == b.T) & (p >= h) & (p == p.T))
-                | ((b == b.T) & (p >= h) & (p.T == (p - h)))
-                |
-                ((b > b.T) & (p < h) &
-                 ((p.T < h) | (p.T == h)))
+            ((b == b.T) & (p < h) & (p.T < h))
+            | ((b == b.T) & (p >= h) & (p.T < h))
+            | ((b == b.T) & (p >= h) & (p == p.T))
+            | ((b == b.T) & (p >= h) & (p.T == (p - h)))
+            |
+            ((b > b.T) & (p < h) & ((p.T < h) | (p.T == h)))
+            |
+            ((b > b.T) & (p >= h) & (p.T < h))
         ).int()
 
         self.register_buffer('mask', slot_mask if config.model_type == 'slot' else causal_mask)
