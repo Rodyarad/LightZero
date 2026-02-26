@@ -17,9 +17,11 @@ from ding.utils.compression_helper import jpeg_data_compressor
 from easydict import EasyDict
 # from gymnasium.wrappers import RecordVideo
 from gym.wrappers import RecordVideo
-
+import torch
 from omegaconf import OmegaConf
 from zoo.causal_world.env.causal_world.cw_envs import CwTargetEnv
+from zoo.ocr.slate.slate import SLATE
+from collections import namedtuple
 
 
 def wrap_lightzero(config: EasyDict) -> gym.Env:
@@ -58,6 +60,18 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         env = ScaledFloatFrameWrapper(env)
     if config.from_pixels:
         env = JpegWrapper(env, transform2string=config.transform2string)
+
+    if config.oc_model:
+        config_ocr = OmegaConf.load(config.ocr_config_path)
+        config_env = namedtuple('EnvConfig', ['obs_size', 'obs_channels'])(config.observation_shape[2], 3)
+        slate = SLATE(config_ocr, config_env, observation_space=None, preserve_slot_order=True)
+        state_dict = torch.load(config.checkpoint_path)["ocr_module_state_dict"]
+        slate._module.load_state_dict(state_dict)
+        slate.requires_grad_(False)
+        slate.eval()
+        slot_extractor = SlotExtractor(model=slate, device='cuda', name_model='SLATE')
+        env = SlotExtractorWrapper(env, slot_extractor, config.num_slots, config.slot_dim)
+
     return env
 
 
@@ -179,3 +193,76 @@ class JpegWrapper(gym.Wrapper):
             observation = jpeg_data_compressor(observation)
 
         return observation
+
+
+def obs_to_tensor(obs, device):
+    if len(obs.shape) == 4:
+        return torch.Tensor(obs.transpose(0, 3, 1, 2)).to(device) / 255.0
+    else:
+        return torch.Tensor(obs).to(device)
+
+
+class SlotExtractor:
+    def __init__(self, model, device, name_model):
+        self._model = model
+        self._device = device
+        self._model.to(device)
+        self.name_model = name_model
+
+    def __call__(self, images, prev_slots, to_numpy=True):
+        if len(images.shape) == 3:
+            batch_images = images[np.newaxis, ...]
+        else:
+            batch_images = images
+
+        if prev_slots is not None and len(prev_slots.shape) == 2:
+            batch_prev_slots = prev_slots[np.newaxis, ...]
+        else:
+            batch_prev_slots = prev_slots
+
+        batch_images = obs_to_tensor(batch_images, self._device)
+        if batch_prev_slots is not None:
+            batch_prev_slots = obs_to_tensor(batch_prev_slots, self._device)
+
+        if self.name_model == 'SLATE':
+            slots = self._model._module._get_slots(batch_images, prev_slots=batch_prev_slots).detach()
+        else:
+            slots = self._model(batch_images, prev_slots=batch_prev_slots).detach()
+
+        if len(images.shape) == 3:
+            slots = slots[0]
+
+        if to_numpy:
+            slots = slots.cpu().numpy()
+
+        return slots
+
+class SlotExtractorWrapper(gym.Wrapper):
+    """
+    Wrapper uses SlotExtractor in order to extract slots from the input image.
+    """
+
+    def __init__(self, env, slot_extractor, num_slots, slot_dim):
+        super().__init__(env)
+
+        self.slot_extractor = slot_extractor
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(num_slots, slot_dim), dtype=np.float32
+        )
+        self.prev_slots = None
+
+    def _get_slots(self, frame, prev_slots=None):
+        if prev_slots is None:
+            prev_slots = self.slot_extractor(frame, prev_slots=None)
+
+        return self.slot_extractor(frame, prev_slots=prev_slots)
+
+    def reset(self):
+        frame = self.env.reset()
+        self.prev_slots = self._get_slots(frame, prev_slots=None)
+        return self.prev_slots.copy()
+
+    def step(self, action):
+        frame, reward, done, info = self.env.step(action)
+        self.prev_slots = self._get_slots(frame, prev_slots=self.prev_slots)
+        return self.prev_slots.copy(), reward, done, info

@@ -527,6 +527,7 @@ class SelfAttention(nn.Module):
         #          ((p.T < h) | (p.T == h)))
         # ).int()
         
+
         slot_mask = (
             ((b == b.T) & (p < h) & (p.T < h))
             | ((b == b.T) & (p >= h) & (p.T < h))

@@ -67,7 +67,7 @@ class SampledUniZeroModel(nn.Module):
         self.activation = activation
         self.downsample = downsample
         world_model_cfg.norm_type = norm_type
-        assert world_model_cfg.max_tokens == 2 * world_model_cfg.max_blocks, 'max_tokens should be 2 * max_blocks, because each timestep has 2 tokens: obs and action'
+        assert world_model_cfg.max_tokens == world_model_cfg.tokens_per_block * world_model_cfg.max_blocks, 'max_tokens should be 2 * max_blocks, because each timestep has 2 tokens: obs and action'
 
         if world_model_cfg.obs_type == 'vector':
             self.representation_network = RepresentationNetworkMLP(
@@ -157,6 +157,15 @@ class SampledUniZeroModel(nn.Module):
             print(f'{sum(p.numel() for p in self.tokenizer.encoder.parameters())} parameters in agent.tokenizer.encoder')
             print(f'{sum(p.numel() for p in self.tokenizer.decoder_network.parameters())} parameters in agent.tokenizer.decoder_network')
             print('==' * 20)
+        elif world_model_cfg.obs_type == 'slot':
+            self.representation_network = nn.Identity()
+            self.decoder_network = None
+            self.tokenizer = Tokenizer(encoder=self.representation_network, decoder=self.decoder_network, with_lpips=False, obs_type=world_model_cfg.obs_type)
+            self.world_model = WorldModel(config=world_model_cfg, tokenizer=self.tokenizer)
+            print(f'{sum(p.numel() for p in self.world_model.parameters())} parameters in agent.world_model')
+            print('==' * 20)
+            print(f'{sum(p.numel() for p in self.world_model.transformer.parameters())} parameters in agent.world_model.transformer')
+            print('==' * 20)
 
         # --- Log parameter counts for analysis ---
         self._log_model_parameters(world_model_cfg.obs_type)
@@ -198,7 +207,10 @@ class SampledUniZeroModel(nn.Module):
         encoder_params = sum(p.numel() for p in self.tokenizer.encoder.parameters())
         encoder_trainable = sum(p.numel() for p in self.tokenizer.encoder.parameters() if p.requires_grad)
         print(f'\n{"1. ENCODER (Tokenizer)":<40} {encoder_params:>15,} parameters')
-        print(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters ({100*encoder_trainable/encoder_params:.1f}%)')
+        if encoder_params > 0:
+            print(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters ({100*encoder_trainable/encoder_params:.1f}%)')
+        else:
+            print(f'{"  └─ Trainable":<40} {encoder_trainable:>15,} parameters (N/A)')
 
         # --- Transformer Backbone ---
         transformer_params = sum(p.numel() for p in self.world_model.transformer.parameters())

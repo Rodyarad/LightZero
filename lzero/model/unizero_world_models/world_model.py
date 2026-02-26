@@ -20,7 +20,7 @@ from torch.distributions import (Categorical, Independent, Normal,
                                  TanhTransform, TransformedDistribution)
 
 from .kv_caching import KeysValues
-from .slicer import Head, PolicyHeadCont, AggregationHead
+from .slicer import Head, PolicyHeadCont, AggregationHead, AggregationPolicyHeadCont
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
 from .utils import (LossWithIntermediateLosses, WorldModelOutput, hash_state,
@@ -643,7 +643,7 @@ class WorldModel(nn.Module):
 
         return nn.Sequential(*modules)
 
-    def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
+    def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> PolicyHeadCont:
         """Create head modules for the transformer."""
         from ding.model.common import ReparameterizationHead
         self.fc_policy_head = ReparameterizationHead(
@@ -657,6 +657,25 @@ class WorldModel(nn.Module):
             bound_type=self.bound_type
         )
         return PolicyHeadCont(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=self.fc_policy_head
+        )
+
+    def _create_agg_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> AggregationPolicyHeadCont:
+        """Create head modules for the transformer."""
+        from ding.model.common import ReparameterizationHead
+        self.fc_policy_head = ReparameterizationHead(
+            input_size=self.config.embed_dim,
+            output_size=output_dim,
+            layer_num=2,  # TODO: check the effect of layer_num
+            sigma_type=self.sigma_type,
+            activation=nn.GELU(approximate='tanh'),
+            fixed_sigma_value=self.config.fixed_sigma_value if self.sigma_type == 'fixed' else 0.5,
+            norm_type=None,
+            bound_type=self.bound_type
+        )
+        return AggregationPolicyHeadCont(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
             head_module=self.fc_policy_head
@@ -897,7 +916,7 @@ class WorldModel(nn.Module):
         return embeddings + position_embeddings
 
     #@profile
-    def _process_obs_act_combined_cont(self, obs_embeddings_or_act_tokens):
+    def _process_obs_act_combined_cont(self, obs_embeddings_or_act_tokens, eval_init_inference = False):
         """
         Process combined observation embeddings and action tokens.
 
@@ -906,31 +925,57 @@ class WorldModel(nn.Module):
         Returns:
             - torch.Tensor: Combined observation and action embeddings with position information added.
         """
-        obs_embeddings, act_tokens = obs_embeddings_or_act_tokens['obs_embeddings_and_act_tokens']
-        if len(obs_embeddings.shape) == 3:
-            obs_embeddings = obs_embeddings.view(act_tokens.shape[0], act_tokens.shape[1], self.num_observations_tokens,
-                                                 -1)
-
-        num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
+        if eval_init_inference:
+            obs_embeddings, act_tokens = obs_embeddings_or_act_tokens['last_obs_embeddings_act_tokens_and_current_obs']
+            current_obs_embeddings = obs_embeddings[:,-1,:,:]
+            obs_embeddings = obs_embeddings[:,:-1,:,:]
+        else:
+            obs_embeddings, act_tokens = obs_embeddings_or_act_tokens['obs_embeddings_and_act_tokens']
+            if len(obs_embeddings.shape) == 3:
+                obs_embeddings = obs_embeddings.view(act_tokens.shape[0], act_tokens.shape[1], self.num_observations_tokens,
+                                                     -1)
+        B, L, K, E = obs_embeddings.size()
         if self.continuous_action_space:
             act_tokens = act_tokens.float()
             if len(act_tokens.shape) == 2:  # TODO
                 act_tokens = act_tokens.unsqueeze(-1)
-
-        # B, L, E
         act_embeddings = self.act_embedding_table(act_tokens)
+        act_embeddings = act_embeddings.view(B, L, E)
 
         B, L, K, E = obs_embeddings.size()
-        # B, L*2, E
-        obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
+
+        if self.model_type == 'slot':
+            act_embeddings = act_embeddings.unsqueeze(2).expand(B, L, K, E)
+            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) * 2))
+        else:
+            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
+
+        if self.model_type == 'slot':
+            obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
+        else:
+            obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
+
+        act_embeddings = act_embeddings[:, :L, :, :]
+        slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
+        slot_acts = slot_acts.view(-1, E * 2)
+        act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
 
         for i in range(L):
             obs = obs_embeddings[:, i, :, :]
-            act = act_embeddings[:, i, :].unsqueeze(1)
-            obs_act = torch.cat([obs, act], dim=1)
-            obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
+            if self.model_type == 'slot':
+                act = act_embeddings[:, i, :, :]
+                obs_act = torch.cat([obs, act], dim=1)
+                obs_act_embeddings[:, i * (K * 2):(i + 1) * (K * 2), :] = obs_act
+            else:
+                act = act_embeddings[:, i, :].unsqueeze(1)
+                obs_act = torch.cat([obs, act], dim=1)
+                obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
 
-        return_result = obs_act_embeddings
+        if eval_init_inference:
+            return_result = torch.cat((obs_act_embeddings, current_obs_embeddings), dim=1)
+            num_steps = return_result.size(1)
+        else:
+            return_result = obs_act_embeddings
         if not self.config.rotary_emb:
             token_indices = torch.arange(num_steps, device=self.device)
             if self.model_type == 'slot':
