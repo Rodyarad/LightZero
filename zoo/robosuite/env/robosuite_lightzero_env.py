@@ -50,6 +50,14 @@ class RobosuiteEnvLightZero(BaseEnv):
         eval_max_episode_steps=int(125),
         norm_obs=dict(use_norm=False, ),
         norm_reward=dict(use_norm=False, ),
+        chekpoint_path='LightZero/zoo/ocr/robosuite.ckpt',
+        num_slots=5,
+        slot_dim=64,
+        model_name='vit_base_patch16_224_dino',
+        input_feature_dim=768,
+        num_patches=196,
+        features=(2048, 2048, 2048),
+        oc_model=False
     )
 
     def __init__(self, cfg: dict) -> None:
@@ -63,6 +71,7 @@ class RobosuiteEnvLightZero(BaseEnv):
         default_config.update(cfg)
         self._cfg = default_config
         self.channel_last = self._cfg.channel_last
+        self.oc_model = self._cfg.oc_model
         self._init_flag = False
         self._replay_path = None
         self._replay_path_gif = self._cfg.replay_path_gif
@@ -78,29 +87,34 @@ class RobosuiteEnvLightZero(BaseEnv):
         if not self._init_flag:
             self._env = wrap_lightzero(self._cfg)
 
-            self._observation_space = gym.spaces.Dict({
-                'observation': gym.spaces.Box(
-                    low=0, high=1, shape=self._cfg.observation_shape, dtype=np.float32
-                ),
-                'action_mask': gym.spaces.Box(
-                    low=0,
-                    high=1,
-                    shape=(1,),
-                    dtype=np.int8
-                ),
-                'to_play': gym.spaces.Box(
-                    low=-1,
-                    high=2,
-                    shape=(),
-                    dtype=np.int8
-                ),
-                'timestep': gym.spaces.Box(
-                    low=0,
-                    high=self._cfg.collect_max_episode_steps,
-                    shape=(),
-                    dtype=np.int32
-                ),
-            })
+            if self.oc_model:
+                self._observation_space = gym.spaces.Dict({
+                    'observation': self._env.env.observation_space,
+                    'action_mask': gym.spaces.Box(
+                        low=0, high=1, shape=(self._env.env.action_space.shape[0],), dtype=np.int8
+                    ),
+                    'to_play': gym.spaces.Box(
+                        low=-1, high=2, shape=(), dtype=np.int8
+                    ),
+                    'timestep': gym.spaces.Box(
+                        low=0, high=self._cfg.collect_max_episode_steps, shape=(), dtype=np.int32
+                    ),
+                })
+            else:
+                self._observation_space = gym.spaces.Dict({
+                    'observation': gym.spaces.Box(
+                        low=0, high=1, shape=self.cfg.observation_shape, dtype=np.float32
+                    ),
+                    'action_mask': gym.spaces.Box(
+                        low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
+                    ),
+                    'to_play': gym.spaces.Box(
+                        low=-1, high=2, shape=(), dtype=np.int8
+                    ),
+                    'timestep': gym.spaces.Box(
+                        low=0, high=self.cfg.collect_max_episode_steps, shape=(), dtype=np.int32
+                    ),
+                })
             self._action_space = self._env.action_space
             self._reward_space = gym.spaces.Box(
                 low=self._env.reward_range[0], high=self._env.reward_range[1], shape=(1,), dtype=np.float32
@@ -120,7 +134,7 @@ class RobosuiteEnvLightZero(BaseEnv):
         obs = to_ndarray(obs).astype('float32')
 
         if self._cfg.from_pixels:
-            if not self.channel_last:
+            if not self.channel_last and not self.oc_model:
                 obs = np.transpose(obs, (2, 0, 1))
 
         self._eval_episode_return = 0.
@@ -183,7 +197,7 @@ class RobosuiteEnvLightZero(BaseEnv):
         rew = to_ndarray(rew).astype(np.float32)
 
         if self._cfg.from_pixels:
-            if not self.channel_last:
+            if not self.channel_last and not self.oc_model:
                 obs = np.transpose(obs, (2, 0, 1))
 
         action_mask = -1
