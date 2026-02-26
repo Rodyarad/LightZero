@@ -44,11 +44,3 @@ RUN ln -s /usr/bin/python3.9 /usr/local/bin/python && \
 # Update pip and setuptools to the latest version
 # This step ensures that we have the latest tools for installing Python packages.
 RUN python -m pip install --upgrade pip setuptools
-
-# Clone the LightZero repository from GitHub
-# This step downloads the latest version of LightZero to our Docker image.
-RUN git clone -b objectzero https://github.com/Rodyarad/LightZero.git
-
-# Install the LightZero package in editable mode
-# The -e option allows us to edit the source code without needing to reinstall the package.
-RUN pip install -e ./LightZero
