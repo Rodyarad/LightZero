@@ -32,7 +32,15 @@ WORKDIR /opendilab
 # We update the apt package list, install Python 3.8, pip, compilers and other necessary tools.
 # After installing, we clean up the apt cache and remove unnecessary lists to save space.
 RUN apt-get update && \
-    apt-get install -y python3.9  python3.9-dev python3-pip gcc g++ swig git libgl1-mesa-glx libglib2.0-0 && \
+    apt-get install -y \
+    python3.9 python3.9-dev python3-pip \
+    gcc g++ swig git \
+    libgl1-mesa-glx libglib2.0-0 \
+    libegl1 libgles2 libgl1 libglvnd0 libglx0 \
+    libosmesa6 libxrender1 libxext6 libsm6 \
+    mesa-utils libopengl0 \
+    libgl1-mesa-dev libglu1-mesa libglu1-mesa-dev \
+    libosmesa6-dev freeglut3-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

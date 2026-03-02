@@ -31,3 +31,5 @@ pyecharts
 comet_ml
 torchvision
 colormath
+PyOpenGL
+PyOpenGL_accelerate
