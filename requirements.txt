@@ -31,3 +31,5 @@ nltk
 pyecharts
 comet_ml
 colormath
+PyOpenGL
+PyOpenGL_accelerate

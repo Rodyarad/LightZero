@@ -867,9 +867,7 @@ class WorldModel(nn.Module):
             if len(act_tokens.shape) == 2:  # TODO
                 act_tokens = act_tokens.unsqueeze(-1)
         act_embeddings = self.act_embedding_table(act_tokens)
-        act_embeddings = act_embeddings.view(B, L, E)
-
-        B, L, K, E = obs_embeddings.size()
+        act_embeddings = act_embeddings.reshape(B, -1, E)[:, :L, :]
 
         if self.model_type == 'slot':
             act_embeddings = act_embeddings.unsqueeze(2).expand(B, L, K, E)
@@ -881,8 +879,7 @@ class WorldModel(nn.Module):
             obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
         else:
             obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
-            
-        act_embeddings = act_embeddings[:, :L, :, :]
+
         slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
         slot_acts = slot_acts.view(-1, E * 2)
         act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
