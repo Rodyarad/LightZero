@@ -120,6 +120,8 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 perceptual_loss_weight=0.,
                 # (float) The weight of the policy entropy loss.
                 policy_entropy_weight=5e-3,
+                # (float) The weight of the head selection loss (effective for slot world models).
+                head_selection_loss_weight=1.0,
                 # (str) The normalization type for the final layer in both the head and the encoder.
                 # This option must be the same for both 'final_norm_option_in_head' and 'final_norm_option_in_encoder'.
                 # Valid options are 'LayerNorm' and 'SimNorm'.
@@ -1003,6 +1005,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 'obs_loss',
                 'policy_loss',
                 'orig_policy_loss',
+                'loss_head_selection',
                 'policy_entropy',
                 'latent_recon_loss',
                 'target_policy_entropy',
@@ -1070,6 +1073,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 'obs_loss',
                 'policy_loss',
                 'orig_policy_loss',
+                'loss_head_selection',
                 'policy_entropy',
                 'latent_recon_loss',
                 'target_policy_entropy',

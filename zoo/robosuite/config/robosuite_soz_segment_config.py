@@ -82,6 +82,7 @@ def main(seed):
                     obs_type='slot',
                     num_unroll_steps=num_unroll_steps,
                     policy_entropy_weight=5e-2,
+                    head_selection_loss_weight=1.0,
                     continuous_action_space=continuous_action_space,
                     num_of_sampled_actions=K,
                     sigma_type='conditioned',

@@ -347,9 +347,10 @@ class SampledUniZeroModel(nn.Module):
          """
         batch_size = obs_batch.size(0)
         obs_act_dict = {'obs': obs_batch, 'action': action_batch, 'current_obs': current_obs_batch}
-        _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict)
-        latent_state, reward, policy_logits, value = obs_token, logits_rewards, logits_policy, logits_value
-        policy_logits = policy_logits.squeeze(1)
+        _, obs_token, logits_rewards, logits_policy, logits_value, scores_alpha = self.world_model.forward_initial_inference(obs_act_dict)
+        scores_alpha = scores_alpha.squeeze(1)  # (B, H)
+        policy_logits = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
+        latent_state, reward, value = obs_token, logits_rewards, logits_value
         value = value.squeeze(1)
 
         return MZNetworkOutput(
@@ -357,6 +358,7 @@ class SampledUniZeroModel(nn.Module):
             [0. for _ in range(batch_size)],
             policy_logits,
             latent_state,
+            scores_alpha
         )
 
     def recurrent_inference(self, state_action_history: torch.Tensor, simulation_index: int = 0,
@@ -389,10 +391,11 @@ class SampledUniZeroModel(nn.Module):
         """
         if search_depth is None:
             search_depth = []
-        _, logits_observations, logits_rewards, logits_policy, logits_value = self.world_model.forward_recurrent_inference(
+        _, logits_observations, logits_rewards, logits_policy, logits_value, scores_alpha = self.world_model.forward_recurrent_inference(
             state_action_history, simulation_index, search_depth)
-        next_latent_state, reward, policy_logits, value = logits_observations, logits_rewards, logits_policy, logits_value
-        policy_logits = policy_logits.squeeze(1)
+        scores_alpha = scores_alpha.squeeze(1)  # (B, H)
+        policy_logits = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
+        next_latent_state, reward, value = logits_observations, logits_rewards, logits_value
         value = value.squeeze(1)
         reward = reward.squeeze(1)
-        return MZNetworkOutput(value, reward, policy_logits, next_latent_state)
+        return MZNetworkOutput(value, reward, policy_logits, next_latent_state, scores_alpha)

@@ -114,7 +114,10 @@ class WorldModel(nn.Module):
             if self.continuous_action_space:
                 self.sigma_type = self.config.sigma_type
                 self.bound_type = self.config.bound_type
-                self.head_policy = self._create_agg_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
+                self.heads_policy = nn.ModuleDict()
+                for i in range(self.num_observations_tokens):
+                    head_policy = self._create_head_cont(self.policy_tokens_patterns[i], self.action_space_size)
+                    self.heads_policy[f'policy_{i}'] = head_policy
             else:
                 self.heads_policy = nn.ModuleDict()
                 for i in range(self.num_observations_tokens):
@@ -1545,8 +1548,10 @@ class WorldModel(nn.Module):
         # Compute losses for rewards, policy, and value
         loss_rewards = self.compute_cross_entropy_loss(outputs, labels_rewards, batch, element='rewards')
 
-        if not self.continuous_action_space:
-            if self.model_type == 'slot':
+        if self.model_type == 'slot':
+            if self.continuous_action_space:
+                raise NotImplementedError("Not implemented")
+            else:
                 heads_logits_list = [outputs.logits_policy[f'policy_{i}'] for i in range(self.num_observations_tokens)]
                 multi_head_logits = torch.stack(heads_logits_list, dim=2)
 
@@ -1566,6 +1571,21 @@ class WorldModel(nn.Module):
                 loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(
                     outputs, labels_policy, batch, element='policy'
                 )
+        else:
+            if self.continuous_action_space:
+                if self.config.policy_loss_type == 'simple':
+                    orig_policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma = self._calculate_policy_loss_cont_simple(
+                        outputs, batch)
+                else:
+                    orig_policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma = self._calculate_policy_loss_cont(
+                        outputs, batch)
+
+                loss_policy = orig_policy_loss + self.policy_entropy_weight * policy_entropy_loss
+                policy_entropy = - policy_entropy_loss
+                loss_head_selection = torch.zeros(
+                    batch['actions'].shape[0] * batch['actions'].shape[1],
+                    device=batch['observations'].device
+                )
             else:
                 loss_head_selection = torch.zeros(
                     batch['actions'].shape[0] * batch['actions'].shape[1],
@@ -1574,19 +1594,6 @@ class WorldModel(nn.Module):
                 loss_policy, orig_policy_loss, policy_entropy = self.compute_cross_entropy_loss(
                     outputs, labels_policy, batch, element='policy'
                 )
-        else:
-            # NOTE: for continuous action space
-            if self.config.policy_loss_type == 'simple':
-                orig_policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma = self._calculate_policy_loss_cont_simple(outputs, batch)
-            else:
-                orig_policy_loss, policy_entropy_loss, target_policy_entropy, target_sampled_actions, mu, sigma = self._calculate_policy_loss_cont(outputs, batch)
-            
-            loss_policy = orig_policy_loss + self.policy_entropy_weight * policy_entropy_loss
-            policy_entropy = - policy_entropy_loss
-            loss_head_selection = torch.zeros(
-                batch['actions'].shape[0] * batch['actions'].shape[1],
-                device=batch['observations'].device
-            )
 
         loss_value = self.compute_cross_entropy_loss(outputs, labels_value, batch, element='value')
 
