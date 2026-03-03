@@ -12,7 +12,7 @@ cnn:
   hidden_size: 64
 slotattr:
   num_iterations: 3
-  num_slots: 10
+  num_slots: 6
   num_slot_heads: 1
   slot_size: 192
   mlp_hidden_size: 192
@@ -28,4 +28,3 @@ learning:
   lr_warmup_steps: 30000
   dropout: 0.1
   clip: 0.05
-
