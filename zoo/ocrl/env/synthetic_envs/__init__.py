@@ -67,15 +67,30 @@ class SpriteSyntheticGymEnv(gym.Env):
     def close(self):
         self._env.close()
 
-
+#obj. goal
 gym.register(
     id="TargetEnv-v0",
     entry_point="zoo.ocrl.env.synthetic_envs:SpriteSyntheticGymEnv",
     kwargs={"config_stem": "target-N4C4S3S1", "env_type": "TargetEnv"},
 )
 
+#obj.inter
 gym.register(
     id="PushEnv-v0",
     entry_point="zoo.ocrl.env.synthetic_envs:SpriteSyntheticGymEnv",
     kwargs={"config_stem": "push-N3C4S1S1", "env_type": "PushEnv"},
+)
+
+#obj.comp
+gym.register(
+    id="OddOneOutEnvObject-v0",
+    entry_point="zoo.ocrl.env.synthetic_envs:SpriteSyntheticGymEnv",
+    kwargs={"config_stem": "odd-one-out-N4C2S2S1-oc", "env_type": "OddOneOutEnv"},
+)
+
+#prop. comp
+gym.register(
+    id="OddOneOutEnvProperty-v0",
+    entry_point="zoo.ocrl.env.synthetic_envs:SpriteSyntheticGymEnv",
+    kwargs={"config_stem": "odd-one-out-N4C2S2S1", "env_type": "OddOneOutEnv"},
 )
