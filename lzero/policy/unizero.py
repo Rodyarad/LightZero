@@ -2,6 +2,7 @@ import copy
 import logging
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple, Union
+import os
 
 import numpy as np
 import torch
@@ -316,6 +317,11 @@ class UniZeroPolicy(MuZeroPolicy):
         policy_ls_eps_decay_steps=50000,
 
         label_smoothing_eps=0.1,  # TODO: For value
+        
+        log_alpha_scores=False,
+        alpha_log_dir='./alpha_logs',
+        log_unizero_slots=False,
+        unizero_slots_dir='./visuals',
 
         # (bool) Whether to use continuous (fixed) label smoothing throughout training
         use_continuous_label_smoothing=False,
@@ -1515,6 +1521,16 @@ class UniZeroPolicy(MuZeroPolicy):
         """
         self._eval_model = self._model
 
+        # Initialize alpha_scores logging state for eval mode.
+        self._alpha_log_step = 0
+        self._alpha_log_file = None
+        self._log_unizero_slots = getattr(self._cfg, 'log_unizero_slots', False)
+        self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals')
+        self._unizero_slots_buffer = defaultdict(list)  # env_id -> [np.ndarray(num_slots, slot_dim), ...]
+        self._unizero_slots_episode = defaultdict(lambda: 1)  # env_id -> episode index (1-based)
+        if self._log_unizero_slots:
+            os.makedirs(self._unizero_slots_dir, exist_ok=True)
+
         # Create a configuration copy for eval MCTS and set specific simulation count
         mcts_eval_cfg = copy.deepcopy(self._cfg)
         mcts_eval_cfg.num_simulations = self._cfg.eval_num_simulations
@@ -1575,6 +1591,24 @@ class UniZeroPolicy(MuZeroPolicy):
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
             scores_alpha = getattr(network_output, 'scores_alpha', None)
 
+            # Optionally log alpha_scores for each eval step (only when enabled in config).
+            if self._cfg.log_alpha_scores and scores_alpha is not None:
+                # Lazily open the log file on first use.
+                if self._alpha_log_file is None:
+                    os.makedirs(self._cfg.alpha_log_dir, exist_ok=True)
+                    # One episode per eval call in shapes2d_eval.py, so single file is enough.
+                    log_path = os.path.join(self._cfg.alpha_log_dir, 'alpha_scores_eval.txt')
+                    self._alpha_log_file = open(log_path, 'w')
+
+                # scores_alpha has shape (B, H); for Shapes2d eval B == evaluator_env_num (usually 1).
+                scores_np = scores_alpha.detach().cpu().numpy()
+                for env_idx in range(scores_np.shape[0]):
+                    values_str = ' '.join(f'{v:.6f}' for v in scores_np[env_idx])
+                    # timestep is a list-like with per-env step indices.
+                    step_idx = int(timestep[env_idx]) if isinstance(timestep, (list, np.ndarray)) else int(timestep)
+                    self._alpha_log_file.write(f'env={env_idx} step={step_idx} alpha=[{values_str}]\n')
+                self._alpha_log_file.flush()
+
             # if not in training, obtain the scalars of the value/reward
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()  # shape（B, 1）
             latent_state_roots = latent_state_roots.detach().cpu().numpy()
@@ -1618,6 +1652,18 @@ class UniZeroPolicy(MuZeroPolicy):
                     predicted_next = self._eval_model.tokenizer.decode_to_plain_text(embeddings=next_latent_state, max_length=256)
                 else:
                     predicted_next = None
+
+                if self._log_unizero_slots and self._cfg.model.model_type == 'slot':
+                    slots_t = next_latent_state
+                    if isinstance(slots_t, torch.Tensor):
+                        slots_t = slots_t.detach()
+                        # Handle potential batch dim like (1, num_slots, slot_dim)
+                        if slots_t.ndim == 3 and slots_t.shape[0] == 1:
+                            slots_t = slots_t.squeeze(0)
+                        slots_np = slots_t.cpu().numpy().astype(np.float32)
+                    else:
+                        slots_np = np.asarray(slots_t, dtype=np.float32)
+                    self._unizero_slots_buffer[int(env_id)].append(slots_np)
 
                 output[env_id] = {
                     'action': action,
@@ -1728,6 +1774,18 @@ class UniZeroPolicy(MuZeroPolicy):
 
             # The key condition: `current_steps` is None only on the end-of-episode reset call from the evaluator.
             if current_steps is None:
+                # Flush logged UniZero predicted slots for the finished episode(s).
+                if getattr(self, '_log_unizero_slots', False) and getattr(self._cfg, 'model', None) is not None and self._cfg.model.model_type == 'slot':
+                    for _env_id in env_ids_to_reset:
+                        buf = self._unizero_slots_buffer.get(int(_env_id), [])
+                        if len(buf) > 0:
+                            slots_np = np.stack(buf, axis=0)  # (T, num_slots, slot_dim)
+                            ep_idx = int(self._unizero_slots_episode[int(_env_id)])
+                            out_path = os.path.join(self._unizero_slots_dir, f'unizero_slots_env{int(_env_id)}_episode{ep_idx:03d}.npy')
+                            np.save(out_path, slots_np)
+                            self._unizero_slots_buffer[int(_env_id)] = []
+                            self._unizero_slots_episode[int(_env_id)] = ep_idx + 1
+
                 world_model = self._eval_model.world_model
 
                 # The recurrent cache is global.

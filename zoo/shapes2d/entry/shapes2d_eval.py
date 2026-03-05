@@ -110,6 +110,10 @@ def build_config(env_id='Navigation5x5-v0'):
             evaluator_env_num=evaluator_env_num,
             eval_freq=int(5e3),
             replay_buffer_size=int(5e5),
+            log_alpha_scores=True,
+            alpha_log_dir='./visuals',
+            log_unizero_slots=True,
+            unizero_slots_dir='./visuals',
         ),
     ))
 
@@ -145,7 +149,7 @@ if __name__ == "__main__":
     # If no path is provided, the script will use the default model.
     model_path = None
     # seeds is a list of seed values for the random number generator, used to initialize the environment.
-    seeds = [0, 7, 42]
+    seeds = [0]
     # num_episodes_each_seed is the number of episodes to run for each seed.
     num_episodes_each_seed = 1
     # total_test_episodes is the total number of test episodes, calculated as the product of the number of seeds and the number of episodes per seed
@@ -163,7 +167,7 @@ if __name__ == "__main__":
     # A boolean flag indicating whether to save the video of the environment.
     main_config.env.save_replay = True
     # The path where the recorded video will be saved.
-    main_config.env.replay_path = './video'
+    main_config.env.replay_path = './visuals'
     # The maximum number of steps for each episode during evaluation. This may need to be adjusted based on the specific characteristics of the environment.
     main_config.env.eval_max_episode_steps = int(100)
 
