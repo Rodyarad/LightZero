@@ -693,11 +693,12 @@ class WorldModel(nn.Module):
             else:
                 module_to_initialize = [self.head_value, self.head_rewards, self.head_observations]
 
-        if hasattr(self, "head_policy"):
-            module_to_initialize.append(self.head_policy)
+            if not self.continuous_action_space:
+                if hasattr(self, "head_policy"):
+                    module_to_initialize.append(self.head_policy)
 
-        if hasattr(self, "heads_policy"):
-            module_to_initialize.extend(self.heads_policy.values())
+                if hasattr(self, "heads_policy"):
+                    module_to_initialize.extend(self.heads_policy.values())
 
 
             for head in module_to_initialize:
@@ -849,7 +850,7 @@ class WorldModel(nn.Module):
         elif "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
             # Process combined inputs for continue epsiodes for root in mcts
             if self.continuous_action_space:
-                sequences, num_steps = self._process_obs_act_combined_cont(obs_embeddings_or_act_tokens)
+                sequences, num_steps = self._process_obs_act_combined_cont(obs_embeddings_or_act_tokens, True)
             else:
                 sequences, num_steps = self._process_obs_act_combined(obs_embeddings_or_act_tokens, True)
 
@@ -943,9 +944,7 @@ class WorldModel(nn.Module):
             if len(act_tokens.shape) == 2:  # TODO
                 act_tokens = act_tokens.unsqueeze(-1)
         act_embeddings = self.act_embedding_table(act_tokens)
-        act_embeddings = act_embeddings.view(B, L, E)
-
-        B, L, K, E = obs_embeddings.size()
+        act_embeddings = act_embeddings.reshape(B, -1, E)[:, :L, :]
 
         if self.model_type == 'slot':
             act_embeddings = act_embeddings.unsqueeze(2).expand(B, L, K, E)
@@ -958,7 +957,6 @@ class WorldModel(nn.Module):
         else:
             obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
 
-        act_embeddings = act_embeddings[:, :L, :, :]
         slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
         slot_acts = slot_acts.view(-1, E * 2)
         act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
@@ -1178,7 +1176,7 @@ class WorldModel(nn.Module):
             last_steps_scores_alpha = outputs_wm.scores_alpha[:, -1:, :]
             outputs_wm.scores_alpha = torch.cat((outputs_wm.scores_alpha, last_steps_scores_alpha), dim=1)
 
-            outputs_wm.scores_alpha = rearrange(outputs_wm.scores_alpha, 'b t h -> (b t) h')
+            #outputs_wm.scores_alpha = rearrange(outputs_wm.scores_alpha, 'b t h -> (b t) h')
 
             if self.model_type == 'slot':
                 for name, logits in outputs_wm.logits_policy.items():
@@ -1974,7 +1972,7 @@ class WorldModel(nn.Module):
         labels_value = target_value.masked_fill(mask_fill_value, -100)
 
         if self.continuous_action_space:
-            return None, labels_value.reshape(-1, self.support_size)
+            return None, labels_value.reshape(-1, self.support_size), None
         else:
             return labels_policy.reshape(-1, self.action_space_size), labels_value.reshape(-1, self.support_size), target_policy
 

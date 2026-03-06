@@ -317,6 +317,35 @@ class SampledUniZeroModel(nn.Module):
         print(f'{"TOTAL":<30} {total_params:>15,} {total_trainable:>15,} {"100.0%":>15}')
         print(f'{"=" * 80}\n')
 
+    def _pack_slot_continuous_moe(
+        self,
+        logits_policy: dict,
+        scores_alpha: torch.Tensor,
+        B,
+    ) -> torch.Tensor:
+        if B > 2:
+            import ipdb; ipdb.set_trace()
+
+        B, T, H = scores_alpha.shape
+
+        head_names = sorted(
+            logits_policy.keys(),
+            key=lambda n: int(n.split('_')[1])
+        )
+
+        # stack: (B, T, H, 2A)
+        policy_logits = torch.stack(
+            [logits_policy[name].view(B, T, self.action_space_size*2) for name in head_names],
+            dim=2
+        )
+
+        scores_alpha = scores_alpha.view(B, T, H, 1)
+
+        # (B, T, H, 1+2A)
+        heads_packed = torch.cat([scores_alpha, policy_logits], dim=-1)
+        # (B, T, H*(1+2A))
+        return heads_packed.view(B, T, -1)
+
     def initial_inference(self, obs_batch: torch.Tensor, action_batch: Optional[torch.Tensor] = None, 
                           current_obs_batch: Optional[torch.Tensor] = None) -> MZNetworkOutput:
         """
@@ -348,8 +377,9 @@ class SampledUniZeroModel(nn.Module):
         batch_size = obs_batch.size(0)
         obs_act_dict = {'obs': obs_batch, 'action': action_batch, 'current_obs': current_obs_batch}
         _, obs_token, logits_rewards, logits_policy, logits_value, scores_alpha = self.world_model.forward_initial_inference(obs_act_dict)
+        moe_packed = self._pack_slot_continuous_moe(logits_policy, scores_alpha, scores_alpha.shape[0])
+        policy_logits = moe_packed.squeeze(1)
         scores_alpha = scores_alpha.squeeze(1)  # (B, H)
-        policy_logits = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
         latent_state, reward, value = obs_token, logits_rewards, logits_value
         value = value.squeeze(1)
 
@@ -389,12 +419,14 @@ class SampledUniZeroModel(nn.Module):
             - next_latent_state (:obj:`torch.Tensor`): :math:`(B, H_, W_)`, where B is batch_size, H_ is the height of \
                 latent state, W_ is the width of latent state.
         """
+        batch_size = state_action_history[-1][0].shape[0]
         if search_depth is None:
             search_depth = []
         _, logits_observations, logits_rewards, logits_policy, logits_value, scores_alpha = self.world_model.forward_recurrent_inference(
             state_action_history, simulation_index, search_depth)
+        moe_packed = self._pack_slot_continuous_moe(logits_policy, scores_alpha, batch_size)
+        policy_logits = moe_packed.squeeze(1)
         scores_alpha = scores_alpha.squeeze(1)  # (B, H)
-        policy_logits = {name: logits.squeeze(1) for name, logits in logits_policy.items()}  # each (B, A)
         next_latent_state, reward, value = logits_observations, logits_rewards, logits_value
         value = value.squeeze(1)
         reward = reward.squeeze(1)
