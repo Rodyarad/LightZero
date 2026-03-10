@@ -23,18 +23,6 @@ def _load_synthetic_env_cfg(config_stem: str):
     return cfg
 
 
-def make_target_env_from_yaml():
-    cfg = _load_synthetic_env_cfg("target-N4C4S3S1")
-    env = TargetEnv(cfg, seed=0)
-    return env
-
-
-def make_push_env_from_yaml():
-    cfg = _load_synthetic_env_cfg("push-N3C4S1S1")
-    env = PushEnv(cfg, seed=0)
-    return env
-
-
 class SpriteSyntheticGymEnv(gym.Env):
     """
     Gym-compatible wrapper over the sprite-based synthetic environments (TargetEnv, PushEnv, etc.).
