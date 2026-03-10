@@ -40,6 +40,8 @@ class SpriteSyntheticGymEnv(gym.Env):
     Gym-compatible wrapper over the sprite-based synthetic environments (TargetEnv, PushEnv, etc.).
     It builds the underlying env from a YAML config stem and delegates the Gym API.
     """
+    
+    metadata = {"render_modes": ["rgb_array"], "render.modes": ["rgb_array"]}
 
     def __init__(self, config_stem: str, env_type: str, seed: int = 0):
         cfg = _load_synthetic_env_cfg(config_stem)
@@ -62,6 +64,8 @@ class SpriteSyntheticGymEnv(gym.Env):
         return self._env.step(action)
 
     def render(self, mode=None):
+        if mode is None:
+            mode = "rgb_array"
         return self._env.render(mode=mode)
 
     def close(self):

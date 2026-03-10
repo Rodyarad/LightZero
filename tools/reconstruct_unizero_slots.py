@@ -94,8 +94,8 @@ if __name__ == "__main__":
     reconstruct_from_slots(
         slots_path=slots_path,
         output_dir=output_dir,
-        ocr_config_path="zoo/ocr/slate/config/navigation5x5.yaml",
-        checkpoint_path="zoo/ocr/slate_weights/navigation5x5.pth",
+        ocr_config_path="zoo/ocr/slate/config/slate_ocrl.yaml",
+        checkpoint_path="zoo/ocr/slate_weights/slate_ocrl.pth",
         device="cuda",
     )
 
