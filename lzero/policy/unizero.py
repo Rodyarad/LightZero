@@ -747,8 +747,9 @@ class UniZeroPolicy(MuZeroPolicy):
             logging.info(f"    Steps: {self.encoder_clip_anneal_steps}")
             logging.info("="*20)
         else:
-            # If annealing is not enabled, use a fixed clip threshold
-            self.latent_norm_clip_threshold = self._cfg.latent_norm_clip_threshold
+            if not self._cfg.model.model_type == 'slot':
+                # If annealing is not enabled, use a fixed clip threshold
+                self.latent_norm_clip_threshold = self._cfg.latent_norm_clip_threshold
         # ===================== END: Initialize Encoder-Clip Annealing Parameters =====================
 
         # ==================== START: Initialize Head-Clip Manager ====================
