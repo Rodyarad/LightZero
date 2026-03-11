@@ -9,3 +9,4 @@ export PYTHONFAULTHANDLER=1
 #python3 -u zoo/shapes2d/config/shapes2d_unizero_segment_config_test.py
 #python3 -u zoo/shapes2d/config/shapes2d_objectzero_segment_config_test.py
 python3 -u zoo/causal_world/config/causalworld_soz_segment_config_test.py
+#python3 -u zoo/robosuite/config/robosuite_soz_segment_config_test.py

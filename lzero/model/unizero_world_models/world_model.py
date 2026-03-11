@@ -1548,7 +1548,80 @@ class WorldModel(nn.Module):
 
         if self.model_type == 'slot':
             if self.continuous_action_space:
-                raise NotImplementedError("Not implemented")
+                import ipdb; ipdb.set_trace()
+                B, T = batch['actions'].shape[:2]
+                H = self.num_observations_tokens
+                A = self.action_space_size
+
+                # Gather per-head logits and stack: (B, T, H, 2A)
+                heads_logits_list = [outputs.logits_policy[f'policy_{i}'] for i in range(self.num_observations_tokens)]
+                multi_head_logits = torch.stack(heads_logits_list, dim=2)
+
+                mu, sigma = multi_head_logits.split(A, dim=-1)
+
+                N = B * T
+                mu = mu.view(N, H, A)
+                sigma = sigma.view(N, H, A)
+
+                child_sampled_actions = batch['child_sampled_actions']
+                target_policy = batch['target_policy']
+                mask_batch = batch['mask_padding']  # (B, T)
+
+                K = child_sampled_actions.shape[2]
+
+                child_sampled_actions = child_sampled_actions.reshape(N, K, A)
+                target_policy = target_policy.reshape(N, K)
+                mask_batch = mask_batch.reshape(N).float()
+
+                y = torch.clamp(child_sampled_actions, -0.999, 0.999)  # (N, K, A)
+
+                x = 0.5 * torch.log((1.0 + y) / (1.0 - y))
+
+                mu_e = mu.unsqueeze(1)
+                sigma_e = sigma.unsqueeze(1)
+                x_e = x.unsqueeze(2)
+
+                var_e = sigma_e * sigma_e
+                log_prob_gauss = -((x_e - mu_e) ** 2) / (2.0 * var_e + 1e-8) \
+                    - torch.log(sigma_e + 1e-8) \
+                    - 0.5 * np.log(2.0 * np.pi)
+                log_prob_gauss = log_prob_gauss.sum(dim=-1)  # (N, K, H)
+
+                log_det_jacobian = torch.log(1.0 - y * y + 1e-6).sum(dim=-1, keepdim=True)  # (N, K, 1)
+
+                log_prob = log_prob_gauss - log_det_jacobian  # (N, K, H)
+
+                pred_alpha = outputs.scores_alpha.view(N, H)  # (N, H)
+                pred_alpha_clamped = torch.clamp(pred_alpha, min=1e-6)
+                log_alpha = torch.log(pred_alpha_clamped)  # (N, H)
+
+                log_terms = log_alpha.unsqueeze(1) + log_prob  # (N, K, H)
+                log_p_mix = torch.logsumexp(log_terms, dim=-1)  # (N, K)
+
+                policy_loss_per_state = -torch.sum(
+                    target_policy.detach() * log_p_mix, dim=1
+                )  # (N,)
+                policy_loss = policy_loss_per_state * mask_batch  # (N,)
+
+                policy_entropy_state = -torch.sum(
+                    target_policy.detach() * log_p_mix, dim=1
+                )  # (N,)
+
+                policy_entropy_loss = -policy_entropy_state * mask_batch  # (N,)
+                policy_entropy = -policy_entropy_loss  # (N,)
+
+                probs_per_head = torch.exp(log_prob)  # (N, K, H)
+                weighted_probs = target_policy.unsqueeze(-1) * probs_per_head  # (N, K, H)
+                alpha_target = weighted_probs.sum(dim=1)  # (N, H)
+                alpha_target = alpha_target / (alpha_target.sum(dim=-1, keepdim=True) + 1e-8)
+
+                loss_head_selection = -(alpha_target.detach() * torch.log(pred_alpha_clamped + 1e-8)).sum(dim=-1)  # (N,)
+                loss_head_selection = loss_head_selection * mask_batch
+
+                target_sampled_actions = child_sampled_actions
+
+                orig_policy_loss = policy_loss
+                loss_policy = orig_policy_loss + self.policy_entropy_weight * policy_entropy_loss
             else:
                 heads_logits_list = [outputs.logits_policy[f'policy_{i}'] for i in range(self.num_observations_tokens)]
                 multi_head_logits = torch.stack(heads_logits_list, dim=2)
@@ -1693,7 +1766,7 @@ class WorldModel(nn.Module):
                 obs_embeddings=detached_obs_embeddings,
                 logits_value=outputs.logits_value.detach(), 
                 logits_reward=outputs.logits_rewards.detach(),
-                logits_policy=outputs.logits_policy.detach(),
+                #logits_policy=outputs.logits_policy,
             )
         else:
             return LossWithIntermediateLosses(
