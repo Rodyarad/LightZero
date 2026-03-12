@@ -315,49 +315,133 @@ namespace tree
         unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
         std::default_random_engine generator(seed);
 
-         /*
-        Overview:
-            When the current env has continuous action space, sample K actions from continuous Gaussian distribution policy.
-            When the current env has discrete action space, sample K actions from discrete categorical distribution policy.
-        */
         if (this->continuous_action_space == true)
         {
-            // The action space size is half of the policy_logits (the first half is the mean, and the second half is the standard deviation).
-            this->action_space_size = policy_logits.size() / 2;
+            // Base dimension for a single Gaussian: [mu (A), sigma (A)]
+            const int base_dim = 2 * this->action_space_size;
 
-            std::vector<float> mu(this->action_space_size, 0.0f);
-            std::vector<float> sigma(this->action_space_size, 0.0f);
-            for (int i = 0; i < this->action_space_size; ++i) {
-                mu[i] = policy_logits[i];
-                sigma[i] = policy_logits[this->action_space_size + i];
+            // Single Gaussian
+            if (action_num == base_dim)
+            {
+                std::vector<float> mu(this->action_space_size, 0.0f);
+                std::vector<float> sigma(this->action_space_size, 0.0f);
+                for (int i = 0; i < this->action_space_size; ++i) {
+                    mu[i]    = policy_logits[i];
+                    sigma[i] = policy_logits[this->action_space_size + i];
+                }
+
+                int num_samples = this->num_of_sampled_actions;
+                auto sampled_standard = CNode::sample_actions(
+                    mu, sigma, num_samples, std_magnification_normal, clamp_limit, generator
+                );
+                sampled_actions_after_tanh = sampled_standard.first;
+                sampled_actions_log_probs_after_tanh = sampled_standard.second;
             }
+            // MoE
+            else
+            {
+                const int per_expert_dim = 1 + base_dim; // [alpha_h, mu_h(A), sigma_h(A)]
 
-             // TODO: Test the performance of the two sets of samples.
-////             int half_sample = this->num_of_sampled_actions - 1;
-////             int remaining = 1;
-//             // int half_sample = this->num_of_sampled_actions * 9/10;
-//             // int remaining = this->num_of_sampled_actions * 1/10;
-//             // The first half of the samples are drawn from the standard Gaussian distribution.
-//             auto sampled_standard = CNode::sample_actions(mu, sigma, half_sample, std_magnification_normal, clamp_limit, generator);
-//             // The second half of the samples are drawn from the flat Gaussian distribution.
-//             auto sampled_flat = CNode::sample_actions(mu, sigma, remaining, std_magnification_flat, clamp_limit, generator);
-//             // Merge the two sets of samples.
-//             sampled_actions_after_tanh = sampled_standard.first;
-//             sampled_actions_log_probs_after_tanh = sampled_standard.second;
-//             sampled_actions_after_tanh.insert(sampled_actions_after_tanh.end(),
-//                                             sampled_flat.first.begin(),
-//                                             sampled_flat.first.end());
-//             sampled_actions_log_probs_after_tanh.insert(sampled_actions_log_probs_after_tanh.end(),
-//                                                         sampled_flat.second.begin(),
-//                                                         sampled_flat.second.end());
+                if (action_num % per_expert_dim != 0)
+                {
+                    throw std::runtime_error(
+                        "CNode::expand (continuous, MoE): invalid policy_logits size, "
+                        "must be H * (1 + 2 * action_space_size)."
+                    );
+                }
 
-            // TODO: original case
-            int half_sample = this->num_of_sampled_actions;
-            // The samples are drawn from the standard Gaussian distribution.
-            auto sampled_standard = CNode::sample_actions(mu, sigma, half_sample, std_magnification_normal, clamp_limit, generator);
-            sampled_actions_after_tanh = sampled_standard.first;
-            sampled_actions_log_probs_after_tanh = sampled_standard.second;
+                const int num_experts = action_num / per_expert_dim;
 
+                std::vector<float> alpha(num_experts, 0.0f);
+                for (int h = 0; h < num_experts; ++h)
+                {
+                    float a = policy_logits[h];
+                    if (a < 0.0f) a = 0.0f;
+                    alpha[h] = a;
+                }
+
+                std::vector<std::vector<float>> mus(
+                    num_experts, std::vector<float>(this->action_space_size, 0.0f));
+                std::vector<std::vector<float>> sigmas(
+                    num_experts, std::vector<float>(this->action_space_size, 0.0f));
+
+                for (int h = 0; h < num_experts; ++h)
+                {
+
+                    int expert_offset = num_experts + h * base_dim;
+                    for (int j = 0; j < this->action_space_size; ++j)
+                    {
+                        mus[h][j]    = policy_logits[expert_offset + j];
+                        sigmas[h][j] = policy_logits[expert_offset + this->action_space_size + j];
+                    }
+                }
+
+                auto log_prob_tanh_gaussian =
+                    [&](int h, const std::vector<float>& action_after_tanh) -> float
+                {
+                    const float two_pi = 2.0f * static_cast<float>(M_PI);
+                    float log_p_before = 0.0f;
+                    float log_det_jac  = 0.0f;
+
+                    for (int j = 0; j < this->action_space_size; ++j)
+                    {
+                        float y = action_after_tanh[j];
+                        float y_clamped = clamp(y, -0.999f, 0.999f);
+                        float x = 0.5f * std::log((1.0f + y_clamped) / (1.0f - y_clamped));
+
+                        float mu_ij    = mus[h][j];
+                        float sigma_ij = sigmas[h][j];
+                        float sigma_sq = sigma_ij * sigma_ij;
+
+                        float log_prob_j = -std::pow(x - mu_ij, 2) / (2.0f * sigma_sq)
+                                        - std::log(sigma_ij)
+                                        - 0.5f * std::log(two_pi);
+                        log_p_before += log_prob_j;
+
+                        float dy_dx = 1.0f - y_clamped * y_clamped + 1e-6f;
+                        log_det_jac += std::log(dy_dx);
+                    }
+
+                    return log_p_before - log_det_jac;  // log p_h(a)
+                };
+
+                std::discrete_distribution<int> expert_dist(alpha.begin(), alpha.end());
+
+                for (int k = 0; k < this->num_of_sampled_actions; ++k)
+                {
+                    int h_chosen = expert_dist(generator);  // h ~ Cat(alpha)
+
+                    auto sampled_one = CNode::sample_actions(
+                        mus[h_chosen], sigmas[h_chosen], 1,
+                        std_magnification_normal, clamp_limit, generator
+                    );
+
+                    const std::vector<float>& a_after_tanh = sampled_one.first[0];
+                    sampled_actions_after_tanh.push_back(a_after_tanh);
+
+                    // log p_mix(a) = log Σ_h alpha_h * p_h(a)
+                    float log_p_mix = -std::numeric_limits<float>::infinity();
+                    for (int h = 0; h < num_experts; ++h)
+                    {
+                        float alpha_h = std::max(alpha[h], 1e-6f);
+                        float log_p_h = log_prob_tanh_gaussian(h, a_after_tanh);
+                        float log_term = std::log(alpha_h) + log_p_h;
+
+                        if (log_p_mix == -std::numeric_limits<float>::infinity())
+                        {
+                            log_p_mix = log_term;
+                        }
+                        else
+                        {
+                            float m = std::max(log_p_mix, log_term);
+                            log_p_mix = m + std::log(
+                                std::exp(log_p_mix - m) + std::exp(log_term - m));
+                        }
+                    }
+
+                    sampled_actions_log_probs_after_tanh.push_back(log_p_mix);
+                }
+            }
         }
         else
         {

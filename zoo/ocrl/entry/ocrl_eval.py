@@ -148,7 +148,7 @@ if __name__ == "__main__":
     # If no path is provided, the script will use the default model.
     model_path = '/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/obj_goal_oc_moe_seed=0.pth.tar'
     # seeds is a list of seed values for the random number generator, used to initialize the environment.
-    seeds = [0]
+    seeds = [21]
     # num_episodes_each_seed is the number of episodes to run for each seed.
     num_episodes_each_seed = 1
     # total_test_episodes is the total number of test episodes, calculated as the product of the number of seeds and the number of episodes per seed

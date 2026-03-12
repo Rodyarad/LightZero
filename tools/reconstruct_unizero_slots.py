@@ -67,17 +67,15 @@ def reconstruct_from_slots(
     slots_tensor = torch.from_numpy(slots_np).to(device=device, dtype=torch.float32)  # (T, N, D)
 
     with torch.no_grad():
-        # _gen_imgs: (B, num_slots, slot_size) -> (B, C, H, W)
-        recons = slate._module._gen_imgs(slots_tensor)  # (T, 3, 64, 64)
 
-    recons = recons.clamp(0, 1).cpu().numpy()  # [0,1], shape (T, C, H, W)
+        recon_dict = slate._module.get_slotwise_reconstructions_from_slots(slots_tensor)
 
+    combined_recons = recon_dict["combined_recons"].clamp(0, 1).cpu().numpy()
     for t in range(T):
-        img_chw = recons[t]           # (C, H, W)
-        img_hwc = np.transpose(img_chw, (1, 2, 0))  # (H, W, C)
+        img_chw = combined_recons[t]  # (C, H, num_slots * W)
+        img_hwc = np.transpose(img_chw, (1, 2, 0))  # (H, W_combined, C)
         img_hwc = (img_hwc * 255.0).astype(np.uint8)
 
-        # OpenCV expects BGR
         img_bgr = cv2.cvtColor(img_hwc, cv2.COLOR_RGB2BGR)
         out_path = os.path.join(output_dir, f"slot_recon_{t:04d}.jpg")
         ok = cv2.imwrite(out_path, img_bgr)
