@@ -1548,7 +1548,6 @@ class WorldModel(nn.Module):
 
         if self.model_type == 'slot':
             if self.continuous_action_space:
-                import ipdb; ipdb.set_trace()
                 B, T = batch['actions'].shape[:2]
                 H = self.num_observations_tokens
                 A = self.action_space_size
