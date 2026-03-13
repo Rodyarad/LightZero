@@ -323,8 +323,6 @@ class SampledUniZeroModel(nn.Module):
         scores_alpha: torch.Tensor,
         B,
     ) -> torch.Tensor:
-        if B > 2:
-            import ipdb; ipdb.set_trace()
 
         B, T, H = scores_alpha.shape
 
