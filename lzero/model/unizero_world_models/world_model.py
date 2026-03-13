@@ -339,6 +339,7 @@ class WorldModel(nn.Module):
         self.num_heads = self.config.num_heads
         self.gamma = self.config.gamma
         self.context_length = self.config.context_length
+        self.context_blocks = self.context_length // self.config.tokens_per_block
         self.dormant_threshold = self.config.dormant_threshold
         self.analysis_dormant_ratio_weight_rank = self.config.analysis_dormant_ratio_weight_rank
         self.tokens_per_block = self.config.tokens_per_block
@@ -1132,14 +1133,14 @@ class WorldModel(nn.Module):
 
         self.obs_history.append(next_obs_embedding.detach())
 
-        if len(self.obs_history) > self.max_blocks:
-            excess = len(self.obs_history) - self.max_blocks
+        if len(self.obs_history) > self.context_blocks:
+            excess = len(self.obs_history) - self.context_blocks
             self.obs_history = self.obs_history[excess:]
 
     def _append_act_to_history(self, action: Any) -> None:
         self.act_history.append(action.detach())
 
-        if len(self.act_history) == self.max_blocks:
+        if len(self.act_history) == self.context_blocks:
             self.act_history = self.act_history[1:]
 
     #@profile
@@ -1159,8 +1160,8 @@ class WorldModel(nn.Module):
         latest_state, action = state_action_history[-1]
         ready_env_num = latest_state.shape[0]
 
-        if len(state_action_history) > self.max_blocks:
-            state_action_history = state_action_history[-self.max_blocks:]
+        if len(state_action_history) > self.context_blocks:
+            state_action_history = state_action_history[-self.context_blocks:]
 
         history_states = []
         history_actions = []
@@ -1193,7 +1194,7 @@ class WorldModel(nn.Module):
                 outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)})
             else:
                 obs_embeddings = torch.cat([obs_embeddings, token.unsqueeze(1)], dim=1)
-                if obs_embeddings.shape[1] > self.max_blocks:
+                if obs_embeddings.shape[1] > self.context_blocks:
                     obs_embeddings = obs_embeddings[:, 1:, :, :]
                     act_tokens = act_tokens[:, 1:, :]
                 outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
