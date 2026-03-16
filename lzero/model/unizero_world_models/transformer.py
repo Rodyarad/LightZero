@@ -301,6 +301,9 @@ class TransformerConfig:
     resid_pdrop: float
     attn_pdrop: float
 
+    model_type: str
+    slots_num: int
+
     # LoRA parameters
     lora_r: int = 0
     lora_alpha: int = 1
@@ -371,7 +374,7 @@ class Transformer(nn.Module):
         x = self.drop(sequences)
 
         for i, block in enumerate(self.blocks):
-            if self.config.attention == "causal":
+            if self.config.attention == "object_causal":
                 x = block(x, probabilities=probabilities)
             else:
                 x = block(x)
@@ -394,6 +397,7 @@ class Block(nn.Module):
             - config (:obj:`TransformerConfig`): The configuration object for the block.
         """
         super().__init__()
+        self.config = config
         self.gru_gating = config.gru_gating
         if self.gru_gating:
             # As in GTrXL, for stabilizing training with recurrence
@@ -403,7 +407,7 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(config.embed_dim)
         self.ln2 = nn.LayerNorm(config.embed_dim)
 
-        if config.attention == "causal":
+        if config.attention == "object_causal":
             self.attn = CausalSelfAttention(config)
         else:
             self.attn = SelfAttention(config)
@@ -463,7 +467,7 @@ class Block(nn.Module):
         Returns:
             - torch.Tensor: Output tensor of shape (batch_size, seq_length, embed_dim).
         """
-        if self.config.attention == "causal":
+        if self.config.attention == "object_causal":
             attn_output = self.attn(self.ln1(x), probabilities)
         else:
             attn_output = self.attn(self.ln1(x))
@@ -658,12 +662,12 @@ class CausalSelfAttention(nn.Module):
         self.g_matrix = torch.tensor([[1, 1, 0],
                                       [0, 1, 0],
                                       [0, 0, 1]], dtype=torch.float32)
-        self.slots_num = self.config.slots_num
+        self.slots_num = config.slots_num
 
         self.attn_drop = nn.Dropout(config.attn_pdrop)
         self.resid_drop = nn.Dropout(config.resid_pdrop)
 
-        mask_size = config.max_tokens
+        mask_size = self.slots_num + 1
         mask = torch.ones(mask_size, mask_size)
         self.register_buffer('mask', mask)
 
@@ -673,7 +677,7 @@ class CausalSelfAttention(nn.Module):
             Performs the forward pass for the causal self-attention mechanism.
         Arguments:
             - x (:obj:`torch.Tensor`): Input tensor of shape (B, T, C).
-            - probabilities (:obj:`torch.Tensor`): Causality scores p_k_t for each slot.
+            - probabilities (:obj:`torch.Tensor`): Causality scores p_k_t.
         Returns:
             - torch.Tensor: Output tensor of shape (B, T, C).
         """

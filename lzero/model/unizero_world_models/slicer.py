@@ -242,3 +242,67 @@ class AggregationPolicyHeadCont(Slicer):
         output = torch.cat([output['mu'], output['sigma']], dim=-1)
 
         return output
+    
+class CausalHead(Slicer):
+
+    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module, transformer_module: nn.Module) -> None:
+        super().__init__(max_blocks, block_mask)
+        assert isinstance(head_module, nn.Module)
+        self.head_module = head_module
+        self.transformer_module = transformer_module
+
+    def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int,
+                probabilities: torch.Tensor, cls_embed: torch.Tensor) -> torch.Tensor:
+
+        selected_token_indices = self.compute_slice(num_steps, prev_steps)
+        selected_tokens = x[:, selected_token_indices, :]
+        B, num_selected, E = selected_tokens.shape
+        K = self.num_kept_tokens
+        L = num_selected // K
+
+        tokens_grouped = selected_tokens.view(B, L, K, E)
+        probs_grouped = probabilities.view(B, L, K, 2)
+
+        cls_expanded = cls_embed.view(1, 1, 1, E).expand(B, L, 1, E)
+        tokens_with_cls = torch.cat([cls_expanded, tokens_grouped], dim=2)  # (B, L, K+1, E)
+
+        seq = tokens_with_cls.view(B * L, K + 1, E)
+        probs_flat = probs_grouped.reshape(B * L, K, 2)
+
+        seq = self.transformer_module(seq, probabilities=probs_flat)
+
+        cls_outputs = seq[:, 0, :].view(B, L, E)
+        return self.head_module(cls_outputs)
+    
+class CausalPolicyHeadCont(Slicer):
+
+    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module, transformer_module: nn.Module) -> None:
+        super().__init__(max_blocks, block_mask)
+        assert isinstance(head_module, nn.Module)
+        self.head_module = head_module
+        self.transformer_module = transformer_module
+
+    def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int,
+                probabilities: torch.Tensor, cls_embed: torch.Tensor) -> torch.Tensor:
+        selected_token_indices = self.compute_slice(num_steps, prev_steps)
+        selected_tokens = x[:, selected_token_indices, :]
+        B, num_selected, E = selected_tokens.shape
+        K = self.num_kept_tokens
+        L = num_selected // K
+
+        tokens_grouped = selected_tokens.view(B, L, K, E)
+        probs_grouped = probabilities.view(B, L, K, 2)
+
+        cls_expanded = cls_embed.view(1, 1, 1, E).expand(B, L, 1, E)
+        tokens_with_cls = torch.cat([cls_expanded, tokens_grouped], dim=2)
+
+        seq = tokens_with_cls.view(B * L, K + 1, E)
+        probs_flat = probs_grouped.reshape(B * L, K, 2)
+
+        seq = self.transformer_module(seq, probabilities=probs_flat)
+
+        cls_outputs = seq[:, 0, :].view(B, L, E)
+
+        output = self.head_module(cls_outputs)
+        output = torch.cat([output['mu'], output['sigma']], dim=-1)
+        return output

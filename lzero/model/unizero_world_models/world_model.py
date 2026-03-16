@@ -3,6 +3,7 @@ import logging
 import os
 from collections import OrderedDict, defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
+from copy import deepcopy
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,7 +21,7 @@ from torch.distributions import (Categorical, Independent, Normal,
                                  TanhTransform, TransformedDistribution)
 
 from .kv_caching import KeysValues
-from .slicer import Head, PolicyHeadCont, AggregationHead, AggregationPolicyHeadCont
+from .slicer import Head, PolicyHeadCont, AggregationHead, AggregationPolicyHeadCont, CausalHead, CausalPolicyHeadCont
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
 from .utils import (LossWithIntermediateLosses, WorldModelOutput, hash_state,
@@ -107,6 +108,8 @@ class WorldModel(nn.Module):
 
         # Head modules
         if self.model_type == 'slot':
+            self._init_causal_transformers()
+
             self.head_rewards = self._create_agg_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.act_tokens_pattern, self.obs_per_embdding_dim, \
                                                         self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
@@ -114,11 +117,14 @@ class WorldModel(nn.Module):
             if self.continuous_action_space:
                 self.sigma_type = self.config.sigma_type
                 self.bound_type = self.config.bound_type
-                self.head_policy = self._create_agg_head_cont(self.value_policy_tokens_pattern, self.action_space_size)
+                self.head_policy = self._create_causal_head_cont(self.value_policy_tokens_pattern, self.action_space_size, self.causal_policy_transformer)
             else:
-                self.head_policy = self._create_agg_head(self.value_policy_tokens_pattern, self.action_space_size)
-            self.head_value = self._create_agg_head(self.value_policy_tokens_pattern, self.support_size)
-            self.head_proj = self._create_slot_act_head(self.obs_per_embdding_dim)
+                self.head_policy = self._create_causal_head(self.value_policy_tokens_pattern, self.action_space_size, self.causal_policy_transformer)
+            self.head_value = self._create_causal_head(self.value_policy_tokens_pattern, self.support_size, self.causal_value_transformer)
+            self.head_proj = self._create_mlp_head(self.obs_per_embdding_dim * 2, self.obs_per_embdding_dim)
+            self.value_policy_emb = nn.Embedding(2, config.embed_dim, device=self.device)
+            self.head_causal_prob_policy = self._create_head(self.value_policy_tokens_pattern, 1)
+            self.head_causal_prob_value = self._create_head(self.value_policy_tokens_pattern, 1)
         else:
             self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
@@ -526,6 +532,15 @@ class WorldModel(nn.Module):
                 f"'normalize_mean', 'adaptive', 'none'"
             )
 
+    def _init_causal_transformers(self) -> None:
+
+        causal_config = deepcopy(self.config)
+        causal_config.attention = "object_causal"
+        causal_config.slots_num = self.tokens_per_block // 2
+
+        self.causal_policy_transformer = Transformer(causal_config)
+        self.causal_value_transformer = Transformer(causal_config)
+
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
         modules = [
@@ -580,10 +595,10 @@ class WorldModel(nn.Module):
             head_module=nn.Sequential(*modules)
         )
     
-    def _create_slot_act_head(self, output_dim: int):
+    def _create_mlp_head(self, input_dim: int, output_dim: int):
         modules = [
-            nn.LayerNorm(self.config.embed_dim * 2),
-            nn.Linear(self.config.embed_dim * 2, self.config.embed_dim*4),
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, self.config.embed_dim*4),
             nn.LayerNorm(self.config.embed_dim*4),
             nn.GELU(approximate='tanh'),
             nn.Linear(self.config.embed_dim*4, output_dim)
@@ -610,23 +625,41 @@ class WorldModel(nn.Module):
             head_module=self.fc_policy_head
         )
     
-    def _create_agg_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> AggregationPolicyHeadCont:
-        """Create head modules for the transformer."""
+    def _create_causal_head(self, block_mask: torch.Tensor, output_dim: int, transformer_module: nn.Module, norm_layer=None) -> CausalHead:
+
+        modules = [
+            nn.LayerNorm(self.config.embed_dim),
+            nn.Linear(self.config.embed_dim, self.config.embed_dim * 4),
+            nn.LayerNorm(self.config.embed_dim * 4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim * 4, output_dim)
+        ]
+        if norm_layer:
+            modules.append(norm_layer)
+        return CausalHead(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=nn.Sequential(*modules),
+            transformer_module=transformer_module,
+        )
+    
+    def _create_causal_head_cont(self, block_mask: torch.Tensor, output_dim: int, transformer_module: nn.Module, norm_layer=None) -> CausalPolicyHeadCont:
         from ding.model.common import ReparameterizationHead
         self.fc_policy_head = ReparameterizationHead(
             input_size=self.config.embed_dim,
             output_size=output_dim,
-            layer_num=2,  # TODO: check the effect of layer_num
+            layer_num=2,
             sigma_type=self.sigma_type,
             activation=nn.GELU(approximate='tanh'),
             fixed_sigma_value=self.config.fixed_sigma_value if self.sigma_type == 'fixed' else 0.5,
             norm_type=None,
             bound_type=self.bound_type
         )
-        return AggregationPolicyHeadCont(
+        return CausalPolicyHeadCont(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
-            head_module=self.fc_policy_head
+            head_module=self.fc_policy_head,
+            transformer_module=transformer_module,
         )
 
     def _initialize_last_layer(self) -> None:
@@ -799,16 +832,25 @@ class WorldModel(nn.Module):
         # Generate logits for various components.
         logits_observations = self.head_observations(x, num_steps, 0)
         logits_rewards = self.head_rewards(x, num_steps, 0)
-        logits_policy = self.head_policy(x, num_steps, 0)
+
+        if self.model_type == 'slot':
+            policy_causality = torch.sigmoid(self.head_causal_prob_policy(x, num_steps, 0))
+            policy_probs = torch.cat([policy_causality, 1.0 - policy_causality], dim=-1)
+
+            value_causality = torch.sigmoid(self.head_causal_prob_value(x, num_steps, 0))
+            value_probs = torch.cat([value_causality, 1.0 - value_causality], dim=-1)
+
+            logits_policy = self.head_policy(x, num_steps, 0, policy_probs, self.value_policy_emb.weight[0])
+            logits_value = self.head_value(x, num_steps, 0, value_probs, self.value_policy_emb.weight[1])
+        else:
+            logits_policy = self.head_policy(x, num_steps, 0)
+            logits_value = self.head_value(x, num_steps, 0)
 
         # ==================== [NEW] Advanced Policy Logits Control ====================
         # Apply configurable policy logits control to prevent explosion
         # Multiple methods available: hard, soft_tanh, soft_sigmoid, normalize_max, etc.
         if self.use_policy_logits_clip:
             logits_policy = self._apply_policy_logits_control(logits_policy)
-        # ================================================================================
-
-        logits_value = self.head_value(x, num_steps, 0)
 
         if "last_obs_embeddings_act_tokens_and_current_obs" in obs_embeddings_or_act_tokens:
             logits_policy = logits_policy[:,-1:,:]
