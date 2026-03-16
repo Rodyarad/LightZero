@@ -537,6 +537,8 @@ class WorldModel(nn.Module):
         causal_config = deepcopy(self.config)
         causal_config.attention = "object_causal"
         causal_config.slots_num = self.tokens_per_block // 2
+        causal_config.num_layers = 1
+        causal_config.num_heads = 4
 
         self.causal_policy_transformer = Transformer(causal_config)
         self.causal_value_transformer = Transformer(causal_config)
