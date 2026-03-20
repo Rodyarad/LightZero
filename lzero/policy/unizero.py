@@ -1527,8 +1527,10 @@ class UniZeroPolicy(MuZeroPolicy):
         self._alpha_log_file = None
         self._log_unizero_slots = getattr(self._cfg, 'log_unizero_slots', False)
         self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals')
-        self._unizero_slots_buffer = defaultdict(list)  # env_id -> [np.ndarray(num_slots, slot_dim), ...]
-        self._unizero_slots_episode = defaultdict(lambda: 1)  # env_id -> episode index (1-based)
+        self._dynamics_slots_buffer = defaultdict(list)  # env_id -> [np.ndarray(num_slots, slot_dim), ...]
+        self._dynamics_slots_episode = defaultdict(lambda: 1)
+        self._sa_slots_buffer = defaultdict(list)  # env_id -> [np.ndarray(num_slots, slot_dim), ...]
+        self._sa_slots_episode = defaultdict(lambda: 1)
         if self._log_unizero_slots:
             os.makedirs(self._unizero_slots_dir, exist_ok=True)
 
@@ -1655,16 +1657,22 @@ class UniZeroPolicy(MuZeroPolicy):
                     predicted_next = None
 
                 if self._log_unizero_slots and self._cfg.model.model_type == 'slot':
-                    slots_t = next_latent_state
-                    if isinstance(slots_t, torch.Tensor):
-                        slots_t = slots_t.detach()
-                        # Handle potential batch dim like (1, num_slots, slot_dim)
-                        if slots_t.ndim == 3 and slots_t.shape[0] == 1:
-                            slots_t = slots_t.squeeze(0)
-                        slots_np = slots_t.cpu().numpy().astype(np.float32)
+                    # Save slot-attention (encoder) slots from initial_inference
+                    sa_slots = latent_state_roots[i]  # already numpy (num_slots, slot_dim)
+                    self._sa_slots_buffer[int(env_id)].append(
+                        np.asarray(sa_slots, dtype=np.float32).copy()
+                    )
+
+                    # Save dynamics-model predicted slots
+                    dyn_slots = next_latent_state
+                    if isinstance(dyn_slots, torch.Tensor):
+                        dyn_slots = dyn_slots.detach()
+                        if dyn_slots.ndim == 3 and dyn_slots.shape[0] == 1:
+                            dyn_slots = dyn_slots.squeeze(0)
+                        dyn_slots_np = dyn_slots.cpu().numpy().astype(np.float32)
                     else:
-                        slots_np = np.asarray(slots_t, dtype=np.float32)
-                    self._unizero_slots_buffer[int(env_id)].append(slots_np)
+                        dyn_slots_np = np.asarray(dyn_slots, dtype=np.float32)
+                    self._dynamics_slots_buffer[int(env_id)].append(dyn_slots_np)
 
                 output[env_id] = {
                     'action': action,
@@ -1778,14 +1786,27 @@ class UniZeroPolicy(MuZeroPolicy):
                 # Flush logged UniZero predicted slots for the finished episode(s).
                 if getattr(self, '_log_unizero_slots', False) and getattr(self._cfg, 'model', None) is not None and self._cfg.model.model_type == 'slot':
                     for _env_id in env_ids_to_reset:
-                        buf = self._unizero_slots_buffer.get(int(_env_id), [])
-                        if len(buf) > 0:
-                            slots_np = np.stack(buf, axis=0)  # (T, num_slots, slot_dim)
-                            ep_idx = int(self._unizero_slots_episode[int(_env_id)])
-                            out_path = os.path.join(self._unizero_slots_dir, f'unizero_slots_env{int(_env_id)}_episode{ep_idx:03d}.npy')
-                            np.save(out_path, slots_np)
-                            self._unizero_slots_buffer[int(_env_id)] = []
-                            self._unizero_slots_episode[int(_env_id)] = ep_idx + 1
+                        eid = int(_env_id)
+
+                        # Flush dynamics-model predicted slots
+                        dyn_buf = self._dynamics_slots_buffer.get(eid, [])
+                        if len(dyn_buf) > 0:
+                            dyn_np = np.stack(dyn_buf, axis=0)  # (T, num_slots, slot_dim)
+                            ep_idx = int(self._dynamics_slots_episode[eid])
+                            out_path = os.path.join(self._unizero_slots_dir, f'dynamics_slots_env{eid}_episode{ep_idx:03d}.npy')
+                            np.save(out_path, dyn_np)
+                            self._dynamics_slots_buffer[eid] = []
+                            self._dynamics_slots_episode[eid] = ep_idx + 1
+
+                        # Flush slot-attention (encoder) slots
+                        sa_buf = self._sa_slots_buffer.get(eid, [])
+                        if len(sa_buf) > 0:
+                            sa_np = np.stack(sa_buf, axis=0)  # (T, num_slots, slot_dim)
+                            ep_idx = int(self._sa_slots_episode[eid])
+                            out_path = os.path.join(self._unizero_slots_dir, f'sa_slots_env{eid}_episode{ep_idx:03d}.npy')
+                            np.save(out_path, sa_np)
+                            self._sa_slots_buffer[eid] = []
+                            self._sa_slots_episode[eid] = ep_idx + 1
 
                 world_model = self._eval_model.world_model
 
