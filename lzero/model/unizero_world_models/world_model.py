@@ -842,6 +842,9 @@ class WorldModel(nn.Module):
             value_causality = torch.sigmoid(self.head_causal_prob_value(x, num_steps, 0))
             value_probs = torch.cat([value_causality, 1.0 - value_causality], dim=-1)
 
+            self._last_policy_causality = policy_causality[:, -self.num_observations_tokens:, :].detach()
+            self._last_value_causality = value_causality[:, -self.num_observations_tokens:, :].detach()
+
             logits_policy = self.head_policy(x, num_steps, 0, policy_probs, self.value_policy_emb.weight[0])
             logits_value = self.head_value(x, num_steps, 0, value_probs, self.value_policy_emb.weight[1])
         else:

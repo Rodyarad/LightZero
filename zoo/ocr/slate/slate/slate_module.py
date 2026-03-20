@@ -258,6 +258,60 @@ class SLATE_Module(nn.Module):
             recon_tf = self._gen_imgs(slots)
             return {"samples": for_viz(visualize([obs, recon, recon_tf, attns]))}
 
+    def get_slotwise_reconstructions_from_slots(self, slots: Tensor) -> dict:
+        """
+        Given precomputed slot representations, decode each slot separately and
+        also return a combined image for all slots.
+
+        Args:
+            slots: Tensor of shape (B, num_slots, slot_size) matching the
+                slot representation expected by the SLATE decoder.
+
+        Returns:
+            A dict containing:
+                - 'per_slot_recons': Tensor of shape (B, num_slots, C, H, W)
+                  with reconstruction for each individual slot.
+                - 'combined_recons': Tensor of shape (B, C, H, num_slots * W)
+                  where per-slot reconstructions are concatenated horizontally.
+                - 'full_recons': Tensor of shape (B, C, H, W) reconstructed
+                  from all slots together (i.e., the standard reconstruction).
+        """
+        B, num_slots, D = slots.shape
+
+        full_recons = self._gen_imgs(slots)  # (B, C, H, W)
+
+        per_slot_recons = []
+        for slot_idx in range(num_slots):
+            masked_slots = slots.new_zeros((B, num_slots, D))
+            masked_slots[:, slot_idx : slot_idx + 1, :] = slots[:, slot_idx : slot_idx + 1, :]
+            recon_slot = self._gen_imgs(masked_slots)  # (B, C, H, W)
+            per_slot_recons.append(recon_slot)
+
+        per_slot_recons = torch.stack(per_slot_recons, dim=1)  # (B, num_slots, C, H, W)
+
+        B, _, C, H, W = per_slot_recons.shape
+        separator_width = 2
+
+        separator = torch.ones(
+            (B, C, H, separator_width),
+            device=per_slot_recons.device,
+            dtype=per_slot_recons.dtype,
+        )
+
+        pieces = []
+        for i in range(num_slots):
+            pieces.append(per_slot_recons[:, i])  # (B, C, H, W)
+            if i < num_slots - 1:
+                pieces.append(separator)
+
+        combined_recons = torch.cat(pieces, dim=-1)  # (B, C, H, num_slots * W + gaps)
+
+        return {
+            "per_slot_recons": per_slot_recons,
+            "combined_recons": combined_recons,
+            "full_recons": full_recons,
+        }
+
     def update_tau(self, step: int) -> None:
         # update tau
         self._tau = cosine_anneal(
