@@ -175,9 +175,7 @@ def train_unizero_segment(
             )
             collect_kwargs['epsilon'] = epsilon_greedy_fn(collector.envstep)
 
-        # Evaluate policy performance
-        if (learner.train_iter == 0 and not did_initial_eval) or evaluator.should_eval(learner.train_iter):
-            #stop, reward = evaluator.eval(learner.save_checkpoint, learner.train_iter, collector.envstep)
+        if (learner.train_iter == 0 and not did_initial_eval) or evaluator.should_eval_by_envstep(collector.envstep):
             stop, reward = evaluator.eval(save_ckpt_with_state, learner.train_iter, collector.envstep)
             save_ckpt_with_state('last_ckpt.pth.tar')
             if stop:
