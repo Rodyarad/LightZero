@@ -15,9 +15,9 @@ class RandomObjsEnv(BaseEnv):
     def _set_objs(self):
         objs = super()._set_objs()
         for n_idx in range(self._num_objects):
-            objs[n_idx][0] = np.random.choice(self._COLORS)
-            objs[n_idx][1] = np.random.choice(self._SHAPES)
-            objs[n_idx][2] = np.random.choice(self._SCALES)
+            objs[n_idx][0] = self.np_random.choice(self._COLORS)
+            objs[n_idx][1] = self.np_random.choice(self._SHAPES)
+            objs[n_idx][2] = self.np_random.choice(self._SCALES)
         objs = self._fill_positions(
             objs,
             agent_eps=self._config.distance_to_agent,
