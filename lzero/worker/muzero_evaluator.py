@@ -151,6 +151,7 @@ class MuZeroEvaluator(ISerialEvaluator):
             self.reset_policy(_policy)
         self._max_episode_return = float("-inf")
         self._last_eval_iter = 0
+        self._last_eval_envstep = 0
         self._end_flag = False
 
     def close(self) -> None:
@@ -188,6 +189,15 @@ class MuZeroEvaluator(ISerialEvaluator):
         if (train_iter - self._last_eval_iter) < self._eval_freq and train_iter != 0:
             return False
         self._last_eval_iter = train_iter
+        return True
+
+    def should_eval_by_envstep(self, envstep: int) -> bool:
+
+        if envstep == self._last_eval_envstep:
+            return False
+        if (envstep - self._last_eval_envstep) < self._eval_freq and envstep != 0:
+            return False
+        self._last_eval_envstep = envstep
         return True
 
     def eval(
