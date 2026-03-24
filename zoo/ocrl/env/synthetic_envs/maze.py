@@ -42,16 +42,16 @@ class MazeEnv(BaseEnv):
     def _set_objs(self):
         objs = super()._set_objs()
         for n_idx in range(self._num_objects):
-            objs[n_idx][0] = np.random.choice(self._COLORS)
-            objs[n_idx][1] = np.random.choice(self._SHAPES)
-            objs[n_idx][2] = np.random.choice(self._SCALES)
+            objs[n_idx][0] = self.np_random.choice(self._COLORS)
+            objs[n_idx][1] = self.np_random.choice(self._SHAPES)
+            objs[n_idx][2] = self.np_random.choice(self._SCALES)
         objs = self._fill_positions(
             objs,
             agent_eps=self._config.distance_to_agent,
             objs_eps=self._config.distance_to_objs,
             wall_eps=self._config.distance_to_wall,
         )
-        task_type = self._task_types[np.random.randint(len(self._task_types))]
+        task_type = self._task_types[self.np_random.integers(len(self._task_types))]
         self._goal = task_type[-2:]
         if task_type[0] is not None:
             objs[-1,3:5] = task_type[:2]
@@ -67,9 +67,9 @@ class MazeEnv(BaseEnv):
             is_success = True
         return reward, is_success, done
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         self._dense_rews = [0.1] * len(self._walls)
-        return super().reset()
+        return super().reset(seed=seed, options=options)
 
     def _move_objs(self, idx, delta, eps=1 - 6):
         before_pos = copy.deepcopy(self._objs[-1, idx])
