@@ -2,6 +2,7 @@ import os
 import numpy as np
 from PIL import Image
 from gym import spaces
+from gym.utils import seeding
 from pathlib import Path
 from matplotlib import colors
 from spriteworld import renderers as spriteworld_renderers
@@ -17,7 +18,6 @@ class BaseEnv:
     metadata = {"render.modes": ["rgb_array", "state", "image", "mask"]}
 
     def __init__(self, config, seed):
-        np.random.seed(seed)
         assert config.mode in ["easy", "normal", "hard"]
         assert config.rew_type in ["sparse", "normal", "dense"]
         self._name = config.name
@@ -77,6 +77,12 @@ class BaseEnv:
 
         self._objs = None
         self.step_count = 0
+        self.np_random = None
+        self.seed(seed)
+
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
 
     def _get_position(self, pos_min, pos_max, radius, eps):
         if pos_min == pos_max:
@@ -85,7 +91,7 @@ class BaseEnv:
         #if pos_min + radius + eps > pos_max - radius - eps:
         #    return np.random.uniform(pos_min, pos_max)
         if self._mode == "easy":
-            return np.random.uniform(pos_min, pos_max)
+            return self.np_random.uniform(pos_min, pos_max)
         else:
             # when using specific range
             #if pos_min != 0.0:
@@ -97,7 +103,7 @@ class BaseEnv:
             #    _max = pos_max
             #else:
             _max = pos_max - radius - eps
-            return np.random.uniform(_min, _max)
+            return self.np_random.uniform(_min, _max)
 
     def _fill_positions(
         self,
@@ -125,7 +131,7 @@ class BaseEnv:
             while not found:
                 x = self._get_position(x_min, x_max, radius, wall_eps)
                 if self._skewed:
-                    y = skew_sigma * np.random.randn() + skew_mu
+                    y = skew_sigma * self.np_random.standard_normal() + skew_mu
                     y = np.clip(y, radius + wall_eps, 1 - radius - wall_eps)
                 else:
                     y = self._get_position(y_min, y_max, radius, wall_eps)
@@ -151,7 +157,7 @@ class BaseEnv:
         return objs
 
     def _set_objs(self):
-        self._num_objects = np.random.choice(
+        self._num_objects = self.np_random.choice(
             list(range(self._num_objs_range[0], self._num_objs_range[1] + 1))
         )
 
@@ -301,11 +307,13 @@ class BaseEnv:
                 break
         return reward, is_success, done
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            self.seed(seed)
         self._objs = self._set_objs()
         self.step_count = 0
         if self._use_bg:
-            bg_img_name = self._bg_imgs[np.random.choice(len(self._bg_imgs))]
+            bg_img_name = self._bg_imgs[self.np_random.integers(len(self._bg_imgs))]
             if bg_img_name == "Black":
                 bg_img = Image.new(
                     "RGB", (self._obs_size * 10, self._obs_size * 10), (0, 0, 0)

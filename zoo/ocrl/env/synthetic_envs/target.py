@@ -15,7 +15,7 @@ class TargetEnv(BaseEnv):
 
     def _set_objs(self):
         objs = super()._set_objs()
-        target_obj_idx = self._target_obj_idx = np.random.randint(self._num_objects)
+        target_obj_idx = self._target_obj_idx = self.np_random.integers(self._num_objects)
         for n_idx in range(self._num_objects):
             if n_idx == target_obj_idx:
                 objs[n_idx][0] = self._target[0]
@@ -24,9 +24,9 @@ class TargetEnv(BaseEnv):
             else:
                 found = False
                 while not found:
-                    color = np.random.choice(self._COLORS)
-                    shape = np.random.choice(self._SHAPES)
-                    scale = np.random.choice(self._SCALES)
+                    color = self.np_random.choice(self._COLORS)
+                    shape = self.np_random.choice(self._SHAPES)
+                    scale = self.np_random.choice(self._SCALES)
                     if (
                         self._target[0] == color
                         and self._target[1] == shape

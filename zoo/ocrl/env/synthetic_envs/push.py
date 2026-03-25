@@ -35,9 +35,9 @@ class PushEnv(BaseEnv):
             else:
                 found = False
                 while not found:
-                    color = np.random.choice(self._COLORS)
-                    shape = np.random.choice(self._SHAPES)
-                    scale = np.random.choice(self._SCALES)
+                    color = self.np_random.choice(self._COLORS)
+                    shape = self.np_random.choice(self._SHAPES)
+                    scale = self.np_random.choice(self._SCALES)
                     if (
                         self._target[0] == color
                         and self._target[1] == shape
@@ -64,7 +64,7 @@ class PushEnv(BaseEnv):
     def _get_goal_position(self, radius):
         #goal_positions = [[0.5, 0.5]]
         goal_positions = [[radius, radius]]
-        return goal_positions[np.random.randint(len(goal_positions))]
+        return goal_positions[self.np_random.integers(len(goal_positions))]
 
     def _cal_reward(self, reward, is_success, done, eps=1e-6):
         for i in range(self._num_objects):

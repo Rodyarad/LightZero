@@ -45,8 +45,11 @@ class SpriteSyntheticGymEnv(gym.Env):
         self.action_space = self._env.action_space
         self.observation_space = self._env.observation_space
 
-    def reset(self, **kwargs):
-        return self._env.reset()
+    def seed(self, seed=None):
+        return self._env.seed(seed)
+
+    def reset(self, seed=None, **kwargs):
+        return self._env.reset(seed=seed, **kwargs)
 
     def step(self, action):
         return self._env.step(action)
