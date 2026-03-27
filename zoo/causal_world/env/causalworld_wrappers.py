@@ -20,7 +20,6 @@ from gym.wrappers import RecordVideo
 import torch
 from omegaconf import OmegaConf
 from zoo.causal_world.env.causal_world.cw_envs import CwTargetEnv
-from zoo.ocr.slate.slate import SLATE
 from collections import namedtuple
 
 
@@ -62,14 +61,45 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         env = JpegWrapper(env, transform2string=config.transform2string)
         
     if config.oc_model:
-        config_ocr = OmegaConf.load(config.ocr_config_path)
-        config_env = namedtuple('EnvConfig', ['obs_size', 'obs_channels'])(config.observation_shape[2], 3)
-        slate = SLATE(config_ocr, config_env, observation_space=None, preserve_slot_order=True)
-        state_dict = torch.load(config.checkpoint_path)["ocr_module_state_dict"]
-        slate._module.load_state_dict(state_dict)
-        slate.requires_grad_(False)
-        slate.eval()
-        slot_extractor = SlotExtractor(model=slate, device='cuda', name_model='SLATE')
+        oc_model_type = getattr(config, 'oc_model_type', 'SLATE')
+
+        if oc_model_type == 'SLATE':
+            from zoo.ocr.slate.slate import SLATE
+            config_ocr = OmegaConf.load(config.ocr_config_path)
+            config_env = namedtuple('EnvConfig', ['obs_size', 'obs_channels'])(config.observation_shape[2], 3)
+            slate = SLATE(config_ocr, config_env, observation_space=None, preserve_slot_order=True)
+            state_dict = torch.load(config.checkpoint_path)["ocr_module_state_dict"]
+            slate._module.load_state_dict(state_dict)
+            slate.requires_grad_(False)
+            slate.eval()
+            slot_extractor = SlotExtractor(model=slate, device='cuda', name_model='SLATE')
+
+        elif oc_model_type == 'SAVi':
+            from zoo.ocr.savi import load_savi_from_ckpt
+            config_savi = OmegaConf.load(config.ocr_config_path)
+            image_size = (config.observation_shape[1], config.observation_shape[2])
+            savi = load_savi_from_ckpt(
+                cfg=config_savi,
+                ckpt_path=config.checkpoint_path,
+                image_size=image_size,
+                device='cuda',
+            )
+            savi.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=savi, device='cuda', name_model='SAVi')
+
+        elif oc_model_type == 'SlotContrast':
+            from zoo.ocr.slotcontrast import load_from_checkpoint as load_slotcontrast_from_ckpt
+            slotcontrast = load_slotcontrast_from_ckpt(
+                config_path=config.ocr_config_path,
+                checkpoint_path=config.checkpoint_path,
+                device='cuda',
+            )
+            slotcontrast.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=slotcontrast, device='cuda', name_model='SlotContrast')
+
+        else:
+            raise ValueError(f"Unknown oc_model_type: {oc_model_type}")
+
         env = SlotExtractorWrapper(env, slot_extractor, config.num_slots, config.slot_dim)
 
     return env
@@ -226,6 +256,10 @@ class SlotExtractor:
 
         if self.name_model == 'SLATE':
             slots = self._model._module._get_slots(batch_images, prev_slots=batch_prev_slots).detach()
+        elif self.name_model == 'SAVi':
+            slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
+        elif self.name_model == 'SlotContrast':
+            slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
         else:
             slots = self._model(batch_images, prev_slots=batch_prev_slots).detach()
 

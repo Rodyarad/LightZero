@@ -1,0 +1,59 @@
+experiment_group: slotcontrast
+experiment_name: cw-reaching-hard
+
+globals:
+  NUM_SLOTS: 6
+  SLOT_DIM: 64
+  DINO_MODEL: vit_small_patch14_dinov2
+  FEAT_DIM: 384
+  NUM_PATCHES: 576
+
+model:
+  input_type: video
+
+  initializer:
+    name: FixedLearnedInit
+    n_slots: ${globals.NUM_SLOTS}
+    dim: ${globals.SLOT_DIM}
+
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: ${globals.DINO_MODEL}
+      features:
+      - vit_block12
+      - vit_block_keys12
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: True
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: ${globals.FEAT_DIM}
+      outp_dim: ${globals.SLOT_DIM}
+      hidden_dim: "${mul: ${globals.FEAT_DIM}, 2}"
+      layer_norm: true
+
+  grouper:
+    name: SlotAttention
+    inp_dim: ${globals.SLOT_DIM}
+    slot_dim: ${globals.SLOT_DIM}
+    n_iters: 2
+    use_mlp: true
+
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+
+  decoder:
+    name: MLPDecoder
+    inp_dim: ${globals.SLOT_DIM}
+    outp_dim: ${globals.FEAT_DIM}
+    hidden_dims: [1024, 1024, 1024]
+    n_patches: ${globals.NUM_PATCHES}
+
+  predictor:
+    name: networks.TransformerEncoder
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
