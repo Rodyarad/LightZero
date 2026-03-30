@@ -123,8 +123,8 @@ class WorldModel(nn.Module):
             self.head_value = self._create_causal_head(self.value_policy_tokens_pattern, self.support_size, self.causal_value_transformer)
             self.head_proj = self._create_mlp_head(self.obs_per_embdding_dim * 2, self.obs_per_embdding_dim)
             self.value_policy_emb = nn.Embedding(2, config.embed_dim, device=self.device)
-            self.head_causal_prob_policy = self._create_head(self.value_policy_tokens_pattern, 1)
-            self.head_causal_prob_value = self._create_head(self.value_policy_tokens_pattern, 1)
+            self.head_causal_prob_policy = self._create_prob_head(self.value_policy_tokens_pattern, 1)
+            self.head_causal_prob_value = self._create_prob_head(self.value_policy_tokens_pattern, 1)
         else:
             self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
@@ -542,6 +542,48 @@ class WorldModel(nn.Module):
 
         self.causal_policy_transformer = Transformer(causal_config)
         self.causal_value_transformer = Transformer(causal_config)
+        
+    class ProbHeadModule(nn.Module):
+        def __init__(self, embed_dim, num_obs_tokens, output_dim):
+            super().__init__()
+            self.num_obs_tokens = num_obs_tokens
+            self.transformer = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=embed_dim, nhead=8, batch_first=True
+                ),
+                num_layers=1
+            )
+            self.mlp = nn.Sequential(
+                nn.LayerNorm(embed_dim),
+                nn.Linear(embed_dim, embed_dim * 4),
+                nn.LayerNorm(embed_dim * 4),
+                nn.GELU(approximate='tanh'),
+                nn.Linear(embed_dim * 4, output_dim),
+                nn.Softmax(dim=-1),
+            )
+
+        def forward(self, x):
+            B, L, E = x.shape
+            T = L // self.num_obs_tokens
+            x = x.view(B * T, self.num_obs_tokens, E)
+            x = self.transformer(x)
+            x = x.view(B * T * self.num_obs_tokens, -1)
+            x = self.mlp(x)
+            x = x.view(B, L, -1)
+            return x
+
+
+    def _create_prob_head(self, block_mask: torch.Tensor, output_dim: int) -> Head:
+        module = self.ProbHeadModule(
+            embed_dim=self.config.embed_dim,
+            num_obs_tokens=self.num_observations_tokens,
+            output_dim=output_dim,
+        )
+        return Head(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=module
+        )
 
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
