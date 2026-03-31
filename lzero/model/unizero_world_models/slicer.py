@@ -266,7 +266,7 @@ class CausalHead(Slicer):
         tokens_with_cls = torch.cat([cls_expanded, tokens_grouped], dim=2)  # (B, L, K+1, E)
 
         seq = tokens_with_cls.view(B * L, K + 1, E)
-        probs_flat = probabilities.reshape(B * L, K, 2)
+        probs_flat = probabilities.reshape(B * L, K, 3)
 
         seq = self.transformer_module(seq, probabilities=probs_flat)
 

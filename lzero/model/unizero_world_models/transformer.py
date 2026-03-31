@@ -659,9 +659,10 @@ class CausalSelfAttention(nn.Module):
         self.query = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
         self.value = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
         self.proj = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
-        self.g_matrix = torch.tensor([[1, 1, 0],
-                                      [0, 1, 0],
-                                      [0, 0, 1]], dtype=torch.float32)
+        self.g_matrix = torch.tensor([[1, 1, 1, 0],
+                                      [0, 1, 1, 0],
+                                      [0, 0, 1, 0],
+                                      [0, 0, 0, 1]], dtype=torch.float32)
         self.slots_num = config.slots_num
 
         self.attn_drop = nn.Dropout(config.attn_pdrop)
@@ -683,9 +684,8 @@ class CausalSelfAttention(nn.Module):
         """
         B, T, C = x.size()
         head_size = C // self.num_heads
-
-        W = torch.zeros((B, T, 3), device=x.device, dtype=x.dtype)
-        init_token = torch.tensor([1.0, 0.0, 0.0], device=x.device, dtype=x.dtype).expand(B, 3)
+        W = torch.zeros((B, T, 4), device=x.device, dtype=x.dtype)
+        init_token = torch.tensor([1.0, 0.0, 0.0, 0.0], device=x.device, dtype=x.dtype).expand(B, 4)
         zeros = torch.zeros((B, probabilities.shape[1], 1), device=x.device, dtype=x.dtype)
         probabilities = torch.cat((zeros, probabilities), dim=-1)  # (B, num_slots, 3)
         token_mask = torch.ones(T, device=x.device, dtype=torch.bool)
