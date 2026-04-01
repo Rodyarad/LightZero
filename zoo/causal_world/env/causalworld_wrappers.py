@@ -286,9 +286,8 @@ class SlotExtractorWrapper(gym.Wrapper):
         self.prev_slots = None
 
     def _get_slots(self, frame, prev_slots=None):
-        if prev_slots is None:
+        if (self.slot_extractor.name_model == 'SLATE' or self.slot_extractor.name_model == 'DINOSAUR') and prev_slots is None:
             prev_slots = self.slot_extractor(frame, prev_slots=None)
-
         return self.slot_extractor(frame, prev_slots=prev_slots)
 
     def reset(self):
