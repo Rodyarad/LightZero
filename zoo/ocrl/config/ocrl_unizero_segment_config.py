@@ -22,7 +22,7 @@ def main(env_id, seed):
     num_layers = 2
     norm_type = "LN"
 
-    max_env_step = int(5e5)
+    max_env_step = int(2e6)
 
     # Reanalyze settings
     buffer_reanalyze_freq = 1/5000000000
@@ -97,8 +97,8 @@ def main(env_id, seed):
             # Environment settings
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
-            eval_freq=int(5e3),
-            replay_buffer_size=int(5e5),
+            eval_freq=int(20e3),
+            replay_buffer_size=int(2e6),
         ),
     )
     ocrl_unizero_config = EasyDict(ocrl_unizero_config)
@@ -128,7 +128,7 @@ def main(env_id, seed):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Process different environments and seeds.')
-    parser.add_argument('--env', type=str, help='The environment to use', default='TargetEnv-v0')
+    parser.add_argument('--env', type=str, help='The environment to use', default='PushEnv-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
     args = parser.parse_args()
 

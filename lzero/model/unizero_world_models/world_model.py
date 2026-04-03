@@ -123,8 +123,8 @@ class WorldModel(nn.Module):
             self.head_value = self._create_causal_head(self.value_policy_tokens_pattern, self.support_size, self.causal_value_transformer)
             self.head_proj = self._create_mlp_head(self.obs_per_embdding_dim * 2, self.obs_per_embdding_dim)
             self.value_policy_emb = nn.Embedding(2, config.embed_dim, device=self.device)
-            self.head_causal_prob_policy = self._create_head(self.value_policy_tokens_pattern, 1)
-            self.head_causal_prob_value = self._create_head(self.value_policy_tokens_pattern, 1)
+            self.head_causal_prob_policy = self._create_head(self.value_policy_tokens_pattern, 3)
+            self.head_causal_prob_value = self._create_head(self.value_policy_tokens_pattern, 3)
         else:
             self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
             self.head_observations = self._create_head_for_latent(self.all_but_last_latent_state_pattern, self.obs_per_embdding_dim, \
@@ -836,11 +836,8 @@ class WorldModel(nn.Module):
         logits_rewards = self.head_rewards(x, num_steps, 0)
 
         if self.model_type == 'slot':
-            policy_causality = torch.sigmoid(self.head_causal_prob_policy(x, num_steps, 0))
-            policy_probs = torch.cat([policy_causality, 1.0 - policy_causality], dim=-1)
-
-            value_causality = torch.sigmoid(self.head_causal_prob_value(x, num_steps, 0))
-            value_probs = torch.cat([value_causality, 1.0 - value_causality], dim=-1)
+            policy_probs = torch.softmax(self.head_causal_prob_policy(x, num_steps, 0), dim=-1)
+            value_probs = torch.softmax(self.head_causal_prob_value(x, num_steps, 0), dim=-1)
 
             logits_policy = self.head_policy(x, num_steps, 0, policy_probs, self.value_policy_emb.weight[0])
             logits_value = self.head_value(x, num_steps, 0, value_probs, self.value_policy_emb.weight[1])

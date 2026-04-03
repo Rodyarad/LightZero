@@ -358,6 +358,7 @@ class Transformer(nn.Module):
         self,
         sequences: torch.Tensor,
         probabilities: Optional[torch.Tensor] = None,
+        target_token: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Overview:
@@ -375,7 +376,7 @@ class Transformer(nn.Module):
 
         for i, block in enumerate(self.blocks):
             if self.config.attention == "object_causal":
-                x = block(x, probabilities=probabilities)
+                x = block(x, probabilities=probabilities, target_token=target_token)
             else:
                 x = block(x)
 
@@ -457,8 +458,15 @@ class Block(nn.Module):
                 _maybe_wrap_linear(nn.Linear(4 * config.embed_dim, config.embed_dim), config, "feed_forward"),
                 nn.Dropout(config.resid_pdrop),
             )
+            
+            self.feed_forward2 = nn.Sequential(
+                _maybe_wrap_linear(nn.Linear(config.embed_dim, 4 * config.embed_dim), config, "feed_forward"),
+                nn.GELU(approximate='tanh'),
+                _maybe_wrap_linear(nn.Linear(4 * config.embed_dim, config.embed_dim), config, "feed_forward"),
+                nn.Dropout(config.resid_pdrop),
+            )
 
-    def forward(self, x: torch.Tensor, probabilities: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, probabilities: Optional[torch.Tensor] = None, target_token: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Overview:
             Performs the forward pass of the Transformer block.
@@ -468,7 +476,8 @@ class Block(nn.Module):
             - torch.Tensor: Output tensor of shape (batch_size, seq_length, embed_dim).
         """
         if self.config.attention == "object_causal":
-            attn_output = self.attn(self.ln1(x), probabilities)
+            attn_output = self.attn(self.ln1(x), probabilities, target_token, self.feed_forward, self.feed_forward2)
+            return attn_output
         else:
             attn_output = self.attn(self.ln1(x))
         if self.gru_gating:
@@ -655,11 +664,22 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = config.num_heads
 
         # Wrap linear layers if LoRA is enabled for the attention module
-        self.key = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
-        self.query = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
-        self.value = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
-        self.proj = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
-        self.g_matrix = torch.tensor([[1, 1, 0],
+        self.key1 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.query1 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.value1 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.proj1 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.norm1 = nn.LayerNorm(config.embed_dim)
+        
+        self.key2 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.query2 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.value2 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.proj2 = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.norm2 = nn.LayerNorm(config.embed_dim)
+        
+        self.g1_matrix = torch.tensor([[1, 1, 0],
+                                      [0, 1, 0],
+                                      [0, 0, 1]], dtype=torch.float32)
+        self.g2_matrix = torch.tensor([[1, 1, 0],
                                       [0, 1, 0],
                                       [0, 0, 1]], dtype=torch.float32)
         self.slots_num = config.slots_num
@@ -667,11 +687,11 @@ class CausalSelfAttention(nn.Module):
         self.attn_drop = nn.Dropout(config.attn_pdrop)
         self.resid_drop = nn.Dropout(config.resid_pdrop)
 
-        mask_size = self.slots_num + 1
-        mask = torch.ones(mask_size, mask_size)
-        self.register_buffer('mask', mask)
+        #mask_size = self.slots_num + 1
+        #mask = torch.ones(mask_size, mask_size)
+        #self.register_buffer('mask', mask)
 
-    def forward(self, x: torch.Tensor, probabilities: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, probabilities: torch.Tensor, target_token: torch.Tensor, mlp1, mlp2) -> torch.Tensor:
         """
         Overview:
             Performs the forward pass for the causal self-attention mechanism.
@@ -684,36 +704,29 @@ class CausalSelfAttention(nn.Module):
         B, T, C = x.size()
         head_size = C // self.num_heads
 
-        W = torch.zeros((B, T, 3), device=x.device, dtype=x.dtype)
-        init_token = torch.tensor([1.0, 0.0, 0.0], device=x.device, dtype=x.dtype).expand(B, 3)
-        zeros = torch.zeros((B, probabilities.shape[1], 1), device=x.device, dtype=x.dtype)
-        probabilities = torch.cat((zeros, probabilities), dim=-1)  # (B, num_slots, 3)
-        token_mask = torch.ones(T, device=x.device, dtype=torch.bool)
-        token_mask[0::(self.slots_num + 1)] = 0
-        W[:, token_mask] = probabilities
-        W[:, 0::(self.slots_num + 1)] = init_token.unsqueeze(1)
+        W1 = probabilities
 
-        past_len = 0
+        #past_len = 0
 
-        q = self.query(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
-        k = self.key(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
-        v = self.value(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        q = self.query1(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        k = self.key1(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        v = self.value1(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
 
-        current_len = k.size(2)
+        #current_len = k.size(2)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
         # Construct the attention mask
-        mask = self.mask[past_len:past_len + T, :current_len]
+        #mask = self.mask[past_len:past_len + T, :current_len]
 
-        att = att.masked_fill(mask == 0, float('-inf'))
+        #att = att.masked_fill(mask == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
 
-        G = self.g_matrix.to(device=x.device, dtype=x.dtype)
-        WG = W @ G
-        causal_mat = WG @ W.transpose(1, 2)
-        causal_mat = causal_mat.unsqueeze(1)
+        G1 = self.g1_matrix.to(device=x.device, dtype=x.dtype)
+        WG1= W1 @ G1
+        causal_mat1 = WG1 @ W1.transpose(1, 2)
+        causal_mat1 = causal_mat1.unsqueeze(1)
 
-        att = att * causal_mat
+        att = att * causal_mat1
 
         att_sum = att.sum(dim=-1, keepdim=True) + 1e-8
         att = att / att_sum
@@ -722,6 +735,64 @@ class CausalSelfAttention(nn.Module):
 
         y = att @ v
         y = rearrange(y, 'b h t e -> b t (h e)')
-        y = self.resid_drop(self.proj(y))
+        y = self.resid_drop(self.proj1(y))
 
-        return y
+        x = x + y
+        x = x + mlp1(self.norm1(x))
+
+        #LAYER TWO
+        T = T + 1
+        x = torch.cat([target_token, x], dim=1)
+        x = x.view(B, T, C)
+
+        p_plus_q = probabilities[..., 0] + probabilities[..., 1]
+        non_causal = probabilities[..., 2]
+        probabilities = torch.stack([
+            p_plus_q,
+            non_causal                             
+        ], dim=-1)                                     
+
+        W2 = torch.zeros((B, T, 3), device=x.device, dtype=x.dtype)
+        init_token = torch.tensor([1.0, 0.0, 0.0], device=x.device, dtype=x.dtype).expand(B, 3)
+        zeros = torch.zeros((B, probabilities.shape[1], 1), device=x.device, dtype=x.dtype)
+        probabilities = torch.cat((zeros, probabilities), dim=-1)  # (B, num_slots, 3)
+        token_mask = torch.ones(T, device=x.device, dtype=torch.bool)
+        token_mask[0::(self.slots_num + 1)] = 0
+        W2[:, token_mask] = probabilities
+        W2[:, 0::(self.slots_num + 1)] = init_token.unsqueeze(1)
+
+        #past_len = 0
+
+        q = self.query2(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        k = self.key2(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        v = self.value2(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+
+        #current_len = k.size(2)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+
+        # Construct the attention mask
+        #mask = self.mask[past_len:past_len + T, :current_len]
+
+        #att = att.masked_fill(mask == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+
+        G2 = self.g2_matrix.to(device=x.device, dtype=x.dtype)
+        WG2 = W2 @ G2
+        causal_mat2 = WG2 @ W2.transpose(1, 2)
+        causal_mat2 = causal_mat2.unsqueeze(1)
+
+        att = att * causal_mat2
+
+        att_sum = att.sum(dim=-1, keepdim=True) + 1e-8
+        att = att / att_sum
+
+        att = self.attn_drop(att)
+
+        y = att @ v
+        y = rearrange(y, 'b h t e -> b t (h e)')
+        y = self.resid_drop(self.proj2(y))
+
+        x = x + y
+        x = x + mlp2(self.norm2(x))
+
+        return x

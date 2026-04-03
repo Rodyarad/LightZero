@@ -260,15 +260,15 @@ class CausalHead(Slicer):
         K = self.num_kept_tokens
         L = num_selected // K
 
-        tokens_grouped = selected_tokens.view(B, L, K, E)
+        seq = selected_tokens.view(B * L, K, E)
 
-        cls_expanded = cls_embed.view(1, 1, 1, E).expand(B, L, 1, E)
-        tokens_with_cls = torch.cat([cls_expanded, tokens_grouped], dim=2)  # (B, L, K+1, E)
+        cls_expanded = cls_embed.view(1, 1, E).expand(B * L, 1, E)
+        #tokens_with_cls = torch.cat([cls_expanded, tokens_grouped], dim=2)  # (B, L, K+1, E)
 
-        seq = tokens_with_cls.view(B * L, K + 1, E)
-        probs_flat = probabilities.reshape(B * L, K, 2)
+        #seq = tokens_with_cls.view(B * L, K + 1, E)
+        probs_flat = probabilities.reshape(B * L, K, 3)
 
-        seq = self.transformer_module(seq, probabilities=probs_flat)
+        seq = self.transformer_module(seq, probabilities=probs_flat, target_token=cls_expanded)
 
         cls_outputs = seq[:, 0, :].view(B, L, E)
         return self.head_module(cls_outputs)
