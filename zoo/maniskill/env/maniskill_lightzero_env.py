@@ -58,6 +58,7 @@ class ManiskillEnvLightZero(BaseEnv):
         num_patches=784,
         features=(1024, 1024, 1024),
         oc_model=False,
+        oc_model_type='SAVI'
     )
 
     def __init__(self, cfg: dict) -> None:
