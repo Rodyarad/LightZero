@@ -55,7 +55,8 @@ class CausalWorldEnvLightZero(BaseEnv):
         chekpoint_path='LightZero/zoo/ocr/slate_weights/slate_3d.pth',
         num_slots=10,
         slot_dim=192,
-        oc_model=False
+        oc_model=False,
+        oc_model_type='SLATE'
     )
 
     def __init__(self, cfg: dict) -> None:

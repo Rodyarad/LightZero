@@ -1,0 +1,22 @@
+corrector:
+  num_slots: 6
+  slot_dim: 64
+  feature_dim: 64
+  hidden_dim: 128
+  num_iterations: 1
+  num_initial_iterations: 3
+
+predictor:
+  num_heads: 4
+  mlp_size: 256
+
+encoder:
+  num_channels: [ 32, 32, 32, 32 ]
+  kernel_sizes: [ 5, 5, 5, 5 ]
+  strides: [ 1, 1, 1, 1 ]
+  feature_dim: 64
+
+decoder:
+  num_channels: [ 32, 32, 32, 32 ]
+  kernel_sizes: [ 5, 5, 5, 5 ]
+  strides: [ 1, 1, 1, 1 ]
