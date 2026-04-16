@@ -13,6 +13,7 @@ from easydict import EasyDict
 # from gymnasium.wrappers import RecordVideo
 from gym.wrappers import RecordVideo
 from vizdoom import gymnasium_wrapper
+from vizdoom import DoomGame
 
 
 def wrap_lightzero(config: EasyDict) -> gym.Env:
@@ -28,6 +29,8 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
     env = gymnasium.make(config.env_id)
+    env.unwrapped.game.set_render_hud(False)
+    env.unwrapped.game.set_render_messages(False)
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
