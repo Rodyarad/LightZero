@@ -118,7 +118,7 @@ def main(env_id, seed):
             # Environment settings
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
-            eval_freq=int(5e3),
+            eval_freq=int(20e3),
             replay_buffer_size=int(5e5),
         ),
     )

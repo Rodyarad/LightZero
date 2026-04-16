@@ -127,7 +127,7 @@ def main(seed):
             num_simulations=num_simulations,
             reanalyze_ratio=0,
             n_episode=n_episode,
-            eval_freq=int(5e3),
+            eval_freq=int(20e3),
             replay_buffer_size=int(1e6),
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,

@@ -74,7 +74,7 @@ def train_unizero_segment(
     evaluator_env = create_env_manager(cfg.env.manager, [partial(env_fn, cfg=c) for c in evaluator_env_cfg])
 
     collector_env.seed(cfg.seed)
-    evaluator_env.seed(cfg.seed, dynamic_seed=False)
+    evaluator_env.seed(cfg.seed)
     set_pkg_seed(cfg.seed, use_cuda=torch.cuda.is_available())
 
     policy = create_policy(cfg.policy, model=model, enable_field=['learn', 'collect', 'eval'])
