@@ -158,20 +158,40 @@ def build_savi(cfg: DictConfig, image_size: Union[int, Tuple[int, int]]) -> SAVi
 
 
 def _remap_ckpt_keys(state_dict: dict) -> dict:
-    """Remap checkpoint keys to match the current model structure.
+    """Remap legacy SAVi checkpoint keys to the current module layout."""
+    mapping = {
+        "encoder.conv.0.block.0": "encoder.encoder.0",
+        "encoder.conv.1.block.0": "encoder.encoder.2",
+        "encoder.conv.2.block.0": "encoder.encoder.4",
+        "encoder.conv.3.block.0": "encoder.encoder.6",
+        "encoder.positional_encoding.projection": "encoder.positional_embedding.projection",
+        "encoder.mlp.0": "encoder.shared_mlp.0",
+        "encoder.mlp.1": "encoder.shared_mlp.1",
+        "encoder.mlp.3": "encoder.shared_mlp.3",
+        "decoder.decoder.0.block.0": "decoder.encoder.0",
+        "decoder.decoder.1.block.0": "decoder.encoder.2",
+        "decoder.decoder.2.block.0": "decoder.encoder.4",
+        "decoder.decoder.3.block.0": "decoder.encoder.6",
+        "decoder.decoder.4": "decoder.encoder.8",
+        "decoder.positional_encoding.projection": "decoder.positional_embedding.projection",
+    }
 
-    The original checkpoint stores encoder conv layers as encoder.0.weight,
-    but CnnEncoder wraps them in self.encoder = nn.Sequential(...), so the
-    model expects encoder.encoder.0.weight.  Same for the decoder.
-    """
     remapped = {}
-    for k, v in state_dict.items():
-        parts = k.split(".")
-        if len(parts) >= 2 and parts[0] in ("encoder", "decoder") and parts[1].isdigit():
-            new_key = f"{parts[0]}.encoder.{'.'.join(parts[1:])}"
-            remapped[new_key] = v
-        else:
-            remapped[k] = v
+    for old_key, value in state_dict.items():
+        key = old_key
+        if key.startswith("savi."):
+            key = key[5:]
+        if key.startswith("autoencoder."):
+            key = key[12:]
+
+        new_key = key
+        for old_prefix, new_prefix in mapping.items():
+            if key.startswith(old_prefix):
+                new_key = key.replace(old_prefix, new_prefix, 1)
+                break
+
+        remapped[new_key] = value
+
     return remapped
 
 
@@ -208,16 +228,8 @@ def load_savi_from_ckpt(cfg: DictConfig,
     _register_legacy_module_aliases()
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
-
-    state_dict = {
-        k.replace("autoencoder.", "", 1): v
-        for k, v in state_dict.items()
-        if k.startswith("autoencoder.")
-    }
-
     state_dict = _remap_ckpt_keys(state_dict)
-
-    result = model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=False)
 
     model.to(device)
     model.eval()
