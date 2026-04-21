@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 from PIL import ImageColor
-from slotcontrast.data.transforms import Resize
+from zoo.ocr.slotcontrast.transforms import Resize
 
 CMAP_STYLE = "tab"
 
