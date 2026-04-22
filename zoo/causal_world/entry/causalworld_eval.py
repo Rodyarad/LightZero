@@ -109,6 +109,10 @@ def build_config():
                 evaluator_env_num=evaluator_env_num,
                 eval_freq=int(5e3),
                 replay_buffer_size=int(1e6),
+                log_causality_probs=True,
+                causality_log_dir='./visuals',
+                log_unizero_slots=True,
+                unizero_slots_dir='./visuals',
             ),
         )
     )

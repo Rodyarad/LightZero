@@ -93,6 +93,8 @@ def reconstruct_from_slots(
 if __name__ == "__main__":
     ocr_config_path = "zoo/ocr/slate/config/slate_ocrl.yaml"
     checkpoint_path = "zoo/ocr/slate_weights/slate_ocrl.pth"
+    # ocr_config_path = "zoo/ocr/slate/config/slate_3d.yaml"
+    # checkpoint_path = "zoo/ocr/slate_weights/slate_3d.pth"
     device = "cuda"
 
     # --- Slot-attention (encoder) slots ---
