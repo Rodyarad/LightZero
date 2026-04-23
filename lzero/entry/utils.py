@@ -982,12 +982,27 @@ def _ckpt_sidecars(ckpt_path: str):
     meta_path = base + '.meta.json'
     return buffer_path, meta_path
 
-def save_training_state(ckpt_path: str, learner, collector, replay_buffer, policy, extra_meta: dict = None) -> None:
+def save_training_state(
+        ckpt_path: str,
+        learner,
+        collector,
+        replay_buffer,
+        policy,
+        extra_meta: dict = None,
+        save_replay_buffer_state: bool = True
+) -> None:
     buffer_path, meta_path = _ckpt_sidecars(ckpt_path)
-    try:
-        torch.save(replay_buffer.state_dict(), buffer_path)
-    except Exception as e:
-        print(f'Warning: failed to save replay buffer: {e}')
+    if save_replay_buffer_state:
+        try:
+            torch.save(replay_buffer.state_dict(), buffer_path)
+        except Exception as e:
+            print(f'Warning: failed to save replay buffer: {e}')
+    elif os.path.isfile(buffer_path):
+        # Remove stale buffer sidecar when replay-buffer saving is disabled.
+        try:
+            os.remove(buffer_path)
+        except Exception as e:
+            print(f'Warning: failed to remove replay buffer sidecar: {e}')
     meta = {
         'train_iter': getattr(learner, 'train_iter', None),
         'envstep': getattr(collector, 'envstep', None),
