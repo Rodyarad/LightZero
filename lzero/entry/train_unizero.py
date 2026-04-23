@@ -122,6 +122,7 @@ def train_unizero(
     evaluator = Evaluator(eval_freq=cfg.policy.eval_freq, n_evaluator_episode=cfg.env.n_evaluator_episode,
                           stop_value=cfg.env.stop_value, env=evaluator_env, policy=policy.eval_mode,
                           tb_logger=tb_logger, exp_name=cfg.exp_name, policy_config=cfg.policy)
+    save_replay_buffer_state = bool(getattr(cfg.policy, 'save_replay_buffer_state', True))
 
     def save_ckpt_with_state(filename: str):
         ckpt_dir = './{}/ckpt'.format(learner.exp_name)
@@ -129,7 +130,14 @@ def train_unizero(
         learner.save_checkpoint(filename)
         ckpt_path = os.path.join(ckpt_dir, filename)
         from lzero.entry.utils import save_training_state
-        save_training_state(ckpt_path, learner, collector, replay_buffer, policy)
+        save_training_state(
+            ckpt_path,
+            learner,
+            collector,
+            replay_buffer,
+            policy,
+            save_replay_buffer_state=save_replay_buffer_state
+        )
 
     from lzero.entry.utils import try_load_training_state
     if model_path is not None:

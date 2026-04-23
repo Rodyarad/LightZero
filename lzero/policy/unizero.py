@@ -368,6 +368,8 @@ class UniZeroPolicy(MuZeroPolicy):
         collect_with_pure_policy=False,
         # (int) The evaluation frequency.
         eval_freq=int(5e3),
+        # (bool) Whether to save replay-buffer sidecar files (*.buffer.pth.tar) with checkpoints.
+        save_replay_buffer_state=True,
         # (str) The sample type. Options are ['episode', 'transition'].
         sample_type='transition',
         # ****** observation ******
