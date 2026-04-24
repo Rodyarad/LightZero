@@ -1522,12 +1522,16 @@ class UniZeroPolicy(MuZeroPolicy):
 
         self._log_unizero_slots = getattr(self._cfg, 'log_unizero_slots', False)
         self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals')
-        self._dynamics_slots_buffer = defaultdict(list)
-        self._dynamics_slots_episode = defaultdict(lambda: 1)
         self._sa_slots_buffer = defaultdict(list)
         self._sa_slots_episode = defaultdict(lambda: 1)
         if self._log_unizero_slots:
             os.makedirs(self._unizero_slots_dir, exist_ok=True)
+        self._log_eval_actions = getattr(self._cfg, 'log_eval_actions', False)
+        self._eval_actions_dir = getattr(self._cfg, 'eval_actions_dir', './visuals')
+        self._eval_actions_buffer = defaultdict(list)
+        self._eval_actions_episode = defaultdict(lambda: 1)
+        if self._log_eval_actions:
+            os.makedirs(self._eval_actions_dir, exist_ok=True)
 
         # Create a configuration copy for eval MCTS and set specific simulation count
         mcts_eval_cfg = copy.deepcopy(self._cfg)
@@ -1651,16 +1655,8 @@ class UniZeroPolicy(MuZeroPolicy):
                         np.asarray(sa_slots, dtype=np.float32).copy()
                     )
 
-                    # Save dynamics-model predicted slots
-                    dyn_slots = next_latent_state
-                    if isinstance(dyn_slots, torch.Tensor):
-                        dyn_slots = dyn_slots.detach()
-                        if dyn_slots.ndim == 3 and dyn_slots.shape[0] == 1:
-                            dyn_slots = dyn_slots.squeeze(0)
-                        dyn_slots_np = dyn_slots.cpu().numpy().astype(np.float32)
-                    else:
-                        dyn_slots_np = np.asarray(dyn_slots, dtype=np.float32)
-                    self._dynamics_slots_buffer[int(env_id)].append(dyn_slots_np)
+                if self._log_eval_actions:
+                    self._eval_actions_buffer[int(env_id)].append(int(action))
 
                 output[env_id] = {
                     'action': action,
@@ -1796,16 +1792,6 @@ class UniZeroPolicy(MuZeroPolicy):
                     for _env_id in env_ids_to_reset:
                         eid = int(_env_id)
 
-                        # Flush dynamics-model predicted slots
-                        dyn_buf = self._dynamics_slots_buffer.get(eid, [])
-                        if len(dyn_buf) > 0:
-                            dyn_np = np.stack(dyn_buf, axis=0)  # (T, num_slots, slot_dim)
-                            ep_idx = int(self._dynamics_slots_episode[eid])
-                            out_path = os.path.join(self._unizero_slots_dir, f'dynamics_slots_env{eid}_episode{ep_idx:03d}.npy')
-                            np.save(out_path, dyn_np)
-                            self._dynamics_slots_buffer[eid] = []
-                            self._dynamics_slots_episode[eid] = ep_idx + 1
-
                         # Flush slot-attention (encoder) slots
                         sa_buf = self._sa_slots_buffer.get(eid, [])
                         if len(sa_buf) > 0:
@@ -1815,6 +1801,19 @@ class UniZeroPolicy(MuZeroPolicy):
                             np.save(out_path, sa_np)
                             self._sa_slots_buffer[eid] = []
                             self._sa_slots_episode[eid] = ep_idx + 1
+
+                # Flush eval actions for the finished episode(s).
+                if getattr(self, '_log_eval_actions', False):
+                    for _env_id in env_ids_to_reset:
+                        eid = int(_env_id)
+                        action_buf = self._eval_actions_buffer.get(eid, [])
+                        if len(action_buf) > 0:
+                            action_np = np.asarray(action_buf, dtype=np.int64)
+                            ep_idx = int(self._eval_actions_episode[eid])
+                            out_path = os.path.join(self._eval_actions_dir, f'actions_env{eid}_episode{ep_idx:03d}.npy')
+                            np.save(out_path, action_np)
+                            self._eval_actions_buffer[eid] = []
+                            self._eval_actions_episode[eid] = ep_idx + 1
 
                 world_model = self._eval_model.world_model
 

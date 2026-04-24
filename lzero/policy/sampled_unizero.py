@@ -846,12 +846,16 @@ class SampledUniZeroPolicy(UniZeroPolicy):
 
         self._log_unizero_slots = getattr(self._cfg, 'log_unizero_slots', False)
         self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals')
-        self._dynamics_slots_buffer = defaultdict(list)
-        self._dynamics_slots_episode = defaultdict(lambda: 1)
         self._sa_slots_buffer = defaultdict(list)
         self._sa_slots_episode = defaultdict(lambda: 1)
         if self._log_unizero_slots:
             os.makedirs(self._unizero_slots_dir, exist_ok=True)
+        self._log_eval_actions = getattr(self._cfg, 'log_eval_actions', False)
+        self._eval_actions_dir = getattr(self._cfg, 'eval_actions_dir', './visuals')
+        self._eval_actions_buffer = defaultdict(list)
+        self._eval_actions_episode = defaultdict(lambda: 1)
+        if self._log_eval_actions:
+            os.makedirs(self._eval_actions_dir, exist_ok=True)
 
         if self._cfg.mcts_ctree:
             self._mcts_eval = MCTSCtree(self._cfg)
@@ -917,8 +921,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
 
             # if not in training, obtain the scalars of the value/reward
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()  # shape（B, 1）
-            latent_state_roots_tensor = latent_state_roots.detach()
-            latent_state_roots = latent_state_roots_tensor.cpu().numpy()
+            latent_state_roots = latent_state_roots.detach().cpu().numpy()
             policy_logits = policy_logits.detach().cpu().numpy().tolist()  # list shape（B, A）
 
             if self._cfg.model.continuous_action_space is True:
@@ -952,7 +955,6 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             # ==============================================================
             roots_sampled_actions = roots.get_sampled_actions()  # shape: ``{list: batch_size} ->{list: action_space_size}``
             batch_action = []
-            selected_actions_for_dyn = []
 
             for i, env_id in enumerate(ready_env_id):
                 distributions, value = roots_visit_count_distributions[i], roots_values[i]
@@ -979,8 +981,8 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 if not self._cfg.model.continuous_action_space:
                     action = int(action.item())
 
-                if self._log_unizero_slots and self._cfg.model.model_type == 'slot':
-                    selected_actions_for_dyn.append(action)
+                if self._log_eval_actions:
+                    self._eval_actions_buffer[int(env_id)].append(int(action))
 
                 output[env_id] = {
                     'action': action,
@@ -993,24 +995,6 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                     'timestep': timestep[i]
                 }
                 batch_action.append(action)
-
-            if self._log_unizero_slots and self._cfg.model.model_type == 'slot' and len(selected_actions_for_dyn) > 0:
-                if self._cfg.model.continuous_action_space:
-                    dyn_actions_np = np.stack(
-                        [np.asarray(action, dtype=np.float32) for action in selected_actions_for_dyn], axis=0
-                    )
-                    dyn_actions_tensor = torch.from_numpy(dyn_actions_np).to(self._cfg.device)
-                else:
-                    dyn_actions_tensor = torch.as_tensor(selected_actions_for_dyn, dtype=torch.long, device=self._cfg.device)
-
-                state_action_history = [(latent_state_roots_tensor, dyn_actions_tensor)]
-                search_depth = [1 for _ in range(len(selected_actions_for_dyn))]
-                dyn_network_output = self._eval_model.recurrent_inference(
-                    state_action_history, simulation_index=0, search_depth=search_depth
-                )
-                dyn_slots_np = dyn_network_output.latent_state.detach().cpu().numpy().astype(np.float32)
-                for i, env_id in enumerate(ready_env_id):
-                    self._dynamics_slots_buffer[int(env_id)].append(dyn_slots_np[i].copy())
 
             self.last_batch_obs_eval = data
             self.last_batch_action_eval = batch_action

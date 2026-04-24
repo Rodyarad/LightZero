@@ -113,6 +113,8 @@ def build_config(env_id='TargetEnv-v0'):
             causality_log_dir='./visuals',
             log_unizero_slots=True,
             unizero_slots_dir='./visuals',
+            log_eval_actions=True,
+            eval_actions_dir='./visuals',
         ),
     ))
 
@@ -169,6 +171,9 @@ if __name__ == "__main__":
     main_config.env.replay_path = './visuals'
     # The maximum number of steps for each episode during evaluation. This may need to be adjusted based on the specific characteristics of the environment.
     main_config.env.eval_max_episode_steps = int(100)
+    # Optional action logging for deterministic replay-based analyses.
+    main_config.policy.log_eval_actions = True
+    main_config.policy.eval_actions_dir = './visuals'
 
     # These lists will store the mean and total rewards for each seed.
     returns_mean_seeds = []

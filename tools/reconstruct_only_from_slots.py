@@ -109,16 +109,3 @@ if __name__ == "__main__":
         checkpoint_path=checkpoint_path,
         device=device,
     )
-
-    # --- Dynamics-model predicted slots ---
-    dynamics_slots_path = "visuals/dynamics_slots_env0_episode001.npy"
-    dynamics_output_dir = "visuals/dynamics_slots_episode_001_recon"
-
-    reconstruct_from_slots(
-        slots_path=dynamics_slots_path,
-        output_dir=dynamics_output_dir,
-        slot_type="dynamics",
-        ocr_config_path=ocr_config_path,
-        checkpoint_path=checkpoint_path,
-        device=device,
-    )
