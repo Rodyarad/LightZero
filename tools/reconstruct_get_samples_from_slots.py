@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--slots-path",
         type=str,
-        default="visuals/sa_slots_env0_episode001.npy",
+        default="visuals/oz_policy_log/sa_slots.npy",
         help="Path to slots .npy (T, num_slots, slot_dim).",
     )
     parser.add_argument(

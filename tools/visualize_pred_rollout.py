@@ -28,13 +28,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sa-slots-path",
         type=str,
-        default="visuals/sa_slots_env0_episode001.npy",
+        default="visuals/oz_policy_log/sa_slots.npy",
         help="Path to saved GT slots from eval (sa_slots_*.npy).",
     )
     parser.add_argument(
         "--actions-path",
         type=str,
-        default="visuals/actions_env0_episode001.npy",
+        default="visuals/oz_policy_log/actions.npy",
         help="Path to saved actions from eval (actions_*.npy).",
     )
     parser.add_argument(

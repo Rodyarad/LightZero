@@ -109,13 +109,13 @@ def main() -> None:
     parser.add_argument(
         "--causality-file",
         type=Path,
-        default=Path("visuals/causality_env0_episode001.txt"),
+        default=Path("visuals/oz_policy_log/causal_probs.txt"),
         help="Path to causality text file.",
     )
     parser.add_argument(
         "--slot-dir",
         type=Path,
-        default=Path("visuals/sa_slots_episode_001_recon"),
+        default=Path("visuals/only_on_slot_recon"),
         help="Directory with slot strip images named like sa_recon_0000.jpg.",
     )
     parser.add_argument(

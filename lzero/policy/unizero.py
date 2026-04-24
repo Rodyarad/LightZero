@@ -1775,7 +1775,7 @@ class UniZeroPolicy(MuZeroPolicy):
                         val_buf = self._causality_value_buffer.get(eid, [])
                         if len(pol_buf) > 0:
                             ep_idx = int(self._causality_episode[eid])
-                            out_path = os.path.join(self._causality_log_dir, f'causality_env{eid}_episode{ep_idx:03d}.txt')
+                            out_path = os.path.join(self._causality_log_dir, 'causal_probs.txt')
                             with open(out_path, 'w') as f:
                                 f.write("step\ttype\tslot_values\n")
                                 for t, (p, v) in enumerate(zip(pol_buf, val_buf)):
@@ -1797,7 +1797,7 @@ class UniZeroPolicy(MuZeroPolicy):
                         if len(sa_buf) > 0:
                             sa_np = np.stack(sa_buf, axis=0)  # (T, num_slots, slot_dim)
                             ep_idx = int(self._sa_slots_episode[eid])
-                            out_path = os.path.join(self._unizero_slots_dir, f'sa_slots_env{eid}_episode{ep_idx:03d}.npy')
+                            out_path = os.path.join(self._unizero_slots_dir, 'sa_slots.npy')
                             np.save(out_path, sa_np)
                             self._sa_slots_buffer[eid] = []
                             self._sa_slots_episode[eid] = ep_idx + 1
@@ -1810,7 +1810,7 @@ class UniZeroPolicy(MuZeroPolicy):
                         if len(action_buf) > 0:
                             action_np = np.asarray(action_buf, dtype=np.int64)
                             ep_idx = int(self._eval_actions_episode[eid])
-                            out_path = os.path.join(self._eval_actions_dir, f'actions_env{eid}_episode{ep_idx:03d}.npy')
+                            out_path = os.path.join(self._eval_actions_dir, 'actions.npy')
                             np.save(out_path, action_np)
                             self._eval_actions_buffer[eid] = []
                             self._eval_actions_episode[eid] = ep_idx + 1

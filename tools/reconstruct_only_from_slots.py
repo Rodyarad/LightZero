@@ -98,8 +98,8 @@ if __name__ == "__main__":
     device = "cuda"
 
     # --- Slot-attention (encoder) slots ---
-    sa_slots_path = "visuals/sa_slots_env0_episode001.npy"
-    sa_output_dir = "visuals/sa_slots_episode_001_recon"
+    sa_slots_path = "visuals/oz_policy_log/sa_slots.npy"
+    sa_output_dir = "visuals/only_on_slot_recon"
 
     reconstruct_from_slots(
         slots_path=sa_slots_path,

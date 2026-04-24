@@ -110,11 +110,11 @@ def build_config(env_id='TargetEnv-v0'):
             eval_freq=int(5e3),
             replay_buffer_size=int(5e5),
             log_causality_probs=True,
-            causality_log_dir='./visuals',
+            causality_log_dir='./visuals/oz_policy_log',
             log_unizero_slots=True,
-            unizero_slots_dir='./visuals',
+            unizero_slots_dir='./visuals/oz_policy_log',
             log_eval_actions=True,
-            eval_actions_dir='./visuals',
+            eval_actions_dir='./visuals/oz_policy_log',
         ),
     ))
 
@@ -168,12 +168,12 @@ if __name__ == "__main__":
     # A boolean flag indicating whether to save the video of the environment.
     main_config.env.save_replay = True
     # The path where the recorded video will be saved.
-    main_config.env.replay_path = './visuals'
+    main_config.env.replay_path = './visuals/video'
     # The maximum number of steps for each episode during evaluation. This may need to be adjusted based on the specific characteristics of the environment.
     main_config.env.eval_max_episode_steps = int(100)
     # Optional action logging for deterministic replay-based analyses.
     main_config.policy.log_eval_actions = True
-    main_config.policy.eval_actions_dir = './visuals'
+    main_config.policy.eval_actions_dir = './visuals/oz_policy_log'
 
     # These lists will store the mean and total rewards for each seed.
     returns_mean_seeds = []
