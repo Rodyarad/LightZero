@@ -60,6 +60,7 @@ def build_config():
             ),
             run_id_comet_ml=None,
             policy=dict(
+                learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=int(1e6)))),
                 model=dict(
                     observation_shape=(num_slots, slot_dim),
                     model_type="slot",
@@ -93,26 +94,43 @@ def build_config():
                         num_simulations=num_simulations,
                     ),
                 ),
+                model_path=None,
                 cuda=True,
                 learning_rate=1e-4,
                 batch_size=batch_size,
                 replay_ratio=replay_ratio,
                 num_unroll_steps=num_unroll_steps,
+                use_root_value=False,
+                use_augmentation=False,
                 num_segments=num_segments,
                 game_segment_length=game_segment_length,
                 num_simulations=num_simulations,
                 use_priority=False,
+                env_type='not_board_games',
+                discount_factor=0.99,
+                td_steps=5,
+                piecewise_decay_lr_scheduler=False,
+                grad_clip_value=5,
+                manual_temperature_decay=True,
+                threshold_training_steps_for_final_temperature=int(2.5e4),
+                cos_lr_scheduler=True,
+                train_start_after_envsteps=2000,
+                reanalyze_ratio=0,
+                n_episode=8,
                 buffer_reanalyze_freq=buffer_reanalyze_freq,
                 reanalyze_batch_size=reanalyze_batch_size,
                 reanalyze_partition=reanalyze_partition,
                 collector_env_num=collector_env_num,
                 evaluator_env_num=evaluator_env_num,
+                use_adaptive_entropy_weight=False,
                 eval_freq=int(5e3),
                 replay_buffer_size=int(1e6),
                 log_causality_probs=True,
-                causality_log_dir='./visuals',
+                causality_log_dir='./visuals/oz_policy_log',
                 log_unizero_slots=True,
-                unizero_slots_dir='./visuals',
+                unizero_slots_dir='./visuals/oz_policy_log',
+                log_eval_actions=True,
+                eval_actions_dir='./visuals/oz_policy_log',
             ),
         )
     )
@@ -137,18 +155,20 @@ def build_config():
 if __name__ == "__main__":
     main_config, create_config = build_config()
 
-    model_path = None
+    model_path = '/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_cw_slate_seed7.pth.tar'
     seeds = [0]
     num_episodes_each_seed = 1
 
     create_config.env_manager.type = "base"
     main_config.env.evaluator_env_num = 1
     main_config.env.n_evaluator_episode = 1
-    main_config.env.save_replay = False
-    main_config.env.replay_path = "./visuals"
+    main_config.env.save_replay = True
+    main_config.env.replay_path = "./visuals/video"
     main_config.env.save_replay_gif = False
     main_config.env.replay_path_gif = "./visuals"
     main_config.env.eval_max_episode_steps = int(125)
+    main_config.policy.log_eval_actions = True
+    main_config.policy.eval_actions_dir = "./visuals/oz_policy_log"
 
     returns_mean_seeds = []
     returns_seeds = []

@@ -239,24 +239,16 @@ class SLATE_Module(nn.Module):
         return (metrics, z) if with_rep else metrics
 
     def get_samples(self, obs: Tensor, prev_slots=None) -> dict:
-        # get z
-        z, z_hard = self._get_z(obs)
-        B, _, H_enc, W_enc = z.size()
-        # dvae recon
-        recon = self._dvae.decode(z)
         # get slots
         slots, attns = self._get_slots(obs, with_attns=True, prev_slots=prev_slots)
         attns = attns.transpose(-1, -2).reshape(
             obs.shape[0], self._num_slots, 1, self._obs_size, self._obs_size
         )
         attns = obs.unsqueeze(1) * attns + (1.0 - attns)
-        if self._use_bcdec:
-            recon = self._dec(slots)
-            return {"samples": for_viz(visualize([obs, recon, attns]))}
-        else:
-            # generate image tokens auto-regressively
-            recon_tf = self._gen_imgs(slots)
-            return {"samples": for_viz(visualize([obs, recon, recon_tf, attns]))}
+        # Keep only slot visualizations in samples.
+        # `attns` is (B, num_slots, C, H, W); concatenate slots horizontally.
+        slot_strip = torch.cat(list(torch.unbind(attns, dim=1)), dim=-1)  # (B, C, H, num_slots * W)
+        return {"samples": for_viz(slot_strip)}
 
     def get_slotwise_reconstructions_from_slots(self, slots: Tensor) -> dict:
         """

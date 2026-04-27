@@ -317,9 +317,9 @@ class UniZeroPolicy(MuZeroPolicy):
         label_smoothing_eps=0.1,  # TODO: For value
 
         log_causality_probs=False,
-        causality_log_dir='./visuals',
+        causality_log_dir='./visuals_inter',
         log_unizero_slots=False,
-        unizero_slots_dir='./visuals',
+        unizero_slots_dir='./visuals_inter',
 
         # (bool) Whether to use continuous (fixed) label smoothing throughout training
         use_continuous_label_smoothing=False,
@@ -1513,7 +1513,7 @@ class UniZeroPolicy(MuZeroPolicy):
         self._eval_model = self._model
 
         self._log_causality_probs = getattr(self._cfg, 'log_causality_probs', False)
-        self._causality_log_dir = getattr(self._cfg, 'causality_log_dir', './visuals')
+        self._causality_log_dir = getattr(self._cfg, 'causality_log_dir', './visuals_inter')
         self._causality_policy_buffer = defaultdict(list)
         self._causality_value_buffer = defaultdict(list)
         self._causality_episode = defaultdict(lambda: 1)
@@ -1521,13 +1521,13 @@ class UniZeroPolicy(MuZeroPolicy):
             os.makedirs(self._causality_log_dir, exist_ok=True)
 
         self._log_unizero_slots = getattr(self._cfg, 'log_unizero_slots', False)
-        self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals')
+        self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals_inter')
         self._sa_slots_buffer = defaultdict(list)
         self._sa_slots_episode = defaultdict(lambda: 1)
         if self._log_unizero_slots:
             os.makedirs(self._unizero_slots_dir, exist_ok=True)
         self._log_eval_actions = getattr(self._cfg, 'log_eval_actions', False)
-        self._eval_actions_dir = getattr(self._cfg, 'eval_actions_dir', './visuals')
+        self._eval_actions_dir = getattr(self._cfg, 'eval_actions_dir', './visuals_inter')
         self._eval_actions_buffer = defaultdict(list)
         self._eval_actions_episode = defaultdict(lambda: 1)
         if self._log_eval_actions:
@@ -1808,7 +1808,12 @@ class UniZeroPolicy(MuZeroPolicy):
                         eid = int(_env_id)
                         action_buf = self._eval_actions_buffer.get(eid, [])
                         if len(action_buf) > 0:
-                            action_np = np.asarray(action_buf, dtype=np.int64)
+                            if getattr(self._cfg.model, 'continuous_action_space', False):
+                                action_np = np.stack(
+                                    [np.asarray(a, dtype=np.float32).reshape(-1) for a in action_buf], axis=0
+                                )
+                            else:
+                                action_np = np.asarray(action_buf, dtype=np.int64)
                             ep_idx = int(self._eval_actions_episode[eid])
                             out_path = os.path.join(self._eval_actions_dir, 'actions.npy')
                             np.save(out_path, action_np)
@@ -2017,7 +2022,7 @@ class UniZeroPolicy(MuZeroPolicy):
         }
         # ==================== START: Save Alpha Optimizer State ====================
         if not self._cfg.model.continuous_action_space:
-            if self.use_adaptive_entropy_weight:
+            if getattr(self, 'use_adaptive_entropy_weight', False):
                 state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
                 state_dict['log_alpha'] = self.log_alpha.data.clone()
         # ===================== END: Save Alpha Optimizer State =====================
@@ -2037,7 +2042,7 @@ class UniZeroPolicy(MuZeroPolicy):
             self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
 
         # ==================== START: Load Alpha State ====================
-        if self.use_adaptive_entropy_weight:
+        if getattr(self, 'use_adaptive_entropy_weight', False):
             if 'log_alpha' in state_dict:
                 self.log_alpha.data.copy_(state_dict['log_alpha'])
             if 'alpha_optimizer' in state_dict:

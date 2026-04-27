@@ -837,7 +837,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         """
         self._eval_model = self._model
         self._log_causality_probs = getattr(self._cfg, 'log_causality_probs', False)
-        self._causality_log_dir = getattr(self._cfg, 'causality_log_dir', './visuals')
+        self._causality_log_dir = getattr(self._cfg, 'causality_log_dir', './visuals_inter')
         self._causality_policy_buffer = defaultdict(list)
         self._causality_value_buffer = defaultdict(list)
         self._causality_episode = defaultdict(lambda: 1)
@@ -845,13 +845,13 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             os.makedirs(self._causality_log_dir, exist_ok=True)
 
         self._log_unizero_slots = getattr(self._cfg, 'log_unizero_slots', False)
-        self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals')
+        self._unizero_slots_dir = getattr(self._cfg, 'unizero_slots_dir', './visuals_inter')
         self._sa_slots_buffer = defaultdict(list)
         self._sa_slots_episode = defaultdict(lambda: 1)
         if self._log_unizero_slots:
             os.makedirs(self._unizero_slots_dir, exist_ok=True)
         self._log_eval_actions = getattr(self._cfg, 'log_eval_actions', False)
-        self._eval_actions_dir = getattr(self._cfg, 'eval_actions_dir', './visuals')
+        self._eval_actions_dir = getattr(self._cfg, 'eval_actions_dir', './visuals_inter')
         self._eval_actions_buffer = defaultdict(list)
         self._eval_actions_episode = defaultdict(lambda: 1)
         if self._log_eval_actions:
@@ -982,7 +982,12 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                     action = int(action.item())
 
                 if self._log_eval_actions:
-                    self._eval_actions_buffer[int(env_id)].append(int(action))
+                    if self._cfg.model.continuous_action_space:
+                        self._eval_actions_buffer[int(env_id)].append(
+                            np.asarray(action, dtype=np.float32).copy()
+                        )
+                    else:
+                        self._eval_actions_buffer[int(env_id)].append(int(action))
 
                 output[env_id] = {
                     'action': action,

@@ -1,5 +1,6 @@
 # Adapted from openai baselines: https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Optional
 
 import cv2
@@ -23,6 +24,21 @@ from zoo.causal_world.env.causal_world.cw_envs import CwTargetEnv
 from collections import namedtuple
 
 
+class EnsureSpecIdWrapper(gym.Wrapper):
+    """Provide gym-compatible env.spec.id for wrappers like RecordVideo."""
+
+    def __init__(self, env: gym.Env, fallback_id: str):
+        super().__init__(env)
+        self._fallback_spec = SimpleNamespace(id=fallback_id)
+
+    @property
+    def spec(self):
+        spec = getattr(self.env, "spec", None)
+        if spec is not None and getattr(spec, "id", None) is not None:
+            return spec
+        return self._fallback_spec
+
+
 def wrap_lightzero(config: EasyDict) -> gym.Env:
     """
     Overview:
@@ -38,11 +54,14 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     env_config = OmegaConf.load(config.env_config_path)
     env = CwTargetEnv(env_config, config.seed)
     env.action_space.seed(config.seed)
+    env = EnsureSpecIdWrapper(env, fallback_id=env.__class__.__name__)
 
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        video_name = f'{env.spec.id}-video-{timestamp}'
+        env_spec = getattr(env, "spec", None)
+        env_name = env_spec.id if env_spec is not None and getattr(env_spec, "id", None) is not None else env.__class__.__name__
+        video_name = f'{env_name}-video-{timestamp}'
         env = RecordVideo(
             env,
             video_folder=config.replay_path,
