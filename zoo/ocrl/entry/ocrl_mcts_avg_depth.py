@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        required=True,
+        default='/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_goal_seed=0.pth.tar',
         help="Path to trained UniZero checkpoint (*.pth.tar).",
     )
     parser.add_argument("--env-id", type=str, default="TargetEnv-v0")

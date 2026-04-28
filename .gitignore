@@ -1456,7 +1456,7 @@ test.py
 vis_test.py
 _vizdoom.ini
 oc_agents_weights
-visuals
+visuals_cw
 visuals_goal
 visuals_cw
 visuals_oddobj
