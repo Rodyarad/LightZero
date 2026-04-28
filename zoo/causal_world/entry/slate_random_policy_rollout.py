@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=125)
     parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slate/config/slate_3d.yaml")
     parser.add_argument("--checkpoint-path", type=str, default="zoo/ocr/slate_weights/slate_3d.pth")
-    parser.add_argument("--output-dir", type=str, default="visuals/random_policy_log_cw")
+    parser.add_argument("--output-dir", type=str, default="visuals/random_policy_log")
     parser.add_argument("--device", type=str, default="cuda")
     return parser.parse_args()
 

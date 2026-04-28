@@ -329,6 +329,7 @@ def build_step_panel(
     step: int,
     gt_strip: np.ndarray,
     dyn_strip: np.ndarray,
+    obs_rgb: np.ndarray,
     render_slot_size: int,
     num_slots: int,
     highlight_slots: List[int],
@@ -354,14 +355,17 @@ def build_step_panel(
     title_h = text_h + text_baseline + 8
     h = gt_strip.shape[0]
     w = gt_strip.shape[1]
+    obs_tile_rgb = cv2.resize(obs_rgb, (h, h), interpolation=cv2.INTER_AREA)
+    row_content_w = h + side_pad + w
     panel_h = title_h + side_pad + h + row_gap + h + side_pad
-    panel_w = left_label_w + side_pad + w + side_pad
+    panel_w = left_label_w + side_pad + row_content_w + side_pad
     canvas = np.full((panel_h, panel_w, 3), 255, dtype=np.uint8)
 
     # Step label above the two comparison rows.
     (tw, _), _ = cv2.getTextSize(step_text, cv2.FONT_HERSHEY_SIMPLEX, step_font_scale, step_thickness)
-    x_img = left_label_w + side_pad
-    tx = x_img + (w - tw) // 2
+    x_obs = left_label_w + side_pad
+    x_strip = x_obs + h + side_pad
+    tx = x_obs + (row_content_w - tw) // 2
     ty = text_h + 3
     cv2.putText(
         canvas,
@@ -376,16 +380,18 @@ def build_step_panel(
 
     y0 = title_h + side_pad
     y1 = y0 + h + row_gap
-    canvas[y0 : y0 + h, x_img : x_img + w] = cv2.cvtColor(gt_strip, cv2.COLOR_RGB2BGR)
-    canvas[y1 : y1 + h, x_img : x_img + w] = cv2.cvtColor(dyn_strip, cv2.COLOR_RGB2BGR)
+    obs_bgr = cv2.cvtColor(obs_tile_rgb, cv2.COLOR_RGB2BGR)
+    canvas[y0 : y0 + h, x_obs : x_obs + h] = obs_bgr
+    canvas[y0 : y0 + h, x_strip : x_strip + w] = cv2.cvtColor(gt_strip, cv2.COLOR_RGB2BGR)
+    canvas[y1 : y1 + h, x_strip : x_strip + w] = cv2.cvtColor(dyn_strip, cv2.COLOR_RGB2BGR)
 
     if num_slots > 0 and len(highlight_slots) > 0:
         slot_edges = np.linspace(0, w, num_slots + 1, dtype=np.int32)
         for slot_idx in highlight_slots:
             if slot_idx < 0 or slot_idx >= num_slots:
                 continue
-            x0_slot = int(x_img + slot_edges[slot_idx])
-            x1_slot = int(x_img + slot_edges[slot_idx + 1] - 1)
+            x0_slot = int(x_strip + slot_edges[slot_idx])
+            x1_slot = int(x_strip + slot_edges[slot_idx + 1] - 1)
             if x1_slot <= x0_slot:
                 continue
             border_color = highlight_color_map.get(slot_idx, (0, 0, 255))
@@ -420,7 +426,7 @@ def build_step_panel(
         y0_rot = int(y_center - rh / 2)
         y0_rot = max(0, min(y0_rot, canvas.shape[0] - rh))
         # Place label close to the image block.
-        x0_rot = max(0, x_img - rw - 2)
+        x0_rot = max(0, x_obs - rw - 2)
 
         roi = canvas[y0_rot : y0_rot + rh, x0_rot : x0_rot + rw]
         mask = np.any(rot < 245, axis=2)
@@ -550,6 +556,7 @@ def main() -> None:
                 step=step,
                 gt_strip=gt_strip,
                 dyn_strip=dyn_strip,
+                obs_rgb=obs_rgb,
                 render_slot_size=args.render_slot_size,
                 num_slots=num_slots,
                 highlight_slots=args.highlight_slots,

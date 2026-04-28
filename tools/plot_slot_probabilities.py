@@ -39,10 +39,37 @@ def split_slot_strip(slot_strip_bgr: np.ndarray, num_slots: int) -> List[np.ndar
     return [cv2.cvtColor(chunk, cv2.COLOR_BGR2RGB) for chunk in slot_chunks]
 
 
+def load_frames(frames_dir: Path, frame_glob: str, obs_size: int, skip_first_frame: bool) -> List[np.ndarray]:
+    frame_paths = sorted(frames_dir.glob(frame_glob))
+    if len(frame_paths) == 0:
+        raise FileNotFoundError(f"No frames found in {frames_dir} with pattern {frame_glob}")
+    if skip_first_frame:
+        frame_paths = frame_paths[1:]
+    frames_rgb: List[np.ndarray] = []
+    for p in frame_paths:
+        img_bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            raise RuntimeError(f"Failed to read frame: {p}")
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        if img_rgb.shape[0] != obs_size or img_rgb.shape[1] != obs_size:
+            img_rgb = cv2.resize(img_rgb, (obs_size, obs_size), interpolation=cv2.INTER_AREA)
+        frames_rgb.append(img_rgb)
+    return frames_rgb
+
+
+def resolve_frame_offset(num_steps: int, num_frames: int, frame_offset: int) -> int:
+    if frame_offset >= 0:
+        return frame_offset
+    if num_frames == num_steps + 1:
+        return 1
+    return 0
+
+
 def plot_probabilities_for_step(
     step: int,
     probs: List[float],
     slot_images: List[np.ndarray],
+    original_image: np.ndarray,
     output_path: Path,
     slot_spacing: float,
     highlight_slots: List[int],
@@ -55,18 +82,26 @@ def plot_probabilities_for_step(
     num_slots = len(probs)
     y_max = (max(probs) * 1.15) if len(probs) > 0 and max(probs) > 0 else 1.0
 
-    if viz_mode == 1:
-        fig_height = 4.8
-    else:
-        fig_height = 3.6
-    fig = plt.figure(figsize=(max(10, num_slots * 2.1), fig_height))
-    inner = fig.add_gridspec(
+    fig_height = 4.8 if viz_mode == 1 else 3.6
+    fig = plt.figure(figsize=(max(10.6, num_slots * 2.2 + 1.9), fig_height))
+    original_image = _resize_to_slot_tile(original_image, slot_images[0])
+    outer = fig.add_gridspec(
+        1,
         2,
-        num_slots,
+        width_ratios=[0.085, max(2.5, float(num_slots) + 1.0)],
+        wspace=0.015,
+    )
+    _draw_step_side_label(fig, outer[0, 0], step)
+    inner = outer[0, 1].subgridspec(
+        2,
+        num_slots + 1,
+        width_ratios=[1.0] + [1.0] * num_slots,
         height_ratios=_height_ratios(viz_mode),
         hspace=0.03,
         wspace=slot_spacing,
     )
+    _draw_step_original_image(fig, inner[0, 0], original_image)
+    _draw_empty_cell(fig, inner[1, 0])
 
     _draw_step(
         fig=fig,
@@ -78,8 +113,6 @@ def plot_probabilities_for_step(
         highlight_color_map=highlight_color_map,
         viz_mode=viz_mode,
     )
-
-    fig.suptitle(f"Step {step}", fontsize=13, y=1.08, fontweight="bold")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -104,7 +137,8 @@ def _draw_step(
     viz_mode: int,
 ) -> None:
     for slot_idx, (slot_img, prob) in enumerate(zip(slot_images, probs)):
-        top_ax = fig.add_subplot(inner[0, slot_idx])
+        col_idx = slot_idx + 1
+        top_ax = fig.add_subplot(inner[0, col_idx])
         top_ax.imshow(slot_img)
         top_ax.set_xticks([])
         top_ax.set_yticks([])
@@ -128,7 +162,7 @@ def _draw_step(
             else:
                 spine.set_visible(False)
 
-        bar_ax = fig.add_subplot(inner[1, slot_idx])
+        bar_ax = fig.add_subplot(inner[1, col_idx])
         if viz_mode == 1:
             bar_ax.bar([0], [prob], width=0.62, color="#4E79A7")
             bar_ax.set_xlim(-0.8, 0.8)
@@ -147,9 +181,52 @@ def _draw_step(
             bar_ax.set_frame_on(False)
 
 
+def _draw_step_side_label(fig: plt.Figure, grid_spec, step: int) -> None:
+    ax = fig.add_subplot(grid_spec)
+    ax.axis("off")
+    ax.text(
+        0.5,
+        0.6,
+        f"Step {step}",
+        rotation=90,
+        rotation_mode="anchor",
+        ha="center",
+        va="center",
+        fontsize=11,
+        fontweight="bold",
+        color="#222222",
+        transform=ax.transAxes,
+        clip_on=False,
+    )
+
+
+def _draw_step_original_image(fig: plt.Figure, grid_spec, original_image: np.ndarray) -> None:
+    ax = fig.add_subplot(grid_spec)
+    ax.imshow(original_image)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+        spine.set_color("#555555")
+
+
+def _draw_empty_cell(fig: plt.Figure, grid_spec) -> None:
+    ax = fig.add_subplot(grid_spec)
+    ax.axis("off")
+
+
+def _resize_to_slot_tile(image_rgb: np.ndarray, slot_tile_rgb: np.ndarray) -> np.ndarray:
+    target_h, target_w = slot_tile_rgb.shape[:2]
+    if image_rgb.shape[:2] == (target_h, target_w):
+        return image_rgb
+    return cv2.resize(image_rgb, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+
 def plot_probabilities_selected_steps(
     probs_by_step: Dict[int, List[float]],
     slot_images_by_step: Dict[int, List[np.ndarray]],
+    original_images_by_step: Dict[int, np.ndarray],
     selected_steps: List[int],
     output_path: Path,
     slot_spacing: float,
@@ -166,26 +243,39 @@ def plot_probabilities_selected_steps(
             raise ValueError(f"Requested selected step {step} is missing in probability data.")
         if step not in slot_images_by_step:
             raise ValueError(f"Requested selected step {step} is missing in slot image data.")
+        if step not in original_images_by_step:
+            raise ValueError(f"Requested selected step {step} is missing in original frame data.")
         if len(probs_by_step[step]) != num_slots:
             raise ValueError(f"Inconsistent number of slots at step {step}.")
         if len(slot_images_by_step[step]) != num_slots:
             raise ValueError(f"Inconsistent slot image count at step {step}.")
 
     base_height = 4.8 if viz_mode == 1 else 3.6
-    fig = plt.figure(figsize=(max(10, num_slots * 2.1), max(base_height, base_height * len(valid_steps))))
+    fig = plt.figure(figsize=(max(10.6, num_slots * 2.2 + 1.9), max(base_height, base_height * len(valid_steps))))
     outer = fig.add_gridspec(len(valid_steps), 1, hspace=0.33)
 
     for row_idx, step in enumerate(valid_steps):
         probs = probs_by_step[step]
         slot_images = slot_images_by_step[step]
+        original_image = _resize_to_slot_tile(original_images_by_step[step], slot_images[0])
         y_max = (max(probs) * 1.15) if len(probs) > 0 and max(probs) > 0 else 1.0
-        inner = outer[row_idx].subgridspec(
+        row_outer = outer[row_idx].subgridspec(
+            1,
             2,
-            num_slots,
+            width_ratios=[0.085, max(2.5, float(num_slots) + 1.0)],
+            wspace=0.015,
+        )
+        _draw_step_side_label(fig, row_outer[0, 0], step)
+        inner = row_outer[0, 1].subgridspec(
+            2,
+            num_slots + 1,
+            width_ratios=[1.0] + [1.0] * num_slots,
             height_ratios=_height_ratios(viz_mode),
             hspace=0.03,
             wspace=slot_spacing,
         )
+        _draw_step_original_image(fig, inner[0, 0], original_image)
+        _draw_empty_cell(fig, inner[1, 0])
         _draw_step(
             fig=fig,
             inner=inner,
@@ -196,8 +286,6 @@ def plot_probabilities_selected_steps(
             highlight_color_map=highlight_color_map,
             viz_mode=viz_mode,
         )
-        step_bbox = outer[row_idx].get_position(fig)
-        fig.text(0.5, step_bbox.y1 + 0.03, f"Step {step}", ha="center", va="bottom", fontsize=13, fontweight="bold")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -225,6 +313,35 @@ def main() -> None:
         type=str,
         default="slots_sample_{step:04d}.jpg",
         help="Template for slot image files in slot-dir.",
+    )
+    parser.add_argument(
+        "--frames-dir",
+        type=Path,
+        default=Path("visuals/video_frames"),
+        help="Directory with original step frames.",
+    )
+    parser.add_argument(
+        "--frame-glob",
+        type=str,
+        default="frame_*.jpg",
+        help="Glob for frames in frames-dir.",
+    )
+    parser.add_argument(
+        "--obs-size",
+        type=int,
+        default=64,
+        help="Resize original frames to this square size.",
+    )
+    parser.add_argument(
+        "--frame-offset",
+        type=int,
+        default=-1,
+        help="Frame index offset for step t. -1 means auto.",
+    )
+    parser.add_argument(
+        "--keep-first-frame",
+        action="store_true",
+        help="Do not skip frame_0000. By default the first frame is skipped.",
     )
     parser.add_argument(
         "--out-dir",
@@ -300,6 +417,16 @@ def main() -> None:
     policy_by_step: Dict[int, List[float]] = {}
     value_by_step: Dict[int, List[float]] = {}
     slot_images_by_step: Dict[int, List[np.ndarray]] = {}
+    original_images_by_step: Dict[int, np.ndarray] = {}
+
+    frames_rgb = load_frames(
+        frames_dir=args.frames_dir,
+        frame_glob=args.frame_glob,
+        obs_size=args.obs_size,
+        skip_first_frame=not args.keep_first_frame,
+    )
+    frame_offset = resolve_frame_offset(num_steps=max(steps) + 1, num_frames=len(frames_rgb), frame_offset=args.frame_offset)
+
     for step in steps:
         policy_probs = causality.get((step, "policy"))
         value_probs = causality.get((step, "value"))
@@ -316,9 +443,15 @@ def main() -> None:
             raise FileNotFoundError(f"Slot image not found or unreadable: {slot_path}")
 
         slot_images = split_slot_strip(slot_strip, len(policy_probs))
+        frame_idx = step + frame_offset
+        if frame_idx < 0 or frame_idx >= len(frames_rgb):
+            raise ValueError(
+                f"Frame index out of range for step {step}: frame_idx={frame_idx}, total_frames={len(frames_rgb)}"
+            )
         policy_by_step[step] = policy_probs
         value_by_step[step] = value_probs
         slot_images_by_step[step] = slot_images
+        original_images_by_step[step] = frames_rgb[frame_idx]
 
         policy_out = args.out_dir / f"slot_probs_policy_step_{step:04d}.png"
         value_out = args.out_dir / f"slot_probs_value_step_{step:04d}.png"
@@ -327,6 +460,7 @@ def main() -> None:
             step=step,
             probs=policy_probs,
             slot_images=slot_images,
+            original_image=original_images_by_step[step],
             output_path=policy_out,
             slot_spacing=args.slot_spacing,
             highlight_slots=args.highlight_slots,
@@ -337,6 +471,7 @@ def main() -> None:
             step=step,
             probs=value_probs,
             slot_images=slot_images,
+            original_image=original_images_by_step[step],
             output_path=value_out,
             slot_spacing=args.slot_spacing,
             highlight_slots=args.highlight_slots,
@@ -351,6 +486,7 @@ def main() -> None:
         plot_probabilities_selected_steps(
             probs_by_step=policy_by_step,
             slot_images_by_step=slot_images_by_step,
+            original_images_by_step=original_images_by_step,
             selected_steps=args.merge_steps,
             output_path=merged_policy_out,
             slot_spacing=args.slot_spacing,
@@ -361,6 +497,7 @@ def main() -> None:
         plot_probabilities_selected_steps(
             probs_by_step=value_by_step,
             slot_images_by_step=slot_images_by_step,
+            original_images_by_step=original_images_by_step,
             selected_steps=args.merge_steps,
             output_path=merged_value_out,
             slot_spacing=args.slot_spacing,
