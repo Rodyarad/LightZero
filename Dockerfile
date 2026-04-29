@@ -1,4 +1,4 @@
-# maniskill
+
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -28,6 +28,6 @@ RUN apt-get update && \
 RUN ln -s /usr/bin/python3.9 /usr/local/bin/python && \
     ln -s /usr/bin/pip3 /usr/local/bin/pip
 
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python
+RUN curl -sS https://bootstrap.pypa.io/pip/3.9/get-pip.py | python
 
 RUN python -m pip install --upgrade pip setuptools wheel
