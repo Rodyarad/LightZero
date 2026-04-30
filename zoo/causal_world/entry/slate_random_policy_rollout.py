@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="zoo/causal_world/env/causal_world/cw_envs/config/reaching-hard_orig.yaml",
     )
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=142)
     parser.add_argument("--max-steps", type=int, default=125)
     parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slate/config/slate_3d.yaml")
     parser.add_argument("--checkpoint-path", type=str, default="zoo/ocr/slate_weights/slate_3d.pth")

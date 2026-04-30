@@ -156,7 +156,7 @@ if __name__ == "__main__":
     main_config, create_config = build_config()
 
     model_path = '/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_cw_slate_seed7.pth.tar'
-    seeds = [0]
+    seeds = [142]
     num_episodes_each_seed = 1
 
     create_config.env_manager.type = "base"

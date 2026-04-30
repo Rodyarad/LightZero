@@ -6,7 +6,7 @@ from easydict import EasyDict
 from lzero.entry import eval_muzero
 
 
-def build_config(env_id='TargetEnv-v0'):
+def build_config(env_id='PushEnv-v0'):
     action_space_size = 4
 
     collector_env_num = 8
@@ -148,9 +148,9 @@ if __name__ == "__main__":
 
     # model_path is the path to the trained MuZero model checkpoint.
     # If no path is provided, the script will use the default model.
-    model_path = '/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_goal_seed=0.pth.tar'
+    model_path = '/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_inter_seed7.pth.tar'
     # seeds is a list of seed values for the random number generator, used to initialize the environment.
-    seeds = [600]
+    seeds = [542]
     # num_episodes_each_seed is the number of episodes to run for each seed.
     num_episodes_each_seed = 1
     # total_test_episodes is the total number of test episodes, calculated as the product of the number of seeds and the number of episodes per seed

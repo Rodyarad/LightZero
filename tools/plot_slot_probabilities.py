@@ -359,14 +359,14 @@ def main() -> None:
         "--highlight-slots",
         type=int,
         nargs="+",
-        default=[],
+        default=[7],
         help="Slot indices to highlight with red border (e.g. --highlight-slots 1 2).",
     )
     parser.add_argument(
         "--highlight-colors",
         type=int,
         nargs="+",
-        default=[],
+        default=[0],
         help=(
             "Per-highlight slot color codes aligned with --highlight-slots: "
             "1=red, 0=blue, 2=green. Example: --highlight-slots 2 4 5 --highlight-colors 1 0 2"
@@ -383,7 +383,7 @@ def main() -> None:
         "--merge-steps",
         type=int,
         nargs="+",
-        default=[0, 3, 7],
+        default=[0, 4, 6],
         help="Optional list of step indices to merge into one figure (e.g. --merge-steps 0 2 5).",
     )
     args = parser.parse_args()

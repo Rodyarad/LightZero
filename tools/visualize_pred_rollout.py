@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         "--merge-steps",
         type=int,
         nargs="+",
-        default=[0, 4, 8],
+        default=[0, 3, 6],
         help="Optional list of step indices to merge into one image.",
     )
     parser.add_argument("--merged-output-name", type=str, default="selected_steps_overview.jpg")
@@ -285,7 +285,7 @@ def build_step_panel(
     row_gap = 8
     side_pad = 6
     left_label_w = 32
-    step_text = f"Step {step}"
+    step_text = f"Step {step + 1}"
     step_font_scale = 0.80
     step_thickness = 1
     (_, text_h), text_baseline = cv2.getTextSize(

@@ -20,10 +20,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a random-policy OCRL rollout and save obs/slots."
     )
-    parser.add_argument("--env-config-stem", type=str, default="target-N4C4S3S1")
-    parser.add_argument("--env-type", type=str, default="TargetEnv")
-    parser.add_argument("--seed", type=int, default=600)
-    parser.add_argument("--max-steps", type=int, default=12)
+    parser.add_argument("--env-config-stem", type=str, default="push-N3C4S1S1")
+    parser.add_argument("--env-type", type=str, default="PushEnv")
+    parser.add_argument("--seed", type=int, default=542)
+    parser.add_argument("--max-steps", type=int, default=25)
     parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slate/config/slate_ocrl.yaml")
     parser.add_argument("--checkpoint-path", type=str, default="zoo/ocr/slate_weights/slate_ocrl.pth")
     parser.add_argument("--output-dir", type=str, default="visuals/random_policy_log")
