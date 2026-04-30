@@ -264,6 +264,16 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         # (float) The fixed temperature value for MCTS action selection, which is used to control the exploration.
         # The larger the value, the more exploration. This value is only used when manual_temperature_decay=False.
         fixed_temperature_value=0.25,
+        # (bool) Whether to use adaptive entropy weight during policy optimization.
+        use_adaptive_entropy_weight=False,
+        # (float) Learning rate for entropy temperature parameter alpha.
+        adaptive_entropy_alpha_lr=1e-3,
+        # (float) Initial ratio for target entropy annealing.
+        target_entropy_start_ratio=0.98,
+        # (float) Final ratio for target entropy annealing.
+        target_entropy_end_ratio=0.05,
+        # (int) Number of training iterations for entropy annealing.
+        target_entropy_decay_steps=500000,
         # (bool) Whether to use the true chance in MCTS in some environments with stochastic dynamics, such as 2048.
         use_ture_chance_label_in_chance_encoder=False,
 
@@ -395,8 +405,20 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             # 3. Distinguishing between actual tokens and padding in loss calculation
             # Default value 0 is a common convention when no specific padding token is defined
             self.pad_token_id = encoder_tokenizer.pad_token_id if encoder_tokenizer is not None else 0
-        
-        
+
+        # Keep parity with UniZero load/save logic, which expects this attribute during checkpoint restore.
+        self.use_adaptive_entropy_weight = bool(getattr(self._cfg, 'use_adaptive_entropy_weight', False))
+        self.target_entropy_start_ratio = getattr(self._cfg, 'target_entropy_start_ratio', 0.98)
+        self.target_entropy_end_ratio = getattr(self._cfg, 'target_entropy_end_ratio', 0.05)
+        self.target_entropy_decay_steps = getattr(self._cfg, 'target_entropy_decay_steps', 500000)
+
+        if self.use_adaptive_entropy_weight and not self._cfg.model.continuous_action_space:
+            action_space_size = self._cfg.model.action_space_size
+            self.target_entropy = -np.log(1.0 / action_space_size) * self.target_entropy_start_ratio
+            self.log_alpha = torch.nn.Parameter(torch.zeros(1, device=self._cfg.device), requires_grad=True)
+            alpha_lr = getattr(self._cfg, 'adaptive_entropy_alpha_lr', 1e-3)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
+
     # @profile
     def _forward_learn(self, data: Tuple[torch.Tensor]) -> Dict[str, Union[float, int]]:
         """
