@@ -412,13 +412,6 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         self.target_entropy_end_ratio = getattr(self._cfg, 'target_entropy_end_ratio', 0.05)
         self.target_entropy_decay_steps = getattr(self._cfg, 'target_entropy_decay_steps', 500000)
 
-        if self.use_adaptive_entropy_weight and not self._cfg.model.continuous_action_space:
-            action_space_size = self._cfg.model.action_space_size
-            self.target_entropy = -np.log(1.0 / action_space_size) * self.target_entropy_start_ratio
-            self.log_alpha = torch.nn.Parameter(torch.zeros(1, device=self._cfg.device), requires_grad=True)
-            alpha_lr = getattr(self._cfg, 'adaptive_entropy_alpha_lr', 1e-3)
-            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
-
     # @profile
     def _forward_learn(self, data: Tuple[torch.Tensor]) -> Dict[str, Union[float, int]]:
         """
