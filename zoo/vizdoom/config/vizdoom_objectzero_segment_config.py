@@ -24,6 +24,12 @@ def main(env_id, seed):
 
     max_env_step = int(5e5)
 
+    num_slots = 7
+    slot_dim = 64
+    ocr_config_path = 'zoo/ocr/slotcontrast/configs/vizdoom_sc.yaml'
+    checkpoint_path = 'zoo/ocr/slotcontrast_weights/slotcontrast_vizdoom.ckpt'
+    tokens_per_block = num_slots * 2
+
     # Reanalyze settings
     buffer_reanalyze_freq = 1/5000000000
     reanalyze_batch_size = 160
@@ -36,18 +42,27 @@ def main(env_id, seed):
         env=dict(
             stop_value=int(1e6),
             env_id=env_id,
-            observation_shape=(3, 64, 64),
+            observation_shape=(3, 336, 336),
             gray_scale=False,
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
             n_evaluator_episode=evaluator_env_num,
-            manager=dict(shared_memory=False, ),
+            manager=dict(shared_memory=False, context='spawn'),
+            oc_model=True,
+            oc_model_type='SlotContrast',
+            ocr_config_path=ocr_config_path,
+            checkpoint_path=checkpoint_path,
+            num_slots=num_slots,
+            slot_dim=slot_dim,
+            warp_frame=True,
+            scale=False,
         ),
         run_id_comet_ml=None,
         policy=dict(
             #store_obs_int8=True,
             model=dict(
-                observation_shape=(3, 64, 64),
+                observation_shape=(num_slots, slot_dim),
+                model_type='slot',
                 action_space_size=action_space_size,
                 reward_support_range=(-300., 301., 1.),
                 value_support_range=(-300., 301., 1.),
@@ -55,18 +70,22 @@ def main(env_id, seed):
                 num_res_blocks=2,
                 num_channels=128,
                 world_model_cfg=dict(
+                    model_type='slot',
+                    tokens_per_block=tokens_per_block,
                     latent_recon_loss_weight=0.0,
                     perceptual_loss_weight=0.0,
                     norm_type=norm_type,
                     support_size=601,
                     policy_entropy_weight=5e-3,
                     max_blocks=num_unroll_steps,
-                    max_tokens=2 * num_unroll_steps,
-                    context_length=2 * infer_context_length,
+                    max_tokens=tokens_per_block * num_unroll_steps,
+                    context_length=tokens_per_block * infer_context_length,
                     action_space_size=action_space_size,
                     num_layers=num_layers,
                     num_heads=8,
-                    embed_dim=768,
+                    embed_dim=slot_dim,
+                    num_slots=num_slots,
+                    obs_type='slot',
                     env_num=max(collector_env_num, evaluator_env_num),
                     num_simulations=num_simulations,
                     game_segment_length=game_segment_length,
@@ -109,7 +128,7 @@ def main(env_id, seed):
             type='vizdoom_lightzero',
             import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
         ),
-        env_manager=dict(type='subprocess'),
+        env_manager=dict(type='subprocess', context='spawn'),
         policy=dict(
             type='unizero',
             import_names=['lzero.policy.unizero'],

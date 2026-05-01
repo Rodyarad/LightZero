@@ -154,7 +154,7 @@ def load_from_checkpoint(config_path: str, checkpoint_path: str, device: str = "
     model_keys = set(model.state_dict().keys())
     filtered_state_dict = {k: v for k, v in state_dict.items() if k in model_keys}
 
-    model.load_state_dict(filtered_state_dict, strict=False)
+    model.load_state_dict(filtered_state_dict)
     model.eval()
     model.to(device)
 
