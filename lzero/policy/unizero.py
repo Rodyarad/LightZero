@@ -1922,7 +1922,7 @@ class UniZeroPolicy(MuZeroPolicy):
         }
         # ==================== START: Save Alpha Optimizer State ====================
         if not self._cfg.model.continuous_action_space:
-            if self.use_adaptive_entropy_weight:
+            if getattr(self, 'use_adaptive_entropy_weight', False):
                 state_dict['alpha_optimizer'] = self.alpha_optimizer.state_dict()
                 state_dict['log_alpha'] = self.log_alpha.data.clone()
         # ===================== END: Save Alpha Optimizer State =====================
@@ -1942,7 +1942,7 @@ class UniZeroPolicy(MuZeroPolicy):
             self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
 
         # ==================== START: Load Alpha State ====================
-        if self.use_adaptive_entropy_weight:
+        if getattr(self, 'use_adaptive_entropy_weight', False):
             if 'log_alpha' in state_dict:
                 self.log_alpha.data.copy_(state_dict['log_alpha'])
             if 'alpha_optimizer' in state_dict:
