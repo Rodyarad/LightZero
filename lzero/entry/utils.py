@@ -938,9 +938,13 @@ def log_buffer_memory_usage(
     writer.add_scalar(f'{prefix}/num_transitions', len(buffer.game_segment_game_pos_look_up), train_iter)
 
     # Calculate and log memory usage of the main buffer component.
-    buffer_memory_bytes = asizeof(buffer.game_segment_buffer)
-    buffer_memory_mb = buffer_memory_bytes / (1024 * 1024)
-    writer.add_scalar(f'{prefix}/memory_usage_mb/game_segment_buffer', buffer_memory_mb, train_iter)
+    # NOTE: pympler.asizeof may fail on some nested numpy/gym objects.
+    try:
+        buffer_memory_bytes = asizeof(buffer.game_segment_buffer)
+        buffer_memory_mb = buffer_memory_bytes / (1024 * 1024)
+        writer.add_scalar(f'{prefix}/memory_usage_mb/game_segment_buffer', buffer_memory_mb, train_iter)
+    except Exception as e:
+        logging.warning(f'Failed to estimate replay buffer memory via asizeof: {e}')
 
     # Get and log total memory usage of the current process.
     process = psutil.Process(os.getpid())
