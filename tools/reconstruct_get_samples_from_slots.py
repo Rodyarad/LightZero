@@ -9,7 +9,7 @@ import torch
 from omegaconf import OmegaConf
 
 from zoo.ocr.slate.slate import SLATE
-from zoo.ocr.tools import obs_to_tensor
+from zoo.ocr.tools import DINOSAUR_PRESETS, load_dinosaur_from_checkpoint, obs_to_tensor
 
 
 def load_slate(
@@ -34,7 +34,7 @@ def load_slate(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Visualize slots via SLATE get_samples using GT images."
+        description="Visualize slots via OCR get_samples (SLATE or DINOSAUR) using GT images."
     )
     parser.add_argument(
         "--slots-path",
@@ -56,7 +56,12 @@ def parse_args() -> argparse.Namespace:
         help="Directory for output images.",
     )
     parser.add_argument("--slot-prefix", type=str, default="slots", help="Prefix for output filenames.")
-    parser.add_argument("--obs-size", type=int, default=64, help="Resize GT frames to this square size.")
+    parser.add_argument(
+        "--obs-size",
+        type=int,
+        default=None,
+        help="Resize GT frames to this square size. Default: 64 for slate, 224 for dinosaur.",
+    )
     parser.add_argument(
         "--frame-offset",
         type=int,
@@ -68,10 +73,48 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not skip frame_0000. By default the first frame is skipped.",
     )
-    parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slate/config/slate_ocrl.yaml")
-    parser.add_argument("--ocr-checkpoint-path", type=str, default="zoo/ocr/slate_weights/slate_ocrl.pth")
+    parser.add_argument(
+        "--ocr-backend",
+        type=str,
+        default="slate",
+        choices=["slate", "dinosaur"],
+        help="OCR module: SLATE or DINOSAUR (slot strips from get_samples).",
+    )
+    parser.add_argument(
+        "--dinosaur-preset",
+        type=str,
+        default="robosuite",
+        choices=list(DINOSAUR_PRESETS.keys()),
+        help="Architecture preset when --ocr-backend dinosaur (must match checkpoint).",
+    )
+    parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slate/config/slate_3d.yaml")
+    parser.add_argument("--ocr-checkpoint-path", type=str, default="zoo/ocr/slate_weights/slate_3d.pth")
+    parser.add_argument(
+        "--dinosaur-mask-mode",
+        type=str,
+        default="auto",
+        choices=("auto", "soft", "hard"),
+        help=(
+            "Dinosaur only: soft = decoder masks; hard = one winner slot per pixel (argmax); "
+            "auto = hard for maniskill preset, soft for robosuite."
+        ),
+    )
     parser.add_argument("--device", type=str, default="cuda")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.ocr_backend == "dinosaur" and args.ocr_checkpoint_path == "zoo/ocr/slate_weights/slate_3d.pth":
+        args.ocr_checkpoint_path = DINOSAUR_PRESETS[args.dinosaur_preset]["default_checkpoint"]
+    if args.obs_size is None:
+        args.obs_size = 224 if args.ocr_backend == "dinosaur" else 64
+    if args.ocr_backend == "dinosaur":
+        if args.dinosaur_mask_mode == "hard":
+            args.dinosaur_hard_masks = True
+        elif args.dinosaur_mask_mode == "soft":
+            args.dinosaur_hard_masks = False
+        else:
+            args.dinosaur_hard_masks = args.dinosaur_preset == "maniskill"
+    else:
+        args.dinosaur_hard_masks = False
+    return args
 
 
 def load_frames(frames_dir: str, frame_glob: str, obs_size: int, skip_first_frame: bool) -> list:
@@ -88,7 +131,7 @@ def load_frames(frames_dir: str, frame_glob: str, obs_size: int, skip_first_fram
             raise RuntimeError(f"Failed to read frame: {p}")
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         if img_rgb.shape[0] != obs_size or img_rgb.shape[1] != obs_size:
-            img_rgb = cv2.resize(img_rgb, (obs_size, obs_size), interpolation=cv2.INTER_AREA)
+            img_rgb = cv2.resize(img_rgb, (obs_size, obs_size), interpolation=cv2.INTER_NEAREST)
         frames.append(img_rgb)
     return frames
 
@@ -123,20 +166,30 @@ def main() -> None:
             f"No aligned data: slots={len(slots)}, frames={len(frames)}, frame_offset={offset}."
         )
 
-    slate = load_slate(
-        ocr_config_path=args.ocr_config_path,
-        checkpoint_path=args.ocr_checkpoint_path,
-        obs_size=args.obs_size,
-        obs_channels=3,
-        device=device,
-    )
+    if args.ocr_backend == "slate":
+        ocr = load_slate(
+            ocr_config_path=args.ocr_config_path,
+            checkpoint_path=args.ocr_checkpoint_path,
+            obs_size=args.obs_size,
+            obs_channels=3,
+            device=device,
+        )
+    else:
+        ocr = load_dinosaur_from_checkpoint(
+            checkpoint_path=args.ocr_checkpoint_path,
+            device=device,
+            preset=args.dinosaur_preset,
+        )
 
     with torch.no_grad():
         for t in range(usable_steps):
             frame_rgb = frames[t + offset]
             obs = obs_to_tensor(frame_rgb[np.newaxis, ...], device=device)
             prev_slots = torch.from_numpy(slots[t:t + 1]).to(device=device, dtype=torch.float32)
-            sample = slate._module.get_samples(obs, prev_slots=prev_slots)["samples"][0]
+            if args.ocr_backend == "slate":
+                sample = ocr._module.get_samples(obs, prev_slots=prev_slots)["samples"][0]
+            else:
+                sample = ocr.get_samples(obs, prev_slots=prev_slots, hard_masks=args.dinosaur_hard_masks)["samples"][0]
 
             out_path = os.path.join(args.output_dir, f"{args.slot_prefix}_sample_{t:04d}.jpg")
             ok = cv2.imwrite(out_path, cv2.cvtColor(sample, cv2.COLOR_RGB2BGR))

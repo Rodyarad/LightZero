@@ -17,6 +17,7 @@ from zoo.ocr.tools import Dinosaur
 from collections import namedtuple
 
 from zoo.maniskill.env.maniskill3 import ManiSkill
+from zoo.common.ensure_spec_id import EnsureSpecIdWrapper
 
 
 def wrap_lightzero(config: EasyDict) -> gym.Env:
@@ -32,11 +33,18 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
     env = ManiSkill(reward_mode='normalized_dense', pose_reward_coef=0.01, place_reward_coef=0.1, image_size=config.observation_shape[2])
+    env = EnsureSpecIdWrapper(env, fallback_id="ManiSkill")
 
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        video_name = f'{env.spec.id}-video-{timestamp}'
+        env_spec = getattr(env, "spec", None)
+        env_name = (
+            env_spec.id
+            if env_spec is not None and getattr(env_spec, "id", None) is not None
+            else env.__class__.__name__
+        )
+        video_name = f'{env_name}-video-{timestamp}'
         env = RecordVideo(
             env,
             video_folder=config.replay_path,

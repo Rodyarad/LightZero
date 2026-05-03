@@ -13,10 +13,12 @@ from omegaconf import OmegaConf
 from lzero.model.sampled_unizero_model import SampledUniZeroModel
 from lzero.model.unizero_model import UniZeroModel
 from zoo.ocr.slate.slate import SLATE
-from zoo.ocr.tools import obs_to_tensor
+from zoo.ocr.tools import load_dinosaur_from_checkpoint, obs_to_tensor
 
 ENV_DEFAULTS = {
     "ocrl": {
+        "ocr_backend": "slate",
+        "dinosaur_preset": "robosuite",
         "ocr_config_path": "zoo/ocr/slate/config/slate_ocrl.yaml",
         "ocr_checkpoint_path": "zoo/ocr/slate_weights/slate_ocrl.pth",
         "obs_path": "visuals/random_policy_log/random_obs.npy",
@@ -33,13 +35,16 @@ ENV_DEFAULTS = {
         "continuous_action_space": False,
         "num_of_sampled_actions": None,
         "policy_entropy_weight": 5e-3,
+        "obs_size": 64,
     },
     "causal_world": {
+        "ocr_backend": "slate",
+        "dinosaur_preset": "robosuite",
         "ocr_config_path": "zoo/ocr/slate/config/slate_3d.yaml",
         "ocr_checkpoint_path": "zoo/ocr/slate_weights/slate_3d.pth",
-        "obs_path": "visuals/random_policy_log_cw/random_obs.npy",
-        "slots_path": "visuals/random_policy_log_cw/random_slots.npy",
-        "actions_path": "visuals/random_policy_log_cw/random_actions.npy",
+        "obs_path": "visuals/random_policy_log/random_obs.npy",
+        "slots_path": "visuals/random_policy_log/random_slots.npy",
+        "actions_path": "visuals/random_policy_log/random_actions.npy",
         "action_space_size": 3,
         "num_slots": 10,
         "slot_dim": 192,
@@ -51,6 +56,49 @@ ENV_DEFAULTS = {
         "continuous_action_space": True,
         "num_of_sampled_actions": 20,
         "policy_entropy_weight": 5e-2,
+        "obs_size": 64,
+    },
+    "robosuite": {
+        "ocr_backend": "dinosaur",
+        "dinosaur_preset": "robosuite",
+        "ocr_config_path": "",
+        "ocr_checkpoint_path": "zoo/ocr/dinosaur_weights/robosuite.ckpt",
+        "obs_path": "visuals/random_policy_log/random_obs.npy",
+        "slots_path": "visuals/random_policy_log/random_slots.npy",
+        "actions_path": "visuals/random_policy_log/random_actions.npy",
+        "action_space_size": 4,
+        "num_slots": 5,
+        "slot_dim": 64,
+        "num_unroll_steps": 5,
+        "infer_context_length": 2,
+        "game_segment_length": 100,
+        "num_simulations": 50,
+        "support_size": 101,
+        "continuous_action_space": True,
+        "num_of_sampled_actions": 20,
+        "policy_entropy_weight": 5e-2,
+        "obs_size": 224,
+    },
+    "maniskill": {
+        "ocr_backend": "dinosaur",
+        "dinosaur_preset": "maniskill",
+        "ocr_config_path": "",
+        "ocr_checkpoint_path": "zoo/ocr/dinosaur_weights/maniskill.ckpt",
+        "obs_path": "visuals/random_policy_log/random_obs.npy",
+        "slots_path": "visuals/random_policy_log/random_slots.npy",
+        "actions_path": "visuals/random_policy_log/random_actions.npy",
+        "action_space_size": 8,
+        "num_slots": 4,
+        "slot_dim": 128,
+        "num_unroll_steps": 5,
+        "infer_context_length": 2,
+        "game_segment_length": 100,
+        "num_simulations": 50,
+        "support_size": 101,
+        "continuous_action_space": True,
+        "num_of_sampled_actions": 20,
+        "policy_entropy_weight": 5e-2,
+        "obs_size": 224,
     },
 }
 
@@ -70,19 +118,18 @@ def parse_args() -> argparse.Namespace:
         "--env-type",
         type=str,
         default="ocrl",
-        choices=["ocrl", "causal_world"],
+        choices=["ocrl", "causal_world", "robosuite", "maniskill"],
         help="Environment preset to select model/OCR/default-path config.",
     )
-    parser.add_argument("--model-path", type=str, default="oc_agents_weights/oz_stica_goal_seed=0.pth.tar")
+    parser.add_argument("--model-path", type=str, default="oc_agents_weights/oz_stica_cw_slate_seed7.pth.tar")
     parser.add_argument("--obs-path", type=str, default="")
     parser.add_argument("--slots-path", type=str, default="")
     parser.add_argument("--actions-path", type=str, default="")
-    parser.add_argument("--obs-size", type=int, default=64, help="Resize GT obs to square size.")
     parser.add_argument(
-        "--render-slot-size",
+        "--obs-size",
         type=int,
-        default=128,
-        help="Output slot size in final panel images (render-only).",
+        default=None,
+        help="Resize GT obs to square size (default from --env-type preset).",
     )
     parser.add_argument(
         "--frame-index-offset",
@@ -91,19 +138,13 @@ def parse_args() -> argparse.Namespace:
         help="obs index for step t is t+offset. -1 means auto.",
     )
     parser.add_argument("--start-step", type=int, default=0)
-    parser.add_argument(
-        "--panel-slot-size",
-        type=int,
-        default=128,
-        help="Rendered size (H=W) for each slot tile in output panels.",
-    )
     parser.add_argument("--output-dir", type=str, default="visuals/random_policy_pred_rollout_samples")
     parser.add_argument("--step-filename-template", type=str, default="random_step_{step:04d}.jpg")
     parser.add_argument(
         "--merge-steps",
         type=int,
         nargs="+",
-        default=[0, 3, 7],
+        default=[0,3,5],
         help="Optional list of step indices to merge into one image.",
     )
     parser.add_argument("--merged-output-name", type=str, default="random_selected_steps_overview.jpg")
@@ -123,6 +164,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ocr-config-path", type=str, default="")
     parser.add_argument("--ocr-checkpoint-path", type=str, default="")
+    parser.add_argument(
+        "--dinosaur-mask-mode",
+        type=str,
+        default="auto",
+        choices=("auto", "soft", "hard"),
+        help=(
+            "Dinosaur only: soft = decoder masks; hard = one winner slot per pixel (argmax); "
+            "auto = hard for maniskill, soft otherwise."
+        ),
+    )
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
     env_defaults = ENV_DEFAULTS[args.env_type]
@@ -132,10 +183,24 @@ def parse_args() -> argparse.Namespace:
         args.slots_path = env_defaults["slots_path"]
     if not args.actions_path:
         args.actions_path = env_defaults["actions_path"]
-    if not args.ocr_config_path:
-        args.ocr_config_path = env_defaults["ocr_config_path"]
+    args.ocr_backend = str(env_defaults["ocr_backend"])
+    args.dinosaur_preset = str(env_defaults["dinosaur_preset"])
+    if env_defaults["ocr_backend"] == "slate":
+        if not args.ocr_config_path:
+            args.ocr_config_path = env_defaults["ocr_config_path"]
     if not args.ocr_checkpoint_path:
         args.ocr_checkpoint_path = env_defaults["ocr_checkpoint_path"]
+    if args.obs_size is None:
+        args.obs_size = int(env_defaults["obs_size"])
+    if args.ocr_backend == "dinosaur":
+        if args.dinosaur_mask_mode == "hard":
+            args.dinosaur_hard_masks = True
+        elif args.dinosaur_mask_mode == "soft":
+            args.dinosaur_hard_masks = False
+        else:
+            args.dinosaur_hard_masks = args.env_type == "maniskill"
+    else:
+        args.dinosaur_hard_masks = False
     if args.highlight_colors is None:
         args.highlight_colors = [1] * len(args.highlight_slots)
     if len(args.highlight_colors) != len(args.highlight_slots):
@@ -306,7 +371,7 @@ def infer_frame_offset(num_actions: int, num_obs: int, arg_offset: int) -> int:
 
 def prep_obs(obs: np.ndarray, obs_size: int) -> np.ndarray:
     if obs.shape[0] != obs_size or obs.shape[1] != obs_size:
-        obs = cv2.resize(obs, (obs_size, obs_size), interpolation=cv2.INTER_AREA)
+        obs = cv2.resize(obs, (obs_size, obs_size), interpolation=cv2.INTER_NEAREST)
     if obs.dtype != np.uint8:
         if np.issubdtype(obs.dtype, np.floating):
             max_v = float(np.max(obs)) if obs.size > 0 else 1.0
@@ -319,10 +384,20 @@ def prep_obs(obs: np.ndarray, obs_size: int) -> np.ndarray:
     return np.ascontiguousarray(obs)
 
 
-def render_slot_strip(slate: SLATE, obs_rgb: np.ndarray, slots_1x: torch.Tensor, device: str) -> np.ndarray:
+def render_slot_strip(
+    ocr_model,
+    obs_rgb: np.ndarray,
+    slots_1x: torch.Tensor,
+    device: str,
+    ocr_backend: str,
+    dinosaur_hard_masks: bool,
+) -> np.ndarray:
     obs = obs_to_tensor(obs_rgb[np.newaxis, ...], device=device)
-    sample_rgb = slate._module.get_samples(obs, prev_slots=slots_1x)["samples"][0]
-    return sample_rgb
+    if ocr_backend == "slate":
+        out = ocr_model._module.get_samples(obs, prev_slots=slots_1x)
+    else:
+        out = ocr_model.get_samples(obs, prev_slots=slots_1x, hard_masks=dinosaur_hard_masks)
+    return out["samples"][0]
 
 
 def build_step_panel(
@@ -330,32 +405,30 @@ def build_step_panel(
     gt_strip: np.ndarray,
     dyn_strip: np.ndarray,
     obs_rgb: np.ndarray,
-    render_slot_size: int,
+    tile_h: int,
+    strip_w: int,
     num_slots: int,
     highlight_slots: List[int],
     highlight_color_map: Dict[int, tuple],
 ) -> np.ndarray:
-    # Upscale only visualization strips; never downscale here.
-    if render_slot_size > gt_strip.shape[0]:
-        scale = render_slot_size / float(gt_strip.shape[0])
-        new_w = max(1, int(round(gt_strip.shape[1] * scale)))
-        gt_strip = cv2.resize(gt_strip, (new_w, render_slot_size), interpolation=cv2.INTER_NEAREST)
-        dyn_strip = cv2.resize(dyn_strip, (new_w, render_slot_size), interpolation=cv2.INTER_NEAREST)
+    """All raster blocks match model obs: obs is tile_h×tile_h, strips are strip_w×tile_h."""
+    gt_strip = cv2.resize(gt_strip, (strip_w, tile_h), interpolation=cv2.INTER_NEAREST)
+    dyn_strip = cv2.resize(dyn_strip, (strip_w, tile_h), interpolation=cv2.INTER_NEAREST)
+    obs_tile_rgb = cv2.resize(obs_rgb, (tile_h, tile_h), interpolation=cv2.INTER_NEAREST)
 
     row_gap = 8
     side_pad = 6
     left_label_w = 32
     step_text = f"Step {step + 1}"
-    step_font_scale = 0.80
+    step_font_scale = 0.62
     step_thickness = 1
     (_, text_h), text_baseline = cv2.getTextSize(
         step_text, cv2.FONT_HERSHEY_SIMPLEX, step_font_scale, step_thickness
     )
     # Keep extra headroom so Step label never overlaps image rows.
     title_h = text_h + text_baseline + 8
-    h = gt_strip.shape[0]
-    w = gt_strip.shape[1]
-    obs_tile_rgb = cv2.resize(obs_rgb, (h, h), interpolation=cv2.INTER_AREA)
+    h = tile_h
+    w = strip_w
     row_content_w = h + side_pad + w
     panel_h = title_h + side_pad + h + row_gap + h + side_pad
     panel_w = left_label_w + side_pad + row_content_w + side_pad
@@ -403,7 +476,7 @@ def build_step_panel(
     dyn_y_center = y1 + h // 2
 
     def _put_rotated_word(word: str, y_center: int) -> None:
-        font_scale = 0.80
+        font_scale = 0.62
         thickness = 1
         (tw, th), baseline = cv2.getTextSize(word, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
         patch_h = max(10, th + baseline + 4)
@@ -464,6 +537,11 @@ def save_merged_selected_steps(
 
 def main() -> None:
     args = parse_args()
+    env_defaults = ENV_DEFAULTS[args.env_type]
+    if env_defaults["continuous_action_space"] and args.policy_version == "discrete":
+        raise ValueError(
+            f"env-type={args.env_type} uses continuous actions; use --policy-version sampled."
+        )
     device = args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu"
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -504,13 +582,20 @@ def main() -> None:
         policy_version=args.policy_version,
         env_type=args.env_type,
     )
-    slate = load_slate(
-        ocr_config_path=args.ocr_config_path,
-        checkpoint_path=args.ocr_checkpoint_path,
-        obs_size=args.obs_size,
-        obs_channels=3,
-        device=device,
-    )
+    if args.ocr_backend == "slate":
+        ocr_model = load_slate(
+            ocr_config_path=args.ocr_config_path,
+            checkpoint_path=args.ocr_checkpoint_path,
+            obs_size=args.obs_size,
+            obs_channels=3,
+            device=device,
+        )
+    else:
+        ocr_model = load_dinosaur_from_checkpoint(
+            checkpoint_path=args.ocr_checkpoint_path,
+            device=device,
+            preset=args.dinosaur_preset,
+        )
 
     pred_slots = torch.from_numpy(slots_np[start_step:start_step + 1]).to(device=device, dtype=torch.float32)
     if not hasattr(unizero.world_model, "latent_state"):
@@ -520,9 +605,7 @@ def main() -> None:
     saved = 0
     panels_by_step: Dict[int, np.ndarray] = {}
     num_slots = int(slots_np.shape[1])
-    target_slot_size = int(args.panel_slot_size)
-    if target_slot_size <= 0:
-        raise ValueError(f"--panel-slot-size must be positive, got {target_slot_size}")
+    target_slot_size = int(args.obs_size)
     target_strip_w = target_slot_size * num_slots
     with torch.no_grad():
         for step in range(start_step, rollout_end_exclusive):
@@ -545,19 +628,20 @@ def main() -> None:
             gt_slot_idx = obs_idx if obs_idx < len(slots_np) else len(slots_np) - 1
             gt_slots = torch.from_numpy(slots_np[gt_slot_idx:gt_slot_idx + 1]).to(device=device, dtype=torch.float32)
 
-            gt_strip = render_slot_strip(slate, obs_rgb, gt_slots, device)
-            dyn_strip = render_slot_strip(slate, obs_rgb, pred_slots, device)
-            if gt_strip.shape[0] != target_slot_size or gt_strip.shape[1] != target_strip_w:
-                gt_strip = cv2.resize(gt_strip, (target_strip_w, target_slot_size), interpolation=cv2.INTER_NEAREST)
-            if dyn_strip.shape[0] != target_slot_size or dyn_strip.shape[1] != target_strip_w:
-                dyn_strip = cv2.resize(dyn_strip, (target_strip_w, target_slot_size), interpolation=cv2.INTER_NEAREST)
+            gt_strip = render_slot_strip(
+                ocr_model, obs_rgb, gt_slots, device, args.ocr_backend, args.dinosaur_hard_masks
+            )
+            dyn_strip = render_slot_strip(
+                ocr_model, obs_rgb, pred_slots, device, args.ocr_backend, args.dinosaur_hard_masks
+            )
 
             panel = build_step_panel(
                 step=step,
                 gt_strip=gt_strip,
                 dyn_strip=dyn_strip,
                 obs_rgb=obs_rgb,
-                render_slot_size=args.render_slot_size,
+                tile_h=target_slot_size,
+                strip_w=target_strip_w,
                 num_slots=num_slots,
                 highlight_slots=args.highlight_slots,
                 highlight_color_map=args.highlight_color_map,

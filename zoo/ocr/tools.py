@@ -383,7 +383,7 @@ class Dinosaur(torch.nn.Module):
 
         return perceptual_grouping_output.objects
 
-    def get_samples(self, image, prev_slots=None):
+    def get_samples(self, image, prev_slots=None, hard_masks: bool = False):
         image_normalized = self._normalization(image)
         feature_extraction_output = self.feature_extractor(image_normalized)
         conditioning_output = prev_slots
@@ -393,13 +393,70 @@ class Dinosaur(torch.nn.Module):
         perceptual_grouping_output = self.perceptual_grouping(feature_extraction_output, conditioning_output)
         patch_reconstruction_output = self.object_decoder(perceptual_grouping_output.objects,
                                                           feature_extraction_output.features, image_normalized)
-        masks = patch_reconstruction_output.masks_as_image.unsqueeze(1)
+        soft = patch_reconstruction_output.masks_as_image
+        if hard_masks:
+            num_slots = int(soft.shape[1])
+            winner = soft.argmax(dim=1)
+            hard = torch.nn.functional.one_hot(winner, num_classes=num_slots).to(
+                dtype=soft.dtype, device=soft.device
+            )
+            hard = hard.permute(0, 3, 1, 2)
+            masks_im = hard
+        else:
+            masks_im = soft
+        masks = masks_im.unsqueeze(1)
 
-        sample = image.unsqueeze(2) * masks + (1 - masks)
-        sample = sample.movedim(2, 3).flatten(start_dim=3, end_dim=4)
-        sample = torch.cat([image, sample], dim=-1)
-        sample = sample.movedim(1, -1).detach().cpu().numpy() * 255
-        sample = sample.astype(np.uint8)
+        # Slot-wise masked RGB (same idea as SLATE get_samples): horizontal strip only, no full-frame concat.
+        slot_strip = image.unsqueeze(2) * masks + (1 - masks)
+        slot_strip = slot_strip.movedim(2, 3).flatten(start_dim=3, end_dim=4)
+        return {"samples": for_viz(slot_strip)}
 
-        return sample
+
+DINOSAUR_PRESETS = {
+    "robosuite": {
+        "dino_model_name": "vit_base_patch16_224_dino",
+        "n_slots": 5,
+        "slot_dim": 64,
+        "intput_feature_dim": 768,
+        "num_patches": 196,
+        "features": (2048, 2048, 2048),
+        "default_checkpoint": "zoo/ocr/dinosaur_weights/robosuite.ckpt",
+    },
+    "maniskill": {
+        "dino_model_name": "vit_small_patch8_224_dino",
+        "n_slots": 4,
+        "slot_dim": 128,
+        "intput_feature_dim": 384,
+        "num_patches": 784,
+        "features": (1024, 1024, 1024),
+        "default_checkpoint": "zoo/ocr/dinosaur_weights/maniskill.ckpt",
+    },
+}
+
+
+def load_dinosaur_from_checkpoint(
+    checkpoint_path: str,
+    device: str,
+    preset: str = "robosuite",
+) -> Dinosaur:
+    """Load a DINOSAUR model for slot visualization (matches zoo/*/dinosaur_random_policy_rollout presets)."""
+    if preset not in DINOSAUR_PRESETS:
+        raise ValueError(f"Unknown dinosaur preset {preset!r}, expected one of {list(DINOSAUR_PRESETS)}")
+    cfg = {k: v for k, v in DINOSAUR_PRESETS[preset].items() if k != "default_checkpoint"}
+    model = Dinosaur(**cfg)
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    raw = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"Unexpected checkpoint format at {checkpoint_path}: expected a state dict.")
+    state_dict = {}
+    for key, value in raw.items():
+        if key.startswith("models."):
+            state_dict[key[len("models.") :]] = value
+        else:
+            state_dict[key] = value
+    model.load_state_dict(state_dict, strict=True)
+    model.to(device)
+    model.eval()
+    model.requires_grad_(False)
+    return model
 

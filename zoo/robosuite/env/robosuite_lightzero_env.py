@@ -89,9 +89,9 @@ class RobosuiteEnvLightZero(BaseEnv):
 
             if self.oc_model:
                 self._observation_space = gym.spaces.Dict({
-                    'observation': self._env.env.observation_space,
+                    'observation': self._env.observation_space,
                     'action_mask': gym.spaces.Box(
-                        low=0, high=1, shape=(self._env.env.action_space.shape[0],), dtype=np.int8
+                        low=0, high=1, shape=(self._env.action_space.shape[0],), dtype=np.int8
                     ),
                     'to_play': gym.spaces.Box(
                         low=-1, high=2, shape=(), dtype=np.int8

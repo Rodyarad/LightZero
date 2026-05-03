@@ -6,6 +6,9 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
+# При растягивании картинки на ячейку сетки Matplotlib по умолчанию сглаживает; для пиксельных obs/slot нужен NN.
+_IMSHOW_KWARGS = {"interpolation": "nearest"}
+
 
 def parse_causality_file(path: Path) -> Dict[Tuple[int, str], List[float]]:
     data: Dict[Tuple[int, str], List[float]] = {}
@@ -52,7 +55,7 @@ def load_frames(frames_dir: Path, frame_glob: str, obs_size: int, skip_first_fra
             raise RuntimeError(f"Failed to read frame: {p}")
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         if img_rgb.shape[0] != obs_size or img_rgb.shape[1] != obs_size:
-            img_rgb = cv2.resize(img_rgb, (obs_size, obs_size), interpolation=cv2.INTER_AREA)
+            img_rgb = cv2.resize(img_rgb, (obs_size, obs_size), interpolation=cv2.INTER_NEAREST)
         frames_rgb.append(img_rgb)
     return frames_rgb
 
@@ -139,7 +142,7 @@ def _draw_step(
     for slot_idx, (slot_img, prob) in enumerate(zip(slot_images, probs)):
         col_idx = slot_idx + 1
         top_ax = fig.add_subplot(inner[0, col_idx])
-        top_ax.imshow(slot_img)
+        top_ax.imshow(slot_img, **_IMSHOW_KWARGS)
         top_ax.set_xticks([])
         top_ax.set_yticks([])
         if viz_mode == 2:
@@ -202,7 +205,7 @@ def _draw_step_side_label(fig: plt.Figure, grid_spec, step: int) -> None:
 
 def _draw_step_original_image(fig: plt.Figure, grid_spec, original_image: np.ndarray) -> None:
     ax = fig.add_subplot(grid_spec)
-    ax.imshow(original_image)
+    ax.imshow(original_image, **_IMSHOW_KWARGS)
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
@@ -220,7 +223,9 @@ def _resize_to_slot_tile(image_rgb: np.ndarray, slot_tile_rgb: np.ndarray) -> np
     target_h, target_w = slot_tile_rgb.shape[:2]
     if image_rgb.shape[:2] == (target_h, target_w):
         return image_rgb
-    return cv2.resize(image_rgb, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    if image_rgb.shape[0] > target_h or image_rgb.shape[1] > target_w:
+        return cv2.resize(image_rgb, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    return image_rgb
 
 
 def plot_probabilities_selected_steps(
@@ -306,7 +311,10 @@ def main() -> None:
         "--slot-dir",
         type=Path,
         default=Path("visuals/sa_slots_get_samples"),
-        help="Directory with slot strip images.",
+        help=(
+            "Directory with slot strip JPGs from tools/reconstruct_get_samples_from_slots.py "
+            "(SLATE or DINOSAUR; ManiSkill hard masks: --dinosaur-mask-mode hard|auto there)."
+        ),
     )
     parser.add_argument(
         "--slot-filename-template",
