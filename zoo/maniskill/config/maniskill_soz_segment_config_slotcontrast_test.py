@@ -31,7 +31,7 @@ def main(seed):
     # The partition of reanalyze. E.g., 1 means reanalyze_batch samples from the whole buffer, 0.5 means samples from the first half of the buffer.
     reanalyze_partition = 0.75
 
-    num_slots = 4
+    num_slots = 3
     slot_dim = 64
     ocr_config_path = 'zoo/ocr/slotcontrast/configs/slotcontrast_maniskill.yaml'
     checkpoint_path = 'zoo/ocr/slotcontrast_weights/slotcontrast_maniskill.ckpt'
