@@ -1455,5 +1455,4 @@ zoo/jericho/envs/z-machine-games-master
 test.py
 vis_test.py
 _vizdoom.ini
-oc_agents_weights
 visuals**

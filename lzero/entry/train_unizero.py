@@ -105,16 +105,19 @@ def train_unizero(
         logging.info("Pretrained model loaded successfully!")
 
     # Create core components for training
-    if model_path is not None:
+    run_id_comet_ml = getattr(cfg, 'run_id_comet_ml', None)
+    if model_path is not None and run_id_comet_ml:
         comet_ml.login()
-        exp = comet_ml.start(mode="get", experiment_key=cfg.run_id_comet_ml)
-        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+        comet_ml.start(mode="get", experiment_key=run_id_comet_ml)
     else:
+        # If we resume from checkpoint without a Comet run id, start a new run.
+        if model_path is not None and not run_id_comet_ml:
+            logging.warning("run_id_comet_ml is empty; starting a new Comet experiment for resumed training.")
         experiment = comet_ml.start(
             project_name="lightzero"
         )
         experiment.log_parameters(vars(cfg))
-        tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
+    tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
     learner = BaseLearner(cfg.policy.learn.learner, policy.learn_mode, tb_logger, exp_name=cfg.exp_name)
     replay_buffer = GameBuffer(cfg.policy)
     collector = Collector(env=collector_env, policy=policy.collect_mode, tb_logger=tb_logger, exp_name=cfg.exp_name,
@@ -122,6 +125,7 @@ def train_unizero(
     evaluator = Evaluator(eval_freq=cfg.policy.eval_freq, n_evaluator_episode=cfg.env.n_evaluator_episode,
                           stop_value=cfg.env.stop_value, env=evaluator_env, policy=policy.eval_mode,
                           tb_logger=tb_logger, exp_name=cfg.exp_name, policy_config=cfg.policy)
+    save_replay_buffer_state = bool(getattr(cfg.policy, 'save_replay_buffer_state', True))
 
     def save_ckpt_with_state(filename: str):
         ckpt_dir = './{}/ckpt'.format(learner.exp_name)
@@ -129,7 +133,14 @@ def train_unizero(
         learner.save_checkpoint(filename)
         ckpt_path = os.path.join(ckpt_dir, filename)
         from lzero.entry.utils import save_training_state
-        save_training_state(ckpt_path, learner, collector, replay_buffer, policy)
+        save_training_state(
+            ckpt_path,
+            learner,
+            collector,
+            replay_buffer,
+            policy,
+            save_replay_buffer_state=save_replay_buffer_state
+        )
 
     from lzero.entry.utils import try_load_training_state
     if model_path is not None:

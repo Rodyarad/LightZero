@@ -13,7 +13,6 @@ from easydict import EasyDict
 from gym.wrappers import RecordVideo
 import torch
 from omegaconf import OmegaConf
-from zoo.ocr.tools import Dinosaur
 from collections import namedtuple
 
 from zoo.maniskill.env.maniskill3 import ManiSkill
@@ -101,6 +100,7 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             slot_extractor = SlotExtractor(model=slotcontrast, device='cuda', name_model='SlotContrast')
 
         else:
+            from zoo.ocr.tools import Dinosaur
             dinosaur = Dinosaur(dino_model_name=config.model_name, n_slots=config.num_slots, slot_dim=config.slot_dim,
                                 intput_feature_dim=config.input_feature_dim, num_patches=config.num_patches,
                                 features=config.features)

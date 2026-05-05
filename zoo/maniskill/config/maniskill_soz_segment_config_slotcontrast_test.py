@@ -4,12 +4,8 @@ import comet_ml
 # begin of the most frequently changed config specified by the user
 # ==============================================================
 
-#from zoo.maniskill.config.maniskill_state_env_space_map import maniskill_state_env_action_space_map, maniskill_state_env_obs_space_map
-
 
 def main(seed):
-    #action_space_size = maniskill_state_env_action_space_map[env_id]
-    #obs_space_size = maniskill_state_env_obs_space_map[env_id]
     action_space_size = 8
 
     continuous_action_space = True
@@ -36,8 +32,9 @@ def main(seed):
     reanalyze_partition = 0.75
 
     num_slots = 3
-    slot_dim = 128
-    checkpoint_path = 'zoo/ocr/maniskill.ckpt'
+    slot_dim = 64
+    ocr_config_path = 'zoo/ocr/slotcontrast/configs/slotcontrast_maniskill.yaml'
+    checkpoint_path = 'zoo/ocr/slotcontrast_weights/slotcontrast_maniskill.ckpt'
 
     tokens_per_block = num_slots * 2
 
@@ -58,6 +55,8 @@ def main(seed):
             n_evaluator_episode=evaluator_env_num,
             manager=dict(shared_memory=False,),
             oc_model=True,
+            oc_model_type='SlotContrast',
+            ocr_config_path=ocr_config_path,
             checkpoint_path=checkpoint_path,
             num_slots=num_slots,
             slot_dim=slot_dim,
@@ -66,7 +65,6 @@ def main(seed):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            #store_obs_int8=True,
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6,),),),  # default is 10000
             model=dict(
                 observation_shape=(num_slots, slot_dim),
@@ -142,7 +140,6 @@ def main(seed):
             type='maniskill_lightzero',
             import_names=['zoo.maniskill.env.maniskill_lightzero_env'],
         ),
-        # env_manager=dict(type='subprocess'),
         env_manager=dict(type='base'),
         policy=dict(
             type='sampled_unizero',
@@ -154,7 +151,7 @@ def main(seed):
 
     # ============ use muzero_segment_collector instead of muzero_collector =============
     from lzero.entry import train_unizero_segment
-    main_config.exp_name = f'data_sampled_unizero/maniskill_Push_brf{buffer_reanalyze_freq}_image_cont_suz_nlayer{num_layers}_numsegments-{num_segments}_gsl{game_segment_length}_K{K}_ns{num_simulations}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_{norm_type}_seed{seed}_learnsigma'
+    main_config.exp_name = f'data_sampled_unizero/maniskill_Push_slotcontrast_brf{buffer_reanalyze_freq}_image_cont_suz_nlayer{num_layers}_numsegments-{num_segments}_gsl{game_segment_length}_K{K}_ns{num_simulations}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_{norm_type}_seed{seed}_learnsigma'
     train_unizero_segment([main_config, create_config], model_path=main_config.policy.model_path, seed=seed, max_env_step=max_env_step)
 
 
@@ -166,4 +163,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args.seed)
-
