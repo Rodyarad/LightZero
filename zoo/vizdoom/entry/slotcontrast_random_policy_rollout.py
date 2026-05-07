@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--env-id", type=str, default="VizdoomDefendLine-v0")
     parser.add_argument("--seed", type=int, default=777)
-    parser.add_argument("--max-steps", type=int, default=200)
+    parser.add_argument("--max-steps", type=int, default=40)
     parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slotcontrast/configs/vizdoom_sc.yaml")
     parser.add_argument("--checkpoint-path", type=str, default="zoo/ocr/slotcontrast_weights/slotcontrast_vizdoom.ckpt")
     parser.add_argument("--output-dir", type=str, default="visuals/random_policy_log")
@@ -37,6 +37,7 @@ def _build_env_config(args: argparse.Namespace) -> EasyDict:
             scale=False,
             game_wrapper=True,
             oc_model=False,
+            max_episode_steps=args.max_steps,
         )
     )
 

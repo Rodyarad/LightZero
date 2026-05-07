@@ -1,3 +1,5 @@
+import math
+import re
 from typing import Any, Dict, Optional
 
 import torch
@@ -142,6 +144,45 @@ class SlotContrastModel(nn.Module):
 
         return corrector_output["slots"]
 
+    @torch.no_grad()
+    def get_samples(self, image: torch.Tensor, prev_slots: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        """Return slot strip visualizations compatible with SLATE/DINOSAUR API.
+
+        Notes:
+            - We only resize the *input* to the model input size when needed.
+            - Final slot reconstructions are produced at model/native mask resolution
+              (no post-resize to arbitrary target size).
+        """
+        input_image = image
+        target_size = getattr(self, "_model_input_size", None)
+        if target_size is not None and input_image.shape[-2:] != (target_size, target_size):
+            input_image = torch.nn.functional.interpolate(
+                input_image,
+                size=(target_size, target_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        slots = self.extract_slots(input_image, prev_slots=prev_slots)
+        decoded = self.decoder(slots.unsqueeze(1))
+        masks = decoded["masks"][:, 0]
+        if masks.ndim == 3:
+            patch_side = int(math.sqrt(masks.shape[-1]))
+            masks = masks.view(masks.shape[0], masks.shape[1], patch_side, patch_side)
+        if masks.shape[-2:] != input_image.shape[-2:]:
+            masks = torch.nn.functional.interpolate(
+                masks,
+                size=input_image.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        masks_soft = masks.to(dtype=input_image.dtype, device=input_image.device).unsqueeze(1)
+        slot_strip = input_image.unsqueeze(2) * masks_soft + (1 - masks_soft)
+        slot_strip = slot_strip.movedim(2, 3).flatten(start_dim=3, end_dim=4)
+        samples = (slot_strip.clamp(0, 1).permute(0, 2, 3, 1).detach().cpu().numpy() * 255.0).astype("uint8")
+        return {"samples": samples}
+
 
 def load_from_checkpoint(config_path: str, checkpoint_path: str, device: str = "cpu") -> SlotContrastModel:
 
@@ -157,5 +198,13 @@ def load_from_checkpoint(config_path: str, checkpoint_path: str, device: str = "
     model.load_state_dict(filtered_state_dict)
     model.eval()
     model.to(device)
+    num_patches = int(config.globals.NUM_PATCHES)
+    patch_grid = int(math.sqrt(num_patches))
+    if patch_grid * patch_grid != num_patches:
+        raise ValueError(f"NUM_PATCHES={num_patches} must be a perfect square for visualization.")
+    model_name = str(config.globals.DINO_MODEL)
+    patch_match = re.search(r"patch(\d+)", model_name)
+    patch_size = int(patch_match.group(1)) if patch_match else 14
+    model._model_input_size = patch_grid * patch_size
 
     return model

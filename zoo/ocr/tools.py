@@ -27,6 +27,7 @@ from zoo.ocr.dinosaur.neural_networks import build_two_layer_mlp, build_mlp
 from zoo.ocr.dinosaur.neural_networks.positional_embedding import DummyPositionEmbed
 from zoo.ocr.dinosaur.neural_networks.wrappers import Sequential
 from zoo.ocr.dinosaur.perceptual_grouping import SlotAttentionGrouping
+from zoo.ocr.slotcontrast import load_from_checkpoint as load_slotcontrast_from_checkpoint
 
 Tensor = TypeVar("torch.tensor")
 NN = TypeVar("torch.nn")
@@ -456,6 +457,21 @@ def load_dinosaur_from_checkpoint(
             state_dict[key] = value
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
+    model.eval()
+    model.requires_grad_(False)
+    return model
+
+
+def load_slotcontrast_for_visualization(
+    config_path: str,
+    checkpoint_path: str,
+    device: str,
+):
+    model = load_slotcontrast_from_checkpoint(
+        config_path=config_path,
+        checkpoint_path=checkpoint_path,
+        device=device,
+    )
     model.eval()
     model.requires_grad_(False)
     return model

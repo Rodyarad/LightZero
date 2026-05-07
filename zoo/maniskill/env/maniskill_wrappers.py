@@ -1,5 +1,6 @@
 # Adapted from openai baselines: https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
 from datetime import datetime
+import os
 from typing import Optional
 
 import cv2
@@ -34,7 +35,13 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     env = ManiSkill(reward_mode='normalized_dense', pose_reward_coef=0.01, place_reward_coef=0.1, image_size=config.observation_shape[2])
     env = EnsureSpecIdWrapper(env, fallback_id="ManiSkill")
 
-    if hasattr(config, 'save_replay') and config.save_replay \
+    save_replay_frames = bool(getattr(config, "save_replay_frames", False))
+    if save_replay_frames:
+        frame_dir = getattr(config, "replay_frames_path", None) or getattr(config, "replay_path", None)
+        if frame_dir is None:
+            frame_dir = "./visuals/video_frames"
+        env = ReplayFramesWrapper(env, frame_dir=frame_dir)
+    elif hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         env_spec = getattr(env, "spec", None)
@@ -145,6 +152,48 @@ class TimeLimit(gym.Wrapper):
     def reset(self, **kwargs):
         self._elapsed_steps = 0
         return self.env.reset(**kwargs)
+
+
+class ReplayFramesWrapper(gym.Wrapper):
+    """Save per-step RGB frames directly to disk."""
+
+    def __init__(self, env: gym.Env, frame_dir: str):
+        super().__init__(env)
+        self._root_dir = frame_dir
+        self._episode_idx = 0
+        self._step_idx = 0
+        self._episode_dir = None
+
+    def _new_episode_dir(self):
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        self._episode_dir = os.path.join(self._root_dir, f"episode_{self._episode_idx:04d}_{timestamp}")
+        os.makedirs(self._episode_dir, exist_ok=True)
+        self._step_idx = 0
+
+    def _save_frame(self, obs: np.ndarray):
+        if obs is None:
+            return
+        frame = np.asarray(obs)
+        if frame.ndim != 3:
+            return
+        if frame.shape[-1] == 1:
+            frame = np.repeat(frame, 3, axis=-1)
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        path = os.path.join(self._episode_dir, f"frame_{self._step_idx:04d}.jpg")
+        cv2.imwrite(path, frame_bgr)
+        self._step_idx += 1
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self._new_episode_dir()
+        self._save_frame(obs)
+        self._episode_idx += 1
+        return obs
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self._save_frame(obs)
+        return obs, reward, done, info
 
 
 class WarpFrame(gym.ObservationWrapper):

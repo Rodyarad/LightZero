@@ -313,7 +313,7 @@ def main() -> None:
         default=Path("visuals/sa_slots_get_samples"),
         help=(
             "Directory with slot strip JPGs from tools/reconstruct_get_samples_from_slots.py "
-            "(SLATE or DINOSAUR; ManiSkill hard masks: --dinosaur-mask-mode hard|auto there)."
+            "(SLATE / DINOSAUR / SlotContrast; for SlotContrast keep obs-size at model training size, e.g. 336)."
         ),
     )
     parser.add_argument(
@@ -367,14 +367,14 @@ def main() -> None:
         "--highlight-slots",
         type=int,
         nargs="+",
-        default=[7],
+        default=[0, 2],
         help="Slot indices to highlight with red border (e.g. --highlight-slots 1 2).",
     )
     parser.add_argument(
         "--highlight-colors",
         type=int,
         nargs="+",
-        default=[0],
+        default=[1, 0],
         help=(
             "Per-highlight slot color codes aligned with --highlight-slots: "
             "1=red, 0=blue, 2=green. Example: --highlight-slots 2 4 5 --highlight-colors 1 0 2"
@@ -391,7 +391,7 @@ def main() -> None:
         "--merge-steps",
         type=int,
         nargs="+",
-        default=[0, 4, 6],
+        default=[0, 15, 25],
         help="Optional list of step indices to merge into one figure (e.g. --merge-steps 0 2 5).",
     )
     args = parser.parse_args()
@@ -434,8 +434,41 @@ def main() -> None:
         skip_first_frame=not args.keep_first_frame,
     )
     frame_offset = resolve_frame_offset(num_steps=max(steps) + 1, num_frames=len(frames_rgb), frame_offset=args.frame_offset)
+    max_valid_step_by_frames = len(frames_rgb) - frame_offset - 1
+    if max_valid_step_by_frames < 0:
+        raise ValueError(
+            f"No usable frames after applying frame_offset={frame_offset}. Total frames={len(frames_rgb)}."
+        )
 
+    available_steps: List[int] = []
+    skipped_by_frames: List[int] = []
+    skipped_missing_slots: List[int] = []
     for step in steps:
+        if step > max_valid_step_by_frames:
+            skipped_by_frames.append(step)
+            continue
+        slot_path = args.slot_dir / args.slot_filename_template.format(step=step)
+        if not slot_path.exists():
+            skipped_missing_slots.append(step)
+            continue
+        available_steps.append(step)
+
+    if skipped_by_frames:
+        print(
+            f"[plot_slot_probabilities] Skipping {len(skipped_by_frames)} step(s) without frames "
+            f"(max valid step={max_valid_step_by_frames})."
+        )
+    if skipped_missing_slots:
+        print(
+            f"[plot_slot_probabilities] Skipping {len(skipped_missing_slots)} step(s) with missing slot images."
+        )
+    if not available_steps:
+        raise ValueError(
+            "No steps remain after aligning causality/frames/slot images. "
+            f"frames={len(frames_rgb)}, frame_offset={frame_offset}, slot_dir={args.slot_dir}"
+        )
+
+    for step in available_steps:
         policy_probs = causality.get((step, "policy"))
         value_probs = causality.get((step, "value"))
         if policy_probs is None or value_probs is None:
@@ -453,9 +486,8 @@ def main() -> None:
         slot_images = split_slot_strip(slot_strip, len(policy_probs))
         frame_idx = step + frame_offset
         if frame_idx < 0 or frame_idx >= len(frames_rgb):
-            raise ValueError(
-                f"Frame index out of range for step {step}: frame_idx={frame_idx}, total_frames={len(frames_rgb)}"
-            )
+            # Should not happen after pre-filtering, but keep safeguard.
+            continue
         policy_by_step[step] = policy_probs
         value_by_step[step] = value_probs
         slot_images_by_step[step] = slot_images
@@ -489,13 +521,23 @@ def main() -> None:
         saved_paths.extend([policy_out, value_out])
 
     if args.merge_steps is not None and len(args.merge_steps) > 0:
+        valid_merge_steps = [s for s in args.merge_steps if s in policy_by_step]
+        if len(valid_merge_steps) < len(args.merge_steps):
+            print(
+                f"[plot_slot_probabilities] Ignoring {len(args.merge_steps) - len(valid_merge_steps)} "
+                "merge step(s) not available after alignment."
+            )
+        if len(valid_merge_steps) == 0:
+            print("[plot_slot_probabilities] No valid merge steps remain; skipping merged outputs.")
+            print(f"Saved {len(saved_paths)} files to {args.out_dir}")
+            return
         merged_policy_out = args.out_dir / "slot_probs_policy_selected_steps.png"
         merged_value_out = args.out_dir / "slot_probs_value_selected_steps.png"
         plot_probabilities_selected_steps(
             probs_by_step=policy_by_step,
             slot_images_by_step=slot_images_by_step,
             original_images_by_step=original_images_by_step,
-            selected_steps=args.merge_steps,
+            selected_steps=valid_merge_steps,
             output_path=merged_policy_out,
             slot_spacing=args.slot_spacing,
             highlight_slots=args.highlight_slots,
@@ -506,7 +548,7 @@ def main() -> None:
             probs_by_step=value_by_step,
             slot_images_by_step=slot_images_by_step,
             original_images_by_step=original_images_by_step,
-            selected_steps=args.merge_steps,
+            selected_steps=valid_merge_steps,
             output_path=merged_value_out,
             slot_spacing=args.slot_spacing,
             highlight_slots=args.highlight_slots,

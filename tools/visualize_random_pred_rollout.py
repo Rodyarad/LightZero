@@ -12,8 +12,6 @@ from omegaconf import OmegaConf
 
 from lzero.model.sampled_unizero_model import SampledUniZeroModel
 from lzero.model.unizero_model import UniZeroModel
-from zoo.ocr.slate.slate import SLATE
-from zoo.ocr.tools import load_dinosaur_from_checkpoint, obs_to_tensor
 
 ENV_DEFAULTS = {
     "ocrl": {
@@ -88,8 +86,8 @@ ENV_DEFAULTS = {
         "slots_path": "visuals/random_policy_log/random_slots.npy",
         "actions_path": "visuals/random_policy_log/random_actions.npy",
         "action_space_size": 8,
-        "num_slots": 4,
-        "slot_dim": 128,
+        "num_slots": 3,
+        "slot_dim": 64,
         "num_unroll_steps": 5,
         "infer_context_length": 2,
         "game_segment_length": 100,
@@ -99,6 +97,50 @@ ENV_DEFAULTS = {
         "num_of_sampled_actions": 20,
         "policy_entropy_weight": 5e-2,
         "obs_size": 224,
+    },
+    "maniskill_slotcontrast": {
+        "ocr_backend": "slotcontrast",
+        "dinosaur_preset": "maniskill",
+        "ocr_config_path": "",
+        "ocr_checkpoint_path": "zoo/ocr/slotcontrast_weights/slotcontrast_maniskill.ckpt",
+        "slotcontrast_config_path": "zoo/ocr/slotcontrast/configs/slotcontrast_maniskill.yaml",
+        "obs_path": "visuals/random_policy_log/random_obs.npy",
+        "slots_path": "visuals/random_policy_log/random_slots.npy",
+        "actions_path": "visuals/random_policy_log/random_actions.npy",
+        "action_space_size": 8,
+        "num_slots": 3,
+        "slot_dim": 64,
+        "num_unroll_steps": 5,
+        "infer_context_length": 2,
+        "game_segment_length": 100,
+        "num_simulations": 50,
+        "support_size": 101,
+        "continuous_action_space": True,
+        "num_of_sampled_actions": 20,
+        "policy_entropy_weight": 5e-2,
+        "obs_size": 336,
+    },
+    "vizdoom_slotcontrast": {
+        "ocr_backend": "slotcontrast",
+        "dinosaur_preset": "robosuite",
+        "ocr_config_path": "",
+        "ocr_checkpoint_path": "zoo/ocr/slotcontrast_weights/slotcontrast_vizdoom.ckpt",
+        "slotcontrast_config_path": "zoo/ocr/slotcontrast/configs/vizdoom_sc.yaml",
+        "obs_path": "visuals/random_policy_log/random_obs.npy",
+        "slots_path": "visuals/random_policy_log/random_slots.npy",
+        "actions_path": "visuals/random_policy_log/random_actions.npy",
+        "action_space_size": 4,
+        "num_slots": 7,
+        "slot_dim": 64,
+        "num_unroll_steps": 10,
+        "infer_context_length": 4,
+        "game_segment_length": 20,
+        "num_simulations": 50,
+        "support_size": 601,
+        "continuous_action_space": False,
+        "num_of_sampled_actions": None,
+        "policy_entropy_weight": 5e-3,
+        "obs_size": 336,
     },
 }
 
@@ -118,7 +160,7 @@ def parse_args() -> argparse.Namespace:
         "--env-type",
         type=str,
         default="ocrl",
-        choices=["ocrl", "causal_world", "robosuite", "maniskill"],
+        choices=["ocrl", "causal_world", "robosuite", "maniskill", "maniskill_slotcontrast", "vizdoom_slotcontrast"],
         help="Environment preset to select model/OCR/default-path config.",
     )
     parser.add_argument("--model-path", type=str, default="oc_agents_weights/oz_stica_cw_slate_seed7.pth.tar")
@@ -144,7 +186,7 @@ def parse_args() -> argparse.Namespace:
         "--merge-steps",
         type=int,
         nargs="+",
-        default=[0,3,5],
+        default=[0,22,47],
         help="Optional list of step indices to merge into one image.",
     )
     parser.add_argument("--merged-output-name", type=str, default="random_selected_steps_overview.jpg")
@@ -164,6 +206,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ocr-config-path", type=str, default="")
     parser.add_argument("--ocr-checkpoint-path", type=str, default="")
+    parser.add_argument("--slotcontrast-config-path", type=str, default="")
     parser.add_argument(
         "--dinosaur-mask-mode",
         type=str,
@@ -188,6 +231,9 @@ def parse_args() -> argparse.Namespace:
     if env_defaults["ocr_backend"] == "slate":
         if not args.ocr_config_path:
             args.ocr_config_path = env_defaults["ocr_config_path"]
+    elif env_defaults["ocr_backend"] == "slotcontrast":
+        if not args.slotcontrast_config_path:
+            args.slotcontrast_config_path = env_defaults["slotcontrast_config_path"]
     if not args.ocr_checkpoint_path:
         args.ocr_checkpoint_path = env_defaults["ocr_checkpoint_path"]
     if args.obs_size is None:
@@ -229,7 +275,9 @@ def load_slate(
     obs_size: int,
     obs_channels: int,
     device: str,
-) -> SLATE:
+):
+    from zoo.ocr.slate.slate import SLATE
+
     ocr_config = OmegaConf.load(ocr_config_path)
     env_config = namedtuple("EnvConfig", ["obs_size", "obs_channels"])(obs_size=obs_size, obs_channels=obs_channels)
 
@@ -240,6 +288,33 @@ def load_slate(
     slate.eval()
     slate.requires_grad_(False)
     return slate
+
+
+def load_dinosaur_from_checkpoint(checkpoint_path: str, device: str, preset: str):
+    # Lazy import to avoid dinosaur/timm imports when backend is slotcontrast.
+    from zoo.ocr.tools import load_dinosaur_from_checkpoint as _load_dinosaur_from_checkpoint
+
+    return _load_dinosaur_from_checkpoint(checkpoint_path=checkpoint_path, device=device, preset=preset)
+
+
+def load_slotcontrast_for_visualization(config_path: str, checkpoint_path: str, device: str):
+    # Lazy import to avoid pulling dinosaur dependencies.
+    from zoo.ocr.slotcontrast import load_from_checkpoint as load_slotcontrast_from_checkpoint
+
+    model = load_slotcontrast_from_checkpoint(
+        config_path=config_path,
+        checkpoint_path=checkpoint_path,
+        device=device,
+    )
+    model.eval()
+    model.requires_grad_(False)
+    return model
+
+
+def obs_to_tensor(obs, device):
+    if len(obs.shape) == 4:
+        return torch.Tensor(obs.transpose(0, 3, 1, 2)).to(device) / 255.0
+    return torch.Tensor(obs).to(device)
 
 
 def load_unizero_model(model_path: str, device: str, policy_version: str, env_type: str):
@@ -395,6 +470,8 @@ def render_slot_strip(
     obs = obs_to_tensor(obs_rgb[np.newaxis, ...], device=device)
     if ocr_backend == "slate":
         out = ocr_model._module.get_samples(obs, prev_slots=slots_1x)
+    elif ocr_backend == "slotcontrast":
+        out = ocr_model.get_samples(obs, prev_slots=slots_1x)
     else:
         out = ocr_model.get_samples(obs, prev_slots=slots_1x, hard_masks=dinosaur_hard_masks)
     return out["samples"][0]
@@ -410,11 +487,15 @@ def build_step_panel(
     num_slots: int,
     highlight_slots: List[int],
     highlight_color_map: Dict[int, tuple],
+    resize_rasters: bool = True,
 ) -> np.ndarray:
     """All raster blocks match model obs: obs is tile_h×tile_h, strips are strip_w×tile_h."""
-    gt_strip = cv2.resize(gt_strip, (strip_w, tile_h), interpolation=cv2.INTER_NEAREST)
-    dyn_strip = cv2.resize(dyn_strip, (strip_w, tile_h), interpolation=cv2.INTER_NEAREST)
-    obs_tile_rgb = cv2.resize(obs_rgb, (tile_h, tile_h), interpolation=cv2.INTER_NEAREST)
+    if resize_rasters:
+        gt_strip = cv2.resize(gt_strip, (strip_w, tile_h), interpolation=cv2.INTER_NEAREST)
+        dyn_strip = cv2.resize(dyn_strip, (strip_w, tile_h), interpolation=cv2.INTER_NEAREST)
+        obs_tile_rgb = cv2.resize(obs_rgb, (tile_h, tile_h), interpolation=cv2.INTER_NEAREST)
+    else:
+        obs_tile_rgb = obs_rgb
 
     row_gap = 8
     side_pad = 6
@@ -590,6 +671,12 @@ def main() -> None:
             obs_channels=3,
             device=device,
         )
+    elif args.ocr_backend == "slotcontrast":
+        ocr_model = load_slotcontrast_for_visualization(
+            config_path=args.slotcontrast_config_path,
+            checkpoint_path=args.ocr_checkpoint_path,
+            device=device,
+        )
     else:
         ocr_model = load_dinosaur_from_checkpoint(
             checkpoint_path=args.ocr_checkpoint_path,
@@ -607,6 +694,7 @@ def main() -> None:
     num_slots = int(slots_np.shape[1])
     target_slot_size = int(args.obs_size)
     target_strip_w = target_slot_size * num_slots
+    resize_panel_rasters = args.ocr_backend != "slotcontrast"
     with torch.no_grad():
         for step in range(start_step, rollout_end_exclusive):
             if args.policy_version == "sampled":
@@ -645,6 +733,7 @@ def main() -> None:
                 num_slots=num_slots,
                 highlight_slots=args.highlight_slots,
                 highlight_color_map=args.highlight_color_map,
+                resize_rasters=resize_panel_rasters,
             )
             panels_by_step[step] = panel
 

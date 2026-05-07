@@ -31,7 +31,7 @@ def extract_frames_from_video(
     print(f"Saved {frame_idx} frames to {output_dir}")
 
 if __name__ == "__main__":
-    video_path = "/home/rodya-rad/Desktop/work/LightZero/visuals/video/OddOneOutEnvProperty-v0-video-20260503160031-episode-0.mp4"
+    video_path = "/home/rodya-rad/Desktop/work/LightZero/visuals/video/VizdoomDefendLine-v0-video-20260506192749-episode-0.mp4"
     output_dir = "visuals/video_frames"
 
     extract_frames_from_video(video_path, output_dir)

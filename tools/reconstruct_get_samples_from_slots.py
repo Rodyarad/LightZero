@@ -8,8 +8,27 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from zoo.ocr.slate.slate import SLATE
-from zoo.ocr.tools import DINOSAUR_PRESETS, load_dinosaur_from_checkpoint, obs_to_tensor
+DINOSAUR_PRESETS = {
+    "robosuite": {
+        "default_checkpoint": "zoo/ocr/dinosaur_weights/robosuite.ckpt",
+    },
+    "maniskill": {
+        "default_checkpoint": "zoo/ocr/dinosaur_weights/maniskill.ckpt",
+    },
+}
+
+SLOTCONTRAST_PRESETS = {
+    "maniskill": {
+        "config_path": "zoo/ocr/slotcontrast/configs/slotcontrast_maniskill.yaml",
+        "checkpoint_path": "zoo/ocr/slotcontrast_weights/slotcontrast_maniskill.ckpt",
+        "obs_size": 336,
+    },
+    "vizdoom": {
+        "config_path": "zoo/ocr/slotcontrast/configs/vizdoom_sc.yaml",
+        "checkpoint_path": "zoo/ocr/slotcontrast_weights/slotcontrast_vizdoom.ckpt",
+        "obs_size": 336,
+    },
+}
 
 
 def load_slate(
@@ -18,7 +37,9 @@ def load_slate(
     obs_size: int = 64,
     obs_channels: int = 3,
     device: str = "cuda",
-) -> SLATE:
+):
+    from zoo.ocr.slate.slate import SLATE
+
     ocr_config = OmegaConf.load(ocr_config_path)
     EnvConfig = namedtuple("EnvConfig", ["obs_size", "obs_channels"])
     env_config = EnvConfig(obs_size=obs_size, obs_channels=obs_channels)
@@ -30,6 +51,33 @@ def load_slate(
     slate.eval()
     slate.requires_grad_(False)
     return slate
+
+
+def obs_to_tensor(obs, device):
+    if len(obs.shape) == 4:
+        return torch.Tensor(obs.transpose(0, 3, 1, 2)).to(device) / 255.0
+    return torch.Tensor(obs).to(device)
+
+
+def load_dinosaur_from_checkpoint(checkpoint_path: str, device: str, preset: str):
+    # Lazy import to avoid loading dinosaur/timm stack for non-dinosaur backends.
+    from zoo.ocr.tools import load_dinosaur_from_checkpoint as _load_dinosaur
+
+    return _load_dinosaur(checkpoint_path=checkpoint_path, device=device, preset=preset)
+
+
+def load_slotcontrast_for_visualization(config_path: str, checkpoint_path: str, device: str):
+    # Import slotcontrast directly, without touching zoo.ocr.tools.
+    from zoo.ocr.slotcontrast import load_from_checkpoint as load_slotcontrast_from_checkpoint
+
+    model = load_slotcontrast_from_checkpoint(
+        config_path=config_path,
+        checkpoint_path=checkpoint_path,
+        device=device,
+    )
+    model.eval()
+    model.requires_grad_(False)
+    return model
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,8 +125,8 @@ def parse_args() -> argparse.Namespace:
         "--ocr-backend",
         type=str,
         default="slate",
-        choices=["slate", "dinosaur"],
-        help="OCR module: SLATE or DINOSAUR (slot strips from get_samples).",
+        choices=["slate", "dinosaur", "slotcontrast"],
+        help="OCR module backend used for slot strip samples.",
     )
     parser.add_argument(
         "--dinosaur-preset",
@@ -89,6 +137,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ocr-config-path", type=str, default="zoo/ocr/slate/config/slate_3d.yaml")
     parser.add_argument("--ocr-checkpoint-path", type=str, default="zoo/ocr/slate_weights/slate_3d.pth")
+    parser.add_argument(
+        "--slotcontrast-config-path",
+        type=str,
+        default="",
+    )
+    parser.add_argument(
+        "--slotcontrast-preset",
+        type=str,
+        default="maniskill",
+        choices=list(SLOTCONTRAST_PRESETS.keys()),
+        help="Preset for SlotContrast config/checkpoint defaults.",
+    )
     parser.add_argument(
         "--dinosaur-mask-mode",
         type=str,
@@ -103,8 +163,18 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.ocr_backend == "dinosaur" and args.ocr_checkpoint_path == "zoo/ocr/slate_weights/slate_3d.pth":
         args.ocr_checkpoint_path = DINOSAUR_PRESETS[args.dinosaur_preset]["default_checkpoint"]
+    if args.ocr_backend == "slotcontrast":
+        slotcontrast_preset = SLOTCONTRAST_PRESETS[args.slotcontrast_preset]
+        if not args.slotcontrast_config_path:
+            args.slotcontrast_config_path = slotcontrast_preset["config_path"]
+        if args.ocr_checkpoint_path == "zoo/ocr/slate_weights/slate_3d.pth":
+            args.ocr_checkpoint_path = slotcontrast_preset["checkpoint_path"]
     if args.obs_size is None:
-        args.obs_size = 224 if args.ocr_backend == "dinosaur" else 64
+        args.obs_size = (
+            SLOTCONTRAST_PRESETS[args.slotcontrast_preset]["obs_size"]
+            if args.ocr_backend == "slotcontrast"
+            else (224 if args.ocr_backend == "dinosaur" else 64)
+        )
     if args.ocr_backend == "dinosaur":
         if args.dinosaur_mask_mode == "hard":
             args.dinosaur_hard_masks = True
@@ -174,6 +244,12 @@ def main() -> None:
             obs_channels=3,
             device=device,
         )
+    elif args.ocr_backend == "slotcontrast":
+        ocr = load_slotcontrast_for_visualization(
+            config_path=args.slotcontrast_config_path,
+            checkpoint_path=args.ocr_checkpoint_path,
+            device=device,
+        )
     else:
         ocr = load_dinosaur_from_checkpoint(
             checkpoint_path=args.ocr_checkpoint_path,
@@ -188,6 +264,8 @@ def main() -> None:
             prev_slots = torch.from_numpy(slots[t:t + 1]).to(device=device, dtype=torch.float32)
             if args.ocr_backend == "slate":
                 sample = ocr._module.get_samples(obs, prev_slots=prev_slots)["samples"][0]
+            elif args.ocr_backend == "slotcontrast":
+                sample = ocr.get_samples(obs, prev_slots=prev_slots)["samples"][0]
             else:
                 sample = ocr.get_samples(obs, prev_slots=prev_slots, hard_masks=args.dinosaur_hard_masks)["samples"][0]
 

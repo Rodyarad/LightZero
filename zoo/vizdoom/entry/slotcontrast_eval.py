@@ -45,8 +45,8 @@ def build_config(env_id: str = "VizdoomDefendLine-v0"):
                 evaluator_env_num=evaluator_env_num,
                 n_evaluator_episode=evaluator_env_num,
                 manager=dict(shared_memory=False, context="spawn"),
-                collect_max_episode_steps=int(2100),
-                eval_max_episode_steps=int(2100),
+                collect_max_episode_steps=int(40),
+                eval_max_episode_steps=int(40),
                 oc_model=True,
                 oc_model_type="SlotContrast",
                 ocr_config_path=ocr_config_path,
@@ -140,10 +140,10 @@ def build_config(env_id: str = "VizdoomDefendLine-v0"):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a SlotContrast-based policy on Vizdoom.")
     parser.add_argument("--env-id", type=str, default="VizdoomDefendLine-v0")
-    parser.add_argument("--model-path", type=str, default='')
+    parser.add_argument("--model-path", type=str, default='/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_vizdoom_seed0.pth.tar')
     parser.add_argument("--seeds", type=int, nargs="+", default=[777])
     parser.add_argument("--episodes-per-seed", type=int, default=1)
-    parser.add_argument("--eval-max-steps", type=int, default=2100)
+    parser.add_argument("--eval-max-steps", type=int, default=500)
     parser.add_argument("--replay-path", type=str, default="./visuals/video")
     return parser.parse_args()
 

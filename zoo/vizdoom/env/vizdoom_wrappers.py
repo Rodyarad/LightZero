@@ -11,8 +11,8 @@ import torch
 from ding.envs import ScaledFloatFrameWrapper
 from ding.utils.compression_helper import jpeg_data_compressor
 from easydict import EasyDict
-# from gymnasium.wrappers import RecordVideo
-from gym.wrappers import RecordVideo
+from gymnasium.wrappers import RecordVideo
+from gymnasium.wrappers import TimeLimit as GymnasiumTimeLimit
 from vizdoom import gymnasium_wrapper
 from vizdoom import DoomGame
 
@@ -29,7 +29,14 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     Return:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
-    env = gymnasium.make(config.env_id)
+    make_kwargs = {}
+    if getattr(config, "save_replay", False):
+        make_kwargs["render_mode"] = "rgb_array"
+    elif getattr(config, "render_mode_human", False):
+        make_kwargs["render_mode"] = "human"
+    env = gymnasium.make(config.env_id, **make_kwargs)
+    if hasattr(config, "max_episode_steps") and config.max_episode_steps is not None:
+        env = GymnasiumTimeLimit(env, max_episode_steps=int(config.max_episode_steps))
     env.unwrapped.game.set_render_hud(False)
     env.unwrapped.game.set_render_messages(False)
     if hasattr(config, 'save_replay') and config.save_replay \
@@ -44,7 +51,6 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         )
 
     env = GymnasiumToGymWrapper(env)
-    #env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
     if config.from_pixels:
         if config.warp_frame:
             # we must set WarpFrame before ScaledFloatFrameWrapper

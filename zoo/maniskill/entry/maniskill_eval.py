@@ -6,7 +6,7 @@ from easydict import EasyDict
 from lzero.entry import eval_muzero
 
 
-def build_config():
+def build_config(replay_image_size: int = 672):
     action_space_size = 8
     continuous_action_space = True
     num_of_sampled_actions = 20
@@ -30,9 +30,10 @@ def build_config():
     reanalyze_batch_size = 160
     reanalyze_partition = 0.75
 
-    num_slots = 4
-    slot_dim = 128
-    checkpoint_path = "zoo/ocr/dinosaur_weights/maniskill.ckpt"
+    num_slots = 3
+    slot_dim = 64
+    ocr_config_path = "zoo/ocr/slotcontrast/configs/slotcontrast_maniskill.yaml"
+    checkpoint_path = "zoo/ocr/slotcontrast_weights/slotcontrast_maniskill.ckpt"
 
     tokens_per_block = num_slots * 2
 
@@ -40,7 +41,8 @@ def build_config():
         dict(
             env=dict(
                 from_pixels=True,
-                observation_shape=(3, 224, 224),
+                observation_shape=(3, 336, 336),
+                replay_image_size=int(replay_image_size),
                 continuous=True,
                 gray_scale=False,
                 collector_env_num=collector_env_num,
@@ -50,14 +52,11 @@ def build_config():
                 collect_max_episode_steps=int(50),
                 eval_max_episode_steps=int(50),
                 oc_model=True,
-                oc_model_type="DINOSAUR",
+                oc_model_type="SlotContrast",
+                ocr_config_path=ocr_config_path,
                 checkpoint_path=checkpoint_path,
                 num_slots=num_slots,
                 slot_dim=slot_dim,
-                model_name="vit_small_patch8_224_dino",
-                input_feature_dim=384,
-                num_patches=784,
-                features=(1024, 1024, 1024),
                 warp_frame=True,
                 scale=False,
             ),
@@ -154,24 +153,51 @@ def build_config():
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a DINOSAUR-based policy on ManiSkill.")
-    parser.add_argument("--seeds", type=int, nargs="+", default=[777])
+    parser = argparse.ArgumentParser(description="Evaluate a SlotContrast-based policy on ManiSkill.")
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default="/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_maniskill_seed0.pth.tar",
+    )
+    parser.add_argument("--seeds", type=int, nargs="+", default=[35])
     parser.add_argument("--episodes-per-seed", type=int, default=1)
     parser.add_argument("--eval-max-steps", type=int, default=50)
     parser.add_argument("--replay-path", type=str, default="./visuals/video")
+    parser.add_argument(
+        "--save-replay-frames",
+        action="store_true",
+        help="Save replay as per-step JPG frames instead of RecordVideo mp4.",
+    )
+    parser.add_argument(
+        "--replay-frames-path",
+        type=str,
+        default="./visuals/video_frames",
+        help="Directory for per-step replay frames when --save-replay-frames is set.",
+    )
+    parser.add_argument(
+        "--replay-image-size",
+        type=int,
+        default=672,
+        help="Base render size for saved replay (frames/video). Model observations stay at 336 via WarpFrame.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main_config, create_config = build_config()
+    main_config, create_config = build_config(replay_image_size=args.replay_image_size)
 
     create_config.env_manager.type = "base"
     main_config.env.evaluator_env_num = 1
     main_config.env.n_evaluator_episode = 1
     main_config.env.render_mode_human = False
-    main_config.env.save_replay = True
-    main_config.env.replay_path = args.replay_path
+    if args.save_replay_frames:
+        main_config.env.save_replay_frames = True
+        main_config.env.replay_frames_path = args.replay_frames_path
+        main_config.env.save_replay = False
+    else:
+        main_config.env.save_replay = True
+        main_config.env.replay_path = args.replay_path
     main_config.env.eval_max_episode_steps = int(args.eval_max_steps)
 
     returns_mean_seeds = []
@@ -182,7 +208,7 @@ if __name__ == "__main__":
             seed=seed,
             num_episodes_each_seed=args.episodes_per_seed,
             print_seed_details=False,
-            model_path='/home/rodya-rad/Desktop/work/LightZero/oc_agents_weights/oz_stica_maniskill_seed21.tar',
+            model_path=args.model_path,
         )
         print(returns_mean, returns)
         returns_mean_seeds.append(returns_mean)
