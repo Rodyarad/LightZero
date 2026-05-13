@@ -6,7 +6,7 @@ from easydict import EasyDict
 from lzero.entry import eval_muzero
 
 
-def build_config(replay_image_size: int = 672):
+def build_config(replay_image_size: int = 336):
     action_space_size = 8
     continuous_action_space = True
     num_of_sampled_actions = 20
@@ -180,6 +180,44 @@ def parse_args() -> argparse.Namespace:
         default=672,
         help="Base render size for saved replay (frames/video). Model observations stay at 336 via WarpFrame.",
     )
+    parser.add_argument(
+        "--enable-shadow",
+        dest="enable_shadow",
+        action="store_true",
+        default=True,
+        help="Enable directional-light shadows in the rasterized render (default: on for eval).",
+    )
+    parser.add_argument(
+        "--no-shadow",
+        dest="enable_shadow",
+        action="store_false",
+        help="Disable directional-light shadows.",
+    )
+    parser.add_argument(
+        "--shader",
+        type=str,
+        default="default",
+        choices=["default", "rt", "rt-fast", "rt-med"],
+        help=(
+            "SAPIEN shader for the live rollout. RT shaders are blocked by ManiSkill 3 "
+            "with obs_mode='rgbd', so the env will auto-fallback to 'default'+shadows. "
+            "For real ray-traced video use --save-trajectory then maniskill_rt_replay.py."
+        ),
+    )
+    parser.add_argument(
+        "--save-trajectory",
+        action="store_true",
+        help=(
+            "Dump per-episode actions + reset seed to --trajectory-dir as .npz + .json. "
+            "Pair with maniskill_rt_replay.py for offline ray-traced video rendering."
+        ),
+    )
+    parser.add_argument(
+        "--trajectory-dir",
+        type=str,
+        default="./visuals/trajectory",
+        help="Directory for saved episode trajectories (when --save-trajectory is set).",
+    )
     return parser.parse_args()
 
 
@@ -191,6 +229,11 @@ if __name__ == "__main__":
     main_config.env.evaluator_env_num = 1
     main_config.env.n_evaluator_episode = 1
     main_config.env.render_mode_human = False
+    main_config.env.enable_shadow = bool(args.enable_shadow)
+    main_config.env.shader_dir = args.shader
+    if args.save_trajectory:
+        main_config.env.save_trajectory = True
+        main_config.env.trajectory_dir = args.trajectory_dir
     if args.save_replay_frames:
         main_config.env.save_replay_frames = True
         main_config.env.replay_frames_path = args.replay_frames_path

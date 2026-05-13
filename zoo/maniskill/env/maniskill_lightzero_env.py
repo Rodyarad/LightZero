@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 from datetime import datetime
 from typing import Callable, Union, Dict, List
@@ -80,6 +81,13 @@ class ManiskillEnvLightZero(BaseEnv):
         self._timestep = 0
         self._save_replay_count = 0
 
+        # Optional trajectory recording for offline ray-tracing replays.
+        self._save_trajectory = bool(getattr(self._cfg, "save_trajectory", False))
+        self._trajectory_dir = str(getattr(self._cfg, "trajectory_dir", "./visuals/trajectory"))
+        self._trajectory_episode_idx = 0
+        self._trajectory_actions: List[np.ndarray] = []
+        self._trajectory_current_seed: Optional[int] = None
+
     def reset(self) -> Dict[str, np.ndarray]:
         """
         Reset the environment. If it hasn't been initialized yet, this method also handles that. It also handles seeding
@@ -142,12 +150,19 @@ class ManiskillEnvLightZero(BaseEnv):
 
         if hasattr(self, '_seed') and hasattr(self, '_dynamic_seed') and self._dynamic_seed:
             np_seed = 100 * np.random.randint(1, 1000)
-            self._env.seed(self._seed + np_seed)
-            self._env.action_space.seed(self._seed + np_seed)
+            episode_seed = int(self._seed + np_seed)
+            self._env.seed(episode_seed)
+            self._env.action_space.seed(episode_seed)
         elif hasattr(self, '_seed'):
-            self._env.seed(self._seed)
-            self._env.action_space.seed(self._seed)
-        
+            episode_seed = int(self._seed)
+            self._env.seed(episode_seed)
+            self._env.action_space.seed(episode_seed)
+        else:
+            episode_seed = None
+
+        if self._save_trajectory:
+            self._trajectory_current_seed = episode_seed
+            self._trajectory_actions = []
 
         obs = self._env.reset()
         obs = to_ndarray(obs).astype('float32')
@@ -190,6 +205,8 @@ class ManiskillEnvLightZero(BaseEnv):
 
         if self._save_replay_gif:
             self._frames.append(self._env.render(mode='rgb_array'))
+        if self._save_trajectory:
+            self._trajectory_actions.append(np.asarray(action, dtype=np.float32).copy())
         obs, rew, done, info = self._env.step(action)
         self._timestep += 1
         self._eval_episode_return += rew
@@ -199,6 +216,8 @@ class ManiskillEnvLightZero(BaseEnv):
 
         if done:
             info['eval_episode_return'] = self._eval_episode_return
+            if self._save_trajectory:
+                self._dump_trajectory()
             if self._save_replay_gif:
 
                 if not os.path.exists(self._replay_path_gif):
@@ -274,6 +293,39 @@ class ManiskillEnvLightZero(BaseEnv):
         String representation of the environment.
         """
         return "LightZero Maniskill Env Push"
+
+    def _dump_trajectory(self) -> None:
+        """Persist actions + reset seed of the just-finished episode so it can be replayed offline
+        with a different SAPIEN shader (e.g. ray-tracing). See ``maniskill_rt_replay.py``."""
+        if not self._trajectory_actions:
+            return
+        os.makedirs(self._trajectory_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        seed_tag = "noseed" if self._trajectory_current_seed is None else f"seed{self._trajectory_current_seed}"
+        base_name = f"episode_{self._trajectory_episode_idx:04d}_{seed_tag}_{timestamp}"
+        npz_path = os.path.join(self._trajectory_dir, base_name + ".npz")
+        meta_path = os.path.join(self._trajectory_dir, base_name + ".json")
+
+        actions = np.stack(self._trajectory_actions, axis=0)
+        meta = {
+            "env_id": "PushCubeCustom-v1",
+            "control_mode": "pd_joint_delta_pos",
+            "reward_mode": "normalized_dense",
+            "seed": self._trajectory_current_seed,
+            "pose_reward_coef": 0.01,
+            "place_reward_coef": 0.1,
+            "max_episode_steps": int(self._cfg.max_episode_steps),
+            "num_actions": int(actions.shape[0]),
+            "action_dim": int(actions.shape[1]) if actions.ndim > 1 else 1,
+            "episode_idx": int(self._trajectory_episode_idx),
+            "eval_episode_return": float(self._eval_episode_return),
+        }
+        np.savez(npz_path, actions=actions, seed=np.array(self._trajectory_current_seed))
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
+        print(f"[ManiskillEnvLightZero] Saved trajectory → {npz_path} ({actions.shape[0]} actions, seed={self._trajectory_current_seed})")
+        self._trajectory_episode_idx += 1
+        self._trajectory_actions = []
 
     @staticmethod
     def display_frames_as_gif(frames: list, path: str) -> None:
