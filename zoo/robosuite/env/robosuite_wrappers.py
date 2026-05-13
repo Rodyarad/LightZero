@@ -13,11 +13,9 @@ from easydict import EasyDict
 from gym.wrappers import RecordVideo
 import torch
 from omegaconf import OmegaConf
-from zoo.ocr.tools import Dinosaur
 from collections import namedtuple
 
-from omegaconf import OmegaConf
-from zoo.robosuite.env.robosuite import RobosuiteEnv
+from zoo.robosuite.env.robosuite_env_no_crop import RobosuiteEnv
 
 
 def wrap_lightzero(config: EasyDict) -> gym.Env:
@@ -32,12 +30,22 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     Return:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
-    env = RobosuiteEnv(task='Lift', horizon=config.max_episode_steps, seed=config.seed)
+    use_random_object_position = getattr(config, 'use_random_object_position', False)
+    # PIL (width, height); align with WarpFrame(width=observation_shape[1], height=observation_shape[2])
+    obs_image_size = (config.observation_shape[1], config.observation_shape[2])
+    env = RobosuiteEnv(
+        use_random_object_position=use_random_object_position,
+        obs_image_size=obs_image_size,
+        time_limit=config.max_episode_steps,
+        seed=config.seed,
+    )
 
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        video_name = f'{env.spec.id}-video-{timestamp}'
+        env_spec = getattr(env, 'spec', None)
+        env_id = env_spec.id if env_spec is not None else 'robosuite_lift'
+        video_name = f'{env_id}-video-{timestamp}'
         env = RecordVideo(
             env,
             video_folder=config.replay_path,
@@ -45,7 +53,7 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             name_prefix=video_name
         )
 
-    #env = TimeLimit(env, max_episode_steps=env.unwrapped._max_episode_length)
+    env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
     if config.from_pixels:
         if config.warp_frame:
             # we must set WarpFrame before ScaledFloatFrameWrapper
@@ -54,13 +62,23 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         env = ScaledFloatFrameWrapper(env)
     if config.from_pixels:
         env = JpegWrapper(env, transform2string=config.transform2string)
-        
-    if config.oc_model:
-        oc_model_type = getattr(config, 'oc_model_type', 'DINOSAUR')
-        if oc_model_type == 'SAVi':
-            # For SAVi we load the full autoencoder and use extract_slots() during slot extraction.
-            from zoo.ocr.savi import load_savi_from_ckpt
 
+    if config.oc_model:
+        oc_model_type = getattr(config, 'oc_model_type', 'SLATE')
+
+        if oc_model_type == 'SLATE':
+            from zoo.ocr.slate.slate import SLATE
+            config_ocr = OmegaConf.load(config.ocr_config_path)
+            config_env = namedtuple('EnvConfig', ['obs_size', 'obs_channels'])(config.observation_shape[2], 3)
+            slate = SLATE(config_ocr, config_env, observation_space=None, preserve_slot_order=True)
+            state_dict = torch.load(config.checkpoint_path)["ocr_module_state_dict"]
+            slate._module.load_state_dict(state_dict)
+            slate.requires_grad_(False)
+            slate.eval()
+            slot_extractor = SlotExtractor(model=slate, device='cuda', name_model='SLATE')
+
+        elif oc_model_type == 'SAVi':
+            from zoo.ocr.savi import load_savi_from_ckpt
             config_savi = OmegaConf.load(config.ocr_config_path)
             image_size = (config.observation_shape[1], config.observation_shape[2])
             savi = load_savi_from_ckpt(
@@ -71,16 +89,22 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             )
             savi.requires_grad_(False)
             slot_extractor = SlotExtractor(model=savi, device='cuda', name_model='SAVi')
-        else:
-            # Default: DINOSAUR.
-            dinosaur = Dinosaur(
-                dino_model_name=config.model_name,
-                n_slots=config.num_slots,
-                slot_dim=config.slot_dim,
-                intput_feature_dim=config.input_feature_dim,
-                num_patches=config.num_patches,
-                features=config.features,
+
+        elif oc_model_type == 'SlotContrast':
+            from zoo.ocr.slotcontrast import load_from_checkpoint as load_slotcontrast_from_ckpt
+            slotcontrast = load_slotcontrast_from_ckpt(
+                config_path=config.ocr_config_path,
+                checkpoint_path=config.checkpoint_path,
+                device='cuda',
             )
+            slotcontrast.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=slotcontrast, device='cuda', name_model='SlotContrast')
+
+        else:
+            from zoo.ocr.tools import Dinosaur
+            dinosaur = Dinosaur(dino_model_name=config.model_name, n_slots=config.num_slots, slot_dim=config.slot_dim,
+                                intput_feature_dim=config.input_feature_dim, num_patches=config.num_patches,
+                                features=config.features)
             state_dict = torch.load(config.checkpoint_path)['state_dict']
             state_dict = {key[len('models.'):]: value for key, value in state_dict.items()}
 
@@ -91,6 +115,7 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             slot_extractor = SlotExtractor(model=dinosaur, device='cuda', name_model='DINOSAUR')
 
         env = SlotExtractorWrapper(env, slot_extractor, config.num_slots, config.slot_dim)
+
     return env
 
 
@@ -245,8 +270,9 @@ class SlotExtractor:
 
         if self.name_model == 'SLATE':
             slots = self._model._module._get_slots(batch_images, prev_slots=batch_prev_slots).detach()
-        elif self.name_model == 'SAVi' or self.name_model == 'SlotContrast':
-            # SAVi / SlotContrast expose extract_slots() for per-frame slot extraction.
+        elif self.name_model == 'SAVi':
+            slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
+        elif self.name_model == 'SlotContrast':
             slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
         else:
             slots = self._model(batch_images, prev_slots=batch_prev_slots).detach()

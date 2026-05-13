@@ -4,7 +4,6 @@ import comet_ml
 # begin of the most frequently changed config specified by the user
 # ==============================================================
 
-#from zoo.robosuite.config.robosuite_state_env_space_map import robosuite_state_env_action_space_map, robosuite_state_env_obs_space_map
 
 def main(seed):
     #action_space_size = robosuite_state_env_action_space_map[env_id]
@@ -28,19 +27,18 @@ def main(seed):
     norm_type = 'LN'
 
     # Defines the frequency of reanalysis. E.g., 1 means reanalyze once per epoch, 2 means reanalyze once every two epochs.
-    buffer_reanalyze_freq = 1/100000
+    buffer_reanalyze_freq = 1 / 100000
     # Each reanalyze process will reanalyze <reanalyze_batch_size> sequences (<cfg.policy.num_unroll_steps> transitions per sequence)
     reanalyze_batch_size = 160
     # The partition of reanalyze. E.g., 1 means reanalyze_batch samples from the whole buffer, 0.5 means samples from the first half of the buffer.
-    reanalyze_partition=0.75
+    reanalyze_partition = 0.75
 
-
-    num_slots = 5
+    num_slots = 4
     slot_dim = 64
-    checkpoint_path = 'zoo/ocr/robosuite.ckpt'
+    ocr_config_path = 'zoo/ocr/slotcontrast/configs/slotcontrast_robosuite.yaml'
+    checkpoint_path = 'zoo/ocr/slotcontrast_weights/slotcontrast_robosuite.ckpt'
 
     tokens_per_block = num_slots * 2
-
 
     # ==============================================================
     # end of the most frequently changed config specified by the user
@@ -49,7 +47,7 @@ def main(seed):
     robosuite_pixels_cont_sampled_unizero_config = dict(
         env=dict(
             from_pixels=True,
-            observation_shape=(3, 224, 224),
+            observation_shape=(3, 336, 336),
             continuous=True,
             gray_scale=False,
             save_replay_gif=False,
@@ -59,6 +57,8 @@ def main(seed):
             n_evaluator_episode=evaluator_env_num,
             manager=dict(shared_memory=False, context='spawn'),
             oc_model=True,
+            oc_model_type='SlotContrast',
+            ocr_config_path=ocr_config_path,
             checkpoint_path=checkpoint_path,
             num_slots=num_slots,
             slot_dim=slot_dim,
@@ -67,7 +67,6 @@ def main(seed):
         ),
         run_id_comet_ml=None,
         policy=dict(
-            #store_obs_int8=True,
             learn=dict(learner=dict(hook=dict(save_ckpt_after_iter=1e6,),),),  # default is 10000
             model=dict(
                 observation_shape=(num_slots, slot_dim),
@@ -89,7 +88,7 @@ def main(seed):
                     bound_type=None,
                     norm_type=norm_type,
                     max_blocks=num_unroll_steps,
-                    max_tokens=tokens_per_block * num_unroll_steps,  # NOTE: each timestep has 2 tokens: obs and action
+                    max_tokens=tokens_per_block * num_unroll_steps,  # NOTE: each timestep has tokens_per_block tokens per timestep
                     context_length=tokens_per_block * infer_context_length,
                     device='cuda',
                     action_space_size=action_space_size,
@@ -129,7 +128,7 @@ def main(seed):
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
             # ============= The key different params for ReZero =============
-            buffer_reanalyze_freq=buffer_reanalyze_freq, # 1 means reanalyze one times per epoch, 2 means reanalyze one times each two epoch
+            buffer_reanalyze_freq=buffer_reanalyze_freq,  # 1 means reanalyze one times per epoch, 2 means reanalyze one times each two epoch
             reanalyze_batch_size=reanalyze_batch_size,
             reanalyze_partition=reanalyze_partition,
         ),
@@ -143,7 +142,6 @@ def main(seed):
             type='robosuite_lightzero',
             import_names=['zoo.robosuite.env.robosuite_lightzero_env'],
         ),
-        # env_manager=dict(type='subprocess'),
         env_manager=dict(type='base'),
         policy=dict(
             type='sampled_unizero',
@@ -162,7 +160,7 @@ def main(seed):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Process some environment.')
-    
+
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
     args = parser.parse_args()
 

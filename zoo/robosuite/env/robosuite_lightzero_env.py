@@ -50,6 +50,8 @@ class RobosuiteEnvLightZero(BaseEnv):
         eval_max_episode_steps=int(125),
         norm_obs=dict(use_norm=False, ),
         norm_reward=dict(use_norm=False, ),
+        # RobosuiteEnv (robosuite_env_no_crop): False | 'large' | 'medium' | 'small'
+        use_random_object_position=False,
         chekpoint_path='LightZero/zoo/ocr/robosuite.ckpt',
         num_slots=5,
         slot_dim=64,
