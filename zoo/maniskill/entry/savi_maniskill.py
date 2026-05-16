@@ -5,8 +5,16 @@ import torch.nn as nn
 from omegaconf import OmegaConf
 from zoo.maniskill.env.maniskill3 import ManiSkill
 from zoo.ocr.savi import load_savi_from_ckpt
-from zoo.ocr.tools import obs_to_tensor
 from zoo.ocr.savi.visualizations import make_grid
+
+
+
+def obs_to_tensor(obs, device):
+    if len(obs.shape) == 4:
+        return torch.Tensor(obs.transpose(0, 3, 1, 2)).to(device) / 255.0
+    else:
+        return torch.Tensor(obs).to(device)
+
 
 
 def convert_one_hot(masks: torch.Tensor) -> torch.Tensor:

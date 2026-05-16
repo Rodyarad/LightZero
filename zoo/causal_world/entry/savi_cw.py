@@ -14,7 +14,13 @@ from omegaconf import OmegaConf
 from zoo.causal_world.env.causal_world.cw_envs import CwTargetEnv
 from zoo.ocr.savi import load_savi_from_ckpt
 from zoo.ocr.savi.visualizations import make_grid
-from zoo.ocr.tools import obs_to_tensor
+#from zoo.ocr.tools import obs_to_tensor
+
+def obs_to_tensor(obs, device):
+    if len(obs.shape) == 4:
+        return torch.Tensor(obs.transpose(0, 3, 1, 2)).to(device) / 255.0
+    else:
+        return torch.Tensor(obs).to(device)
 
 
 def convert_one_hot(masks: torch.Tensor) -> torch.Tensor:
@@ -58,7 +64,7 @@ def grid(source_images: torch.Tensor, images: torch.Tensor, is_reconstruction: b
 if __name__ == '__main__':
     env_config_path = 'zoo/causal_world/env/causal_world/cw_envs/config/reaching-hard_orig.yaml'
     env_config = OmegaConf.load(env_config_path)
-    seed = 0
+    seed = 77
     max_steps = 3
     env = CwTargetEnv(env_config, seed)
     env.action_space.seed(seed)
