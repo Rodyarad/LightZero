@@ -15,15 +15,15 @@ class Corrector(nn.Module):
         self.epsilon = epsilon
         self.scale = feature_dim ** -0.5
 
-        # Normalization layers.
+        # Normalization layers
         self.norm_input = nn.LayerNorm(feature_dim, eps=0.001)
         self.norm_slot = nn.LayerNorm(slot_dim, eps=0.001)
         self.norm_mlp = nn.LayerNorm(slot_dim, eps=0.001)
 
         # Embedding layers.
         self.to_q = nn.Linear(slot_dim, slot_dim)
-        self.to_k = nn.Linear(feature_dim, slot_dim)
-        self.to_v = nn.Linear(feature_dim, slot_dim)
+        self.to_k = nn.Linear(slot_dim, slot_dim)
+        self.to_v = nn.Linear(slot_dim, slot_dim)
 
         # Slot update functions.
         self.gru = nn.GRUCell(slot_dim, slot_dim)
@@ -34,7 +34,7 @@ class Corrector(nn.Module):
         )
         return
 
-    def forward(self, image_features: torch.Tensor, slots: torch.Tensor, is_first: bool) -> torch.Tensor:
+    def forward(self, image_features: torch.Tensor, slots: torch.Tensor, step=0):
         """Apply slot attention on image features.
 
         Args:
@@ -48,26 +48,31 @@ class Corrector(nn.Module):
         self.attention_masks = None
 
         image_features = self.norm_input(image_features)
-        k, v = self.to_k(image_features), self.to_v(image_features)  # (batch_size, num_locs, slot_dim)
+        k, v = self.to_k(image_features), self.to_v(image_features)
 
-        # Iterative refinement of the slot representations.
-        num_iters = self.num_initial_iterations if is_first else self.num_iterations
+        # iterative refinement of the slot representation
+        num_iters = self.num_initial_iterations if step == 0 else self.num_iterations
         for _ in range(num_iters):
             slots_prev = slots
             slots = self.norm_slot(slots)
-            q = self.to_q(slots)  # (batch_size, num_slots, slot_dim)
+            q = self.to_q(slots)
 
-            dots = torch.einsum('b i d , b j d -> b i j', q, k) * self.scale  # (batch_size, num_slots, num_locs)
-            attn = dots.softmax(dim=1) + self.epsilon  # Enforce competition between slots.
-            attn = attn / attn.sum(dim=-1, keepdim=True)  # (batch_size, num_slots, num_locs)
+            # q ~ (B, N_Slots, Slot_dim)
+            # k, v ~ (B, N_locs, Slot_dim)
+            # attention equation [softmax(Q K^T) V]
+            dots = torch.einsum('b i d , b j d -> b i j', q, k) * self.scale  # dots ~ (B, N_slots, N_locs)
+            attn = dots.softmax(dim=1) + self.epsilon  # enforcing competition between slots
+            attn = attn / attn.sum(dim=-1, keepdim=True)  # attn ~ (B, N_slots, N_locs)
             self.attention_masks = attn
-            updates = torch.einsum('b i d , b d j -> b i j', attn, v)  # (batch_size, num_slots, slot_dim)
+            updates = torch.einsum('b i d , b d j -> b i j', attn, v)  # updates ~ (B, N_slots, slot_dim)
+            # further refinement
             slots = self.gru(
                 updates.reshape(-1, self.slot_dim),
                 slots_prev.reshape(-1, self.slot_dim)
             )
             slots = slots.reshape(batch_size, -1, self.slot_dim)
             slots = slots + self.mlp(self.norm_mlp(slots))
+
         return slots
 
     def get_attention_masks(self):

@@ -1,5 +1,5 @@
 corrector:
-  num_slots: 4
+  num_slots: 7
   slot_dim: 64
   feature_dim: 64
   hidden_dim: 128

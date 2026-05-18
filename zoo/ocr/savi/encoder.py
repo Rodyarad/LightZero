@@ -1,53 +1,73 @@
-from zoo.ocr.savi.cnn.encoder import CnnEncoder
+from abc import ABC, abstractmethod
+from typing import Iterable, Tuple
+
 import torch
 import torch.nn as nn
-from typing import List, Tuple
+
+from .blocks import ConvBlock
+from .positional_encoding import SoftPositionEmbed
 
 
-class ImagePositionalEmbedding(nn.Module):
-    """Soft image positional embedding as proposed by Slot Attention (https://arxiv.org/pdf/2006.15055, Section E.2)."""
-
-    def __init__(self, feature_dim: int, image_size: Tuple[int, int]) -> None:
-        """Initializes the positional embedding based on the image and feature dimensions.
-
-        Args:
-            feature_dim (int): Dimension of the image features the embedding is added to.
-            image_size (Tuple[int, int]): Size of the input image.
-        """
+class Encoder(nn.Module, ABC):
+    def __init__(self, image_size: Tuple[int, int], num_channels: Iterable[int], kernel_size: int, feature_dim: int
+                 ) -> None:
         super().__init__()
-        self.projection = nn.Conv2d(4, feature_dim, kernel_size=1)
+        self.image_size = image_size
+        self.in_channels = 3  # Fix in_channels to 3 for RGB images
+        self.num_channels = num_channels
+        self.kernel_size = kernel_size
+        self.feature_dim = feature_dim
 
-        # Create a grid of shape (1, 4, H, W) with gradients  [0, 1] in [x, y, -x, -y] directions.
-        y, x = [torch.linspace(-1.0, 1.0, steps=resolution) for resolution in image_size]
-        yy, xx = torch.meshgrid(y, x, indexing='ij')
-        position = torch.stack([yy, xx], dim=-1)  # Shape: (H, W, 2).
-        grid = torch.cat([position, 1.0 - position], dim=-1)
-        self.register_buffer("grid", grid.unsqueeze(0).permute(0, 3, 1, 2))  # Shape: (1, 4, H, W).
-
-    def forward(self, image_embeddings: torch.Tensor) -> torch.Tensor:
-        batch_size, height, width, num_channels = image_embeddings.size()
-        grid = self.grid.expand(batch_size, -1, -1, -1)
-        projected_grid = self.projection(grid).permute(0, 2, 3, 1)  # Shape: (B, H, W, feature_dim)
-        return image_embeddings + projected_grid
+    @abstractmethod
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        pass
 
 
-class SaviCnnEncoder(CnnEncoder):
-    """CNN Encoder proposed by Slot Attention (https://arxiv.org/pdf/2006.15055, Section E.1)."""
+class FullyConvolutionalEncoder(Encoder):
+    def __init__(self, image_size: Tuple[int, int], num_channels: Iterable[int], kernel_size: int, feature_dim: int,
+                 stride: int = 1, batch_norm: bool = False, max_pool: bool = False) -> None:
+        super().__init__(image_size, num_channels, kernel_size, feature_dim)
+        self.stride = stride
+        self.batch_norm = batch_norm
+        self.max_pool = max_pool
+        self.conv = self._build_encoder()
 
-    def __init__(self, image_size: Tuple[int, int], num_channels: List[int],
-                 kernel_sizes: List[int], strides: List[int], feature_dim: int) -> None:
-        super().__init__(num_channels, kernel_sizes, strides)
-        self.positional_embedding = ImagePositionalEmbedding(feature_dim=num_channels[-1], image_size=image_size)
-        self.shared_mlp = nn.Sequential(
-            nn.LayerNorm(num_channels[-1]),
-            nn.Linear(num_channels[-1], feature_dim),
-            nn.ReLU(),
-            nn.Linear(feature_dim, feature_dim),
+        self.positional_encoding = SoftPositionEmbed(
+            hidden_size=self.num_channels[-1],
+            resolution=self.image_size
         )
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        embeddings = super().forward(images).permute(0, 2, 3, 1)  # Shape: (B, H, W, num_channels[-1]).
-        embeddings = self.positional_embedding(embeddings)
-        embeddings = embeddings.flatten(1, 2)  # Flatten x, y pos -> Shape: (B, H * W, num_channels[-1]).
-        embeddings = self.shared_mlp(embeddings)  # 1 x 1 convolutions implemented as a shared MLP.
-        return embeddings
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(self.num_channels[-1]),
+            nn.Linear(self.num_channels[-1], self.feature_dim),
+            nn.ReLU(),
+            nn.Linear(self.feature_dim, self.feature_dim),
+        )
+
+    def _build_encoder(self):
+        modules = []
+        in_channels = self.in_channels
+        for h_dim in self.num_channels:
+            block = ConvBlock(
+                    in_channels=in_channels,
+                    out_channels=h_dim,
+                    kernel_size=self.kernel_size,
+                    stride=self.stride,
+                    padding=self.kernel_size // 2,
+                    batch_norm=self.batch_norm,
+                    max_pool=self.max_pool
+                )
+            modules.append(block)
+            in_channels = h_dim
+        encoder = nn.Sequential(*modules)
+        return encoder
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        x = self.conv(image)  # x ~ (B,C,H,W)
+        x = x.permute(0, 2, 3, 1)
+        x = self.positional_encoding(x)  # x ~ (B,H,W,C)
+
+        # further encoding with 1x1 Conv (implemented as shared MLP)
+        x = torch.flatten(x, 1, 2)
+        x = self.mlp(x)  # x ~ (B, N, Dim)
+        return x

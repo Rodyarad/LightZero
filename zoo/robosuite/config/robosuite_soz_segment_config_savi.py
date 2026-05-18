@@ -35,10 +35,10 @@ def main(seed):
     reanalyze_partition=0.75
 
 
-    num_slots = 3
+    num_slots = 4
     slot_dim = 64
     ocr_config_path = 'zoo/ocr/savi/configs/savi_robosuite.yaml'
-    checkpoint_path = 'zoo/ocr/savi_weights/savi_robosuite_nslot-3.ckpt'
+    checkpoint_path = 'zoo/ocr/savi_weights/savi_robosuite_nslot-4_dim-64.ckpt'
 
     tokens_per_block = num_slots * 2
 
@@ -50,7 +50,7 @@ def main(seed):
     robosuite_pixels_cont_sampled_unizero_config = dict(
         env=dict(
             from_pixels=True,
-            observation_shape=(3, 224, 224),
+            observation_shape=(3, 64, 64),
             continuous=True,
             gray_scale=False,
             save_replay_gif=False,
