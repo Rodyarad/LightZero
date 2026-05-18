@@ -32,7 +32,7 @@ def main(env_id, seed):
     num_slots = 6
     slot_dim = 64
     ocr_config_path = 'zoo/ocr/savi/configs/savi_ocrl.yaml'
-    checkpoint_path = 'zoo/ocr/savi_weights/saiv_ocrl.ckpt'
+    checkpoint_path = 'zoo/ocr/savi_weights/savi_ocrl.ckpt'
 
     tokens_per_block = num_slots * 2
     # ==============================================================
