@@ -64,7 +64,7 @@ def grid(source_images: torch.Tensor, images: torch.Tensor, is_reconstruction: b
 if __name__ == '__main__':
     env_config_path = 'zoo/causal_world/env/causal_world/cw_envs/config/reaching-hard_orig.yaml'
     env_config = OmegaConf.load(env_config_path)
-    seed = 77
+    seed = 210
     max_steps = 3
     env = CwTargetEnv(env_config, seed)
     env.action_space.seed(seed)
