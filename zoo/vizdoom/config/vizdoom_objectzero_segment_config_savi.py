@@ -128,7 +128,7 @@ def main(env_id, seed):
             type='vizdoom_lightzero',
             import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
         ),
-        env_manager=dict(type='subprocess', context='spawn'),
+        env_manager=dict(type='base'),
         policy=dict(
             type='unizero',
             import_names=['lzero.policy.unizero'],
