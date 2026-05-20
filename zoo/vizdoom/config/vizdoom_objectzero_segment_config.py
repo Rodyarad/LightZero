@@ -22,7 +22,7 @@ def main(env_id, seed):
     num_layers = 2
     norm_type = "LN"
 
-    max_env_step = int(5e5)
+    max_env_step = int(1e6)
 
     num_slots = 7
     slot_dim = 64
@@ -117,7 +117,7 @@ def main(env_id, seed):
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
             eval_freq=int(20e3),
-            replay_buffer_size=int(5e5),
+            replay_buffer_size=int(1e6),
         ),
     )
     vizdoom_unizero_config = EasyDict(vizdoom_unizero_config)
