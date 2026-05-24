@@ -64,6 +64,18 @@ class VizdoomEnvLightZero(BaseEnv):
         # (dict) The configuration for the environment manager. If shared_memory is set to False, each environment instance
         # runs in the same process as the trainer, otherwise, they run in separate processes.
         manager=dict(shared_memory=False, ),
+        # (bool) If True, run observations through a slot-based OCR encoder.
+        oc_model=False,
+        # (str) OCR model type. Vizdoom supports only SlotContrast.
+        oc_model_type='SlotContrast',
+        # (str) Path to SlotContrast config.
+        ocr_config_path='zoo/ocr/slotcontrast/configs/vizdoom_sc.yaml',
+        # (str) Path to SlotContrast checkpoint.
+        checkpoint_path='zoo/ocr/slotcontrast_weights/slotcontrast_vizdoom.ckpt',
+        # (int) Number of slots in slot-based observation.
+        num_slots=7,
+        # (int) Slot embedding dimension.
+        slot_dim=64,
         # (int) The value of the cumulative reward at which the training stops.
         stop_value=int(1e6),
     )
@@ -94,6 +106,7 @@ class VizdoomEnvLightZero(BaseEnv):
         self.channel_last = cfg.channel_last
         self.clip_rewards = cfg.clip_rewards
         self.episode_life = cfg.episode_life
+        self.oc_model = cfg.oc_model
         self._timestep = 0
 
     def reset(self) -> dict:
@@ -107,10 +120,15 @@ class VizdoomEnvLightZero(BaseEnv):
             # Create and return the wrapped environment for Atari LightZero.
             self._env = wrap_lightzero(self.cfg)
 
-            self._observation_space = gym.spaces.Dict({
-                'observation': gym.spaces.Box(
+            if self.oc_model:
+                observation_space = self._env.observation_space
+            else:
+                observation_space = gym.spaces.Box(
                     low=0, high=1, shape=self.cfg.observation_shape, dtype=np.float32
-                ),
+                )
+
+            self._observation_space = gym.spaces.Dict({
+                'observation': observation_space,
                 'action_mask': gym.spaces.Box(
                     low=0, high=1, shape=(self._env.env.action_space.n,), dtype=np.int8
                 ),
@@ -177,7 +195,7 @@ class VizdoomEnvLightZero(BaseEnv):
         """
         observation = self.obs
         if self.cfg.from_pixels:
-            if not self.channel_last:
+            if not self.channel_last and not self.oc_model:
                 # move the channel dim to the fist axis
                 # (96, 96, 3) -> (3, 96, 96)
                 observation = np.transpose(observation, (2, 0, 1))

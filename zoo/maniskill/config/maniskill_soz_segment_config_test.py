@@ -35,7 +35,7 @@ def main(seed):
     # The partition of reanalyze. E.g., 1 means reanalyze_batch samples from the whole buffer, 0.5 means samples from the first half of the buffer.
     reanalyze_partition = 0.75
 
-    num_slots = 4
+    num_slots = 3
     slot_dim = 128
     checkpoint_path = 'zoo/ocr/maniskill.ckpt'
 
@@ -48,7 +48,7 @@ def main(seed):
     maniskill_pixels_cont_sampled_unizero_config = dict(
         env=dict(
             from_pixels=True,
-            observation_shape=(3, 224, 224),
+            observation_shape=(3, 336, 336),
             continuous=True,
             gray_scale=False,
             save_replay_gif=False,

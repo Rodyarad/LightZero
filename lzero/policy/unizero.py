@@ -368,6 +368,8 @@ class UniZeroPolicy(MuZeroPolicy):
         collect_with_pure_policy=False,
         # (int) The evaluation frequency.
         eval_freq=int(5e3),
+        # (bool) Whether to save replay-buffer sidecar files (*.buffer.pth.tar) with checkpoints.
+        save_replay_buffer_state=True,
         # (str) The sample type. Options are ['episode', 'transition'].
         sample_type='transition',
         # ****** observation ******
@@ -1940,7 +1942,7 @@ class UniZeroPolicy(MuZeroPolicy):
             self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
 
         # ==================== START: Load Alpha State ====================
-        if self.use_adaptive_entropy_weight:
+        if getattr(self, 'use_adaptive_entropy_weight', False):
             if 'log_alpha' in state_dict:
                 self.log_alpha.data.copy_(state_dict['log_alpha'])
             if 'alpha_optimizer' in state_dict:

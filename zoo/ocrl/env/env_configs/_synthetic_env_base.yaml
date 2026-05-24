@@ -7,7 +7,7 @@ distance_to_objs: 0.08
 distance_to_wall: 0.08
 num_stacked_obss: 1
 tags: ""
-obs_size: 64
+obs_size: 128
 obs_channels: 3
 moving_step_size: 0.05
 wo_agent: False

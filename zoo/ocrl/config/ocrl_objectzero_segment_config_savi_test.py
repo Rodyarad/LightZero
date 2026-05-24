@@ -7,16 +7,16 @@ def main(env_id, seed):
     # ==============================================================
     # begin of the most frequently changed config specified by the user
     # ==============================================================
-    collector_env_num = 8
-    num_segments = 8
-    evaluator_env_num = 30
+    collector_env_num = 2
+    num_segments = 2
+    evaluator_env_num = 2
 
     game_segment_length = 20
     num_unroll_steps = 10
     infer_context_length = 4
 
-    num_simulations = 50
-    batch_size = 128
+    num_simulations = 5
+    batch_size = 2
     replay_ratio = 0.25
 
     num_layers = 2
@@ -28,12 +28,20 @@ def main(env_id, seed):
     buffer_reanalyze_freq = 1/5000000000
     reanalyze_batch_size = 160
     reanalyze_partition = 0.75
+    
+    num_slots = 6
+    slot_dim = 64
+    ocr_config_path = 'zoo/ocr/savi/configs/savi_ocrl.yaml'
+    checkpoint_path = 'zoo/ocr/savi_weights/savi_ocrl.ckpt'
+
+    tokens_per_block = num_slots * 2
     # ==============================================================
     # end of the most frequently changed config specified by the user
     # ==============================================================
 
-    vizdoom_unizero_config = dict(
+    ocrl_unizero_config = dict(
         env=dict(
+            frame_skip=1,
             stop_value=int(1e6),
             env_id=env_id,
             observation_shape=(3, 64, 64),
@@ -41,13 +49,24 @@ def main(env_id, seed):
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
             n_evaluator_episode=evaluator_env_num,
-            manager=dict(shared_memory=False, ),
+            manager=dict(shared_memory=False, context='spawn'),
+            collect_max_episode_steps=int(100),
+            eval_max_episode_steps=int(100),
+            oc_model=True,
+            oc_model_type='SAVi',
+            ocr_config_path=ocr_config_path,
+            checkpoint_path=checkpoint_path,
+            num_slots=num_slots,
+            slot_dim=slot_dim,
+            warp_frame=True,
+            scale=False,
         ),
         run_id_comet_ml=None,
         policy=dict(
             #store_obs_int8=True,
             model=dict(
-                observation_shape=(3, 64, 64),
+                observation_shape=(num_slots, slot_dim),
+                model_type='slot',
                 action_space_size=action_space_size,
                 reward_support_range=(-300., 301., 1.),
                 value_support_range=(-300., 301., 1.),
@@ -55,18 +74,22 @@ def main(env_id, seed):
                 num_res_blocks=2,
                 num_channels=128,
                 world_model_cfg=dict(
+                    model_type='slot',
+                    tokens_per_block=tokens_per_block,
                     latent_recon_loss_weight=0.0,
                     perceptual_loss_weight=0.0,
                     norm_type=norm_type,
                     support_size=601,
                     policy_entropy_weight=5e-3,
                     max_blocks=num_unroll_steps,
-                    max_tokens=2 * num_unroll_steps,
-                    context_length=2 * infer_context_length,
+                    max_tokens=tokens_per_block * num_unroll_steps,
+                    context_length=tokens_per_block * infer_context_length,
                     action_space_size=action_space_size,
                     num_layers=num_layers,
                     num_heads=8,
-                    embed_dim=768,
+                    embed_dim=slot_dim,
+                    num_slots=num_slots,
+                    obs_type='slot',
                     env_num=max(collector_env_num, evaluator_env_num),
                     num_simulations=num_simulations,
                     game_segment_length=game_segment_length,
@@ -97,17 +120,17 @@ def main(env_id, seed):
             # Environment settings
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
-            eval_freq=int(20e3),
+            eval_freq=int(1e4),
             replay_buffer_size=int(5e5),
         ),
     )
-    vizdoom_unizero_config = EasyDict(vizdoom_unizero_config)
-    main_config = vizdoom_unizero_config
+    ocrl_unizero_config = EasyDict(ocrl_unizero_config)
+    main_config = ocrl_unizero_config
 
-    vizdoom_unizero_create_config = dict(
+    ocrl_unizero_create_config = dict(
         env=dict(
-            type='vizdoom_lightzero',
-            import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
+            type='ocrl_lightzero',
+            import_names=['zoo.ocrl.env.ocrl_lightzero_env'],
         ),
         env_manager=dict(type='subprocess'),
         policy=dict(
@@ -115,8 +138,8 @@ def main(env_id, seed):
             import_names=['lzero.policy.unizero'],
         ),
     )
-    vizdoom_unizero_create_config = EasyDict(vizdoom_unizero_create_config  )
-    create_config = vizdoom_unizero_create_config
+    ocrl_unizero_create_config = EasyDict(ocrl_unizero_create_config)
+    create_config = ocrl_unizero_create_config
 
     # ============ use muzero_segment_collector instead of muzero_collector =============
     from lzero.entry import train_unizero_segment
@@ -128,7 +151,7 @@ def main(env_id, seed):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Process different environments and seeds.')
-    parser.add_argument('--env', type=str, help='The environment to use', default='VizdoomDefendLine-v0')
+    parser.add_argument('--env', type=str, help='The environment to use', default='TargetEnv-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
     args = parser.parse_args()
 

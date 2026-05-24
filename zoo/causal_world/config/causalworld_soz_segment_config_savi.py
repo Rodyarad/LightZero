@@ -38,7 +38,7 @@ def main(seed):
     num_slots = 6
     slot_dim = 64
     ocr_config_path = 'zoo/ocr/savi/configs/savi_cw.yaml'
-    checkpoint_path = 'zoo/ocr/savi_weights/savi_cw_fixed.ckpt'
+    checkpoint_path = 'zoo/ocr/savi_weights/savi_cw.ckpt'
 
     tokens_per_block = num_slots * 2
 
@@ -148,7 +148,7 @@ def main(seed):
             import_names=['zoo.causal_world.env.causalworld_lightzero_env'],
         ),
         # env_manager=dict(type='subprocess'),
-        env_manager=dict(type='subprocess'),
+        env_manager=dict(type='base'),
         policy=dict(
             type='sampled_unizero',
             import_names=['lzero.policy.sampled_unizero'],

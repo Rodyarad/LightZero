@@ -47,6 +47,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import importlib
 from ditk import logging
 import math
 import os
@@ -937,9 +938,13 @@ def log_buffer_memory_usage(
     writer.add_scalar(f'{prefix}/num_transitions', len(buffer.game_segment_game_pos_look_up), train_iter)
 
     # Calculate and log memory usage of the main buffer component.
-    buffer_memory_bytes = asizeof(buffer.game_segment_buffer)
-    buffer_memory_mb = buffer_memory_bytes / (1024 * 1024)
-    writer.add_scalar(f'{prefix}/memory_usage_mb/game_segment_buffer', buffer_memory_mb, train_iter)
+    # NOTE: pympler.asizeof may fail on some nested numpy/gym objects.
+    try:
+        buffer_memory_bytes = asizeof(buffer.game_segment_buffer)
+        buffer_memory_mb = buffer_memory_bytes / (1024 * 1024)
+        writer.add_scalar(f'{prefix}/memory_usage_mb/game_segment_buffer', buffer_memory_mb, train_iter)
+    except Exception as e:
+        logging.warning(f'Failed to estimate replay buffer memory via asizeof: {e}')
 
     # Get and log total memory usage of the current process.
     process = psutil.Process(os.getpid())
@@ -982,12 +987,66 @@ def _ckpt_sidecars(ckpt_path: str):
     meta_path = base + '.meta.json'
     return buffer_path, meta_path
 
-def save_training_state(ckpt_path: str, learner, collector, replay_buffer, policy, extra_meta: dict = None) -> None:
-    buffer_path, meta_path = _ckpt_sidecars(ckpt_path)
+
+def _load_replay_state_with_ctor_compat(buffer_path: str):
+    """
+    Load replay buffer state with compatibility fallback for legacy pickles.
+
+    Some old replay buffers were pickled with gym/gymnasium RNG constructor
+    call signatures that are no longer accepted in newer runtime stacks.
+    """
     try:
-        torch.save(replay_buffer.state_dict(), buffer_path)
-    except Exception as e:
-        print(f'Warning: failed to save replay buffer: {e}')
+        return torch.load(buffer_path, map_location='cpu')
+    except TypeError as e:
+        err = str(e)
+        if '_generator_ctor' not in err or '2 were given' not in err:
+            raise
+
+        patched = []
+        for module_name in ('gym.utils.seeding', 'gymnasium.utils.seeding'):
+            try:
+                module = importlib.import_module(module_name)
+            except Exception:
+                continue
+            original_ctor = getattr(module, '_generator_ctor', None)
+            if not callable(original_ctor):
+                continue
+
+            def _compat_generator_ctor(seed=None, *_, _orig=original_ctor, **__):
+                return _orig(seed)
+
+            setattr(module, '_generator_ctor', _compat_generator_ctor)
+            patched.append((module, original_ctor))
+
+        if not patched:
+            raise
+
+        try:
+            return torch.load(buffer_path, map_location='cpu')
+        finally:
+            for module, original_ctor in patched:
+                setattr(module, '_generator_ctor', original_ctor)
+
+def save_training_state(
+        ckpt_path: str,
+        learner,
+        collector,
+        replay_buffer,
+        policy,
+        extra_meta: dict = None,
+        save_replay_buffer_state: bool = True
+) -> None:
+    buffer_path, meta_path = _ckpt_sidecars(ckpt_path)
+    if save_replay_buffer_state:
+        try:
+            torch.save(replay_buffer.state_dict(), buffer_path)
+        except Exception as e:
+            print(f'Warning: failed to save replay buffer: {e}')
+    elif os.path.isfile(buffer_path):
+        try:
+            os.remove(buffer_path)
+        except Exception as e:
+            print(f'Warning: failed to remove replay buffer sidecar: {e}')
     meta = {
         'train_iter': getattr(learner, 'train_iter', None),
         'envstep': getattr(collector, 'envstep', None),
@@ -1005,7 +1064,7 @@ def try_load_training_state(model_path: str, replay_buffer) -> dict:
     meta = {}
     if os.path.isfile(buffer_path):
         try:
-            state = torch.load(buffer_path, map_location='cpu')
+            state = _load_replay_state_with_ctor_compat(buffer_path)
             replay_buffer.load_state_dict(state)
         except Exception as e:
             print(f'Warning: failed to load replay buffer: {e}')

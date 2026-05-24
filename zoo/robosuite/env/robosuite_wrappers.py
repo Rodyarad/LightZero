@@ -13,11 +13,9 @@ from easydict import EasyDict
 from gym.wrappers import RecordVideo
 import torch
 from omegaconf import OmegaConf
-from zoo.ocr.tools import Dinosaur
 from collections import namedtuple
 
-from omegaconf import OmegaConf
-from zoo.robosuite.env.robosuite import RobosuiteEnv
+from zoo.robosuite.env.robosuite_env_no_crop import RobosuiteEnv
 
 
 def wrap_lightzero(config: EasyDict) -> gym.Env:
@@ -32,12 +30,22 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     Return:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
-    env = RobosuiteEnv(task='Lift', horizon=config.max_episode_steps, seed=config.seed)
+    use_random_object_position = getattr(config, 'use_random_object_position', False)
+    # PIL (width, height); align with WarpFrame(width=observation_shape[1], height=observation_shape[2])
+    obs_image_size = (config.observation_shape[1], config.observation_shape[2])
+    env = RobosuiteEnv(
+        use_random_object_position=use_random_object_position,
+        obs_image_size=obs_image_size,
+        time_limit=config.max_episode_steps,
+        seed=config.seed,
+    )
 
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        video_name = f'{env.spec.id}-video-{timestamp}'
+        env_spec = getattr(env, 'spec', None)
+        env_id = env_spec.id if env_spec is not None else 'robosuite_lift'
+        video_name = f'{env_id}-video-{timestamp}'
         env = RecordVideo(
             env,
             video_folder=config.replay_path,
@@ -45,7 +53,7 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             name_prefix=video_name
         )
 
-    #env = TimeLimit(env, max_episode_steps=env.unwrapped._max_episode_length)
+    env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
     if config.from_pixels:
         if config.warp_frame:
             # we must set WarpFrame before ScaledFloatFrameWrapper
@@ -54,20 +62,80 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         env = ScaledFloatFrameWrapper(env)
     if config.from_pixels:
         env = JpegWrapper(env, transform2string=config.transform2string)
-        
+
     if config.oc_model:
-        dinosaur = Dinosaur(dino_model_name=config.model_name, n_slots=config.num_slots, slot_dim=config.slot_dim,
-                            intput_feature_dim=config.input_feature_dim, num_patches=config.num_patches, features=config.features)
-        state_dict = torch.load(config.checkpoint_path)['state_dict']
-        state_dict = {key[len('models.'):]: value for key, value in state_dict.items()}
+        oc_model_type = getattr(config, 'oc_model_type', 'SlotContrast')
 
-        dinosaur.load_state_dict(state_dict)
-        dinosaur = dinosaur.eval()
-        dinosaur.requires_grad_(False)
+        if oc_model_type == 'SLATE':
+            from zoo.ocr.slate.slate import SLATE
+            config_ocr = OmegaConf.load(config.ocr_config_path)
+            config_env = namedtuple('EnvConfig', ['obs_size', 'obs_channels'])(config.observation_shape[2], 3)
+            slate = SLATE(config_ocr, config_env, observation_space=None, preserve_slot_order=True)
+            state_dict = torch.load(config.checkpoint_path)["ocr_module_state_dict"]
+            slate._module.load_state_dict(state_dict)
+            slate.requires_grad_(False)
+            slate.eval()
+            slot_extractor = SlotExtractor(model=slate, device='cuda', name_model='SLATE')
 
-        slot_extractor = SlotExtractor(model=dinosaur, device='cuda', name_model = 'DINOSAUR')
+        elif oc_model_type == 'SAVi':
+            from zoo.ocr.savi import load_savi_from_ckpt
+            config_savi = OmegaConf.load(config.ocr_config_path)
+            image_size = (config.observation_shape[1], config.observation_shape[2])
+            savi = load_savi_from_ckpt(
+                cfg=config_savi,
+                ckpt_path=config.checkpoint_path,
+                image_size=image_size,
+                device='cuda',
+            )
+            savi.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=savi, device='cuda', name_model='SAVi')
+
+        elif oc_model_type == 'SlotContrast':
+            from zoo.ocr.slotcontrast import load_from_checkpoint as load_slotcontrast_from_ckpt
+            slotcontrast = load_slotcontrast_from_ckpt(
+                config_path=config.ocr_config_path,
+                checkpoint_path=config.checkpoint_path,
+                device='cuda',
+            )
+            slotcontrast.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=slotcontrast, device='cuda', name_model='SlotContrast')
+
+        elif oc_model_type == 'STEVE':
+            from zoo.ocr.steve import load_steve_from_ckpt
+            image_size = (config.observation_shape[1], config.observation_shape[2])
+            steve = load_steve_from_ckpt(
+                config_path=config.ocr_config_path,
+                checkpoint_path=config.checkpoint_path,
+                image_size=image_size,
+                image_channels=config.observation_shape[0],
+                device='cuda',
+            )
+            steve.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=steve, device='cuda', name_model='STEVE')
+
+        elif oc_model_type == 'DINOSAUR':
+            from zoo.ocr.tools import Dinosaur
+            dinosaur = Dinosaur(
+                dino_model_name=config.model_name,
+                n_slots=config.num_slots,
+                slot_dim=config.slot_dim,
+                intput_feature_dim=config.input_feature_dim,
+                num_patches=config.num_patches,
+                features=config.features,
+            )
+            state_dict = torch.load(config.checkpoint_path)['state_dict']
+            state_dict = {key[len('models.'):]: value for key, value in state_dict.items()}
+
+            dinosaur.load_state_dict(state_dict)
+            dinosaur = dinosaur.eval()
+            dinosaur.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=dinosaur, device='cuda', name_model='DINOSAUR')
+
+        else:
+            raise ValueError(f"Unknown oc_model_type: {oc_model_type}")
 
         env = SlotExtractorWrapper(env, slot_extractor, config.num_slots, config.slot_dim)
+
     return env
 
 
@@ -148,7 +216,7 @@ class WarpFrame(gym.ObservationWrapper):
 
         if self._grayscale:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_AREA)
+        frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_LINEAR)
         if self._grayscale:
             frame = np.expand_dims(frame, -1)
 
@@ -222,8 +290,12 @@ class SlotExtractor:
 
         if self.name_model == 'SLATE':
             slots = self._model._module._get_slots(batch_images, prev_slots=batch_prev_slots).detach()
-        else:
+        elif self.name_model in ('SAVi', 'SlotContrast', 'STEVE'):
+            slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
+        elif self.name_model == 'DINOSAUR':
             slots = self._model(batch_images, prev_slots=batch_prev_slots).detach()
+        else:
+            raise ValueError(f'Unknown slot extractor model: {self.name_model}')
 
         if len(images.shape) == 3:
             slots = slots[0]
@@ -249,9 +321,8 @@ class SlotExtractorWrapper(gym.Wrapper):
         self.prev_slots = None
 
     def _get_slots(self, frame, prev_slots=None):
-        if prev_slots is None:
+        if (self.slot_extractor.name_model == 'SLATE' or self.slot_extractor.name_model == 'DINOSAUR') and prev_slots is None:
             prev_slots = self.slot_extractor(frame, prev_slots=None)
-
         return self.slot_extractor(frame, prev_slots=prev_slots)
 
     def reset(self):

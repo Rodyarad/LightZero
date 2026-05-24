@@ -97,6 +97,37 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             slotcontrast.requires_grad_(False)
             slot_extractor = SlotExtractor(model=slotcontrast, device='cuda', name_model='SlotContrast')
 
+        elif oc_model_type == 'STEVE':
+            from zoo.ocr.steve import load_steve_from_ckpt
+            image_size = (config.observation_shape[1], config.observation_shape[2])
+            steve = load_steve_from_ckpt(
+                config_path=config.ocr_config_path,
+                checkpoint_path=config.checkpoint_path,
+                image_size=image_size,
+                image_channels=config.observation_shape[0],
+                device='cuda',
+            )
+            steve.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=steve, device='cuda', name_model='STEVE')
+
+        elif oc_model_type == 'DINOSAUR':
+            from zoo.ocr.tools import Dinosaur
+            dinosaur = Dinosaur(
+                dino_model_name=config.model_name,
+                n_slots=config.num_slots,
+                slot_dim=config.slot_dim,
+                intput_feature_dim=config.input_feature_dim,
+                num_patches=config.num_patches,
+                features=config.features,
+            )
+            state_dict = torch.load(config.checkpoint_path)['state_dict']
+            state_dict = {key[len('models.'):]: value for key, value in state_dict.items()}
+
+            dinosaur.load_state_dict(state_dict)
+            dinosaur = dinosaur.eval()
+            dinosaur.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=dinosaur, device='cuda', name_model='DINOSAUR')
+
         else:
             raise ValueError(f"Unknown oc_model_type: {oc_model_type}")
 
@@ -182,7 +213,7 @@ class WarpFrame(gym.ObservationWrapper):
 
         if self._grayscale:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_AREA)
+        frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_LINEAR)
         if self._grayscale:
             frame = np.expand_dims(frame, -1)
 
@@ -256,12 +287,12 @@ class SlotExtractor:
 
         if self.name_model == 'SLATE':
             slots = self._model._module._get_slots(batch_images, prev_slots=batch_prev_slots).detach()
-        elif self.name_model == 'SAVi':
+        elif self.name_model in ('SAVi', 'SlotContrast', 'STEVE'):
             slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
-        elif self.name_model == 'SlotContrast':
-            slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
-        else:
+        elif self.name_model == 'DINOSAUR':
             slots = self._model(batch_images, prev_slots=batch_prev_slots).detach()
+        else:
+            raise ValueError(f'Unknown slot extractor model: {self.name_model}')
 
         if len(images.shape) == 3:
             slots = slots[0]
