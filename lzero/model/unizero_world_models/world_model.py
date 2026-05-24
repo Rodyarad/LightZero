@@ -110,7 +110,7 @@ class WorldModel(nn.Module):
         if self.model_type == 'slot':
             self._init_causal_transformers()
 
-            self.head_rewards = self._create_agg_head(self.act_tokens_pattern, self.support_size)
+            self.head_rewards = self._create_causal_head(self.act_tokens_pattern, self.support_size, self.causal_reward_transformer)
             self.head_observations = self._create_head_for_latent(self.act_tokens_pattern, self.obs_per_embdding_dim, \
                                                         self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
                                                        )
@@ -122,7 +122,8 @@ class WorldModel(nn.Module):
                 self.head_policy = self._create_causal_head(self.value_policy_tokens_pattern, self.action_space_size, self.causal_policy_transformer)
             self.head_value = self._create_causal_head(self.value_policy_tokens_pattern, self.support_size, self.causal_value_transformer)
             self.head_proj = self._create_mlp_head(self.obs_per_embdding_dim * 2, self.obs_per_embdding_dim)
-            self.value_policy_emb = nn.Embedding(2, config.embed_dim, device=self.device)
+            self.value_policy_reward_emb = nn.Embedding(3, config.embed_dim, device=self.device)
+            self.head_causal_prob_reward = self._create_head(self.act_tokens_pattern, 1)
             self.head_causal_prob_policy = self._create_head(self.value_policy_tokens_pattern, 1)
             self.head_causal_prob_value = self._create_head(self.value_policy_tokens_pattern, 1)
         else:
@@ -540,6 +541,7 @@ class WorldModel(nn.Module):
         causal_config.num_layers = 1
         causal_config.num_heads = 4
 
+        self.causal_reward_transformer = Transformer(causal_config)
         self.causal_policy_transformer = Transformer(causal_config)
         self.causal_value_transformer = Transformer(causal_config)
 
@@ -833,18 +835,22 @@ class WorldModel(nn.Module):
 
         # Generate logits for various components.
         logits_observations = self.head_observations(x, num_steps, 0)
-        logits_rewards = self.head_rewards(x, num_steps, 0)
 
         if self.model_type == 'slot':
+            reward_causality = torch.sigmoid(self.head_causal_prob_reward(x, num_steps, 0))
+            reward_probs = torch.cat([reward_causality, 1.0 - reward_causality], dim=-1)
+
             policy_causality = torch.sigmoid(self.head_causal_prob_policy(x, num_steps, 0))
             policy_probs = torch.cat([policy_causality, 1.0 - policy_causality], dim=-1)
 
             value_causality = torch.sigmoid(self.head_causal_prob_value(x, num_steps, 0))
             value_probs = torch.cat([value_causality, 1.0 - value_causality], dim=-1)
 
-            logits_policy = self.head_policy(x, num_steps, 0, policy_probs, self.value_policy_emb.weight[0])
-            logits_value = self.head_value(x, num_steps, 0, value_probs, self.value_policy_emb.weight[1])
+            logits_policy = self.head_policy(x, num_steps, 0, policy_probs, self.value_policy_reward_emb.weight[0])
+            logits_value = self.head_value(x, num_steps, 0, value_probs, self.value_policy_reward_emb.weight[1])
+            logits_rewards = self.head_rewards(x, num_steps, 0, reward_probs, self.value_policy_reward_emb.weight[2])
         else:
+            logits_rewards = self.head_rewards(x, num_steps, 0)
             logits_policy = self.head_policy(x, num_steps, 0)
             logits_value = self.head_value(x, num_steps, 0)
 
