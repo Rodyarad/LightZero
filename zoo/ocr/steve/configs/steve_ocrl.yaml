@@ -1,0 +1,43 @@
+seed: 0
+batch_size: 24
+num_workers: 4
+image_size: 128
+img_channels: 3
+ep_len: 3
+image_ext: png
+
+checkpoint_path: zoo/ocr/steve_weights/steve_ocrl.ckpt
+data_path: data
+log_path: logs/
+use_comet: true
+
+lr_dvae: 0.0003
+lr_enc: 0.0001
+lr_dec: 0.0003
+lr_warmup_steps: 30000
+lr_half_life: 250000
+clip: 0.05
+epochs: 500
+steps: 200000
+
+num_iterations: 2
+num_slots: 6
+cnn_hidden_size: 64
+slot_size: 192
+mlp_hidden_size: 192
+num_predictor_blocks: 1
+num_predictor_heads: 4
+predictor_dropout: 0.0
+
+vocab_size: 4096
+num_decoder_blocks: 8
+num_decoder_heads: 4
+d_model: 192
+dropout: 0.1
+
+tau_start: 1.0
+tau_final: 0.1
+tau_steps: 30000
+
+hard: false
+use_dp: true

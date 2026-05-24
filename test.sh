@@ -22,4 +22,5 @@ export PYTHONFAULTHANDLER=1
 #python3 -u zoo/ocrl/config/ocrl_objectzero_segment_config_test_savi.py
 #python3 -u zoo/vizdoom/config/vizdoom_objectzero_segment_config_savi_test.py
 #python3 -u zoo/maniskill/config/maniskill_soz_segment_config_savi_test.py
-python3 -u zoo/ocrl/config/ocrl_objectzero_segment_config_test_slotcontrast.py
+#python3 -u zoo/ocrl/config/ocrl_objectzero_segment_config_test_slotcontrast.py
+python3 -u zoo/ocrl/config/ocrl_objectzero_segment_config_test_steve.py

@@ -100,6 +100,19 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
             slotcontrast.requires_grad_(False)
             slot_extractor = SlotExtractor(model=slotcontrast, device='cuda', name_model='SlotContrast')
 
+        elif oc_model_type == 'STEVE':
+            from zoo.ocr.steve import load_steve_from_ckpt
+            image_size = (config.observation_shape[1], config.observation_shape[2])
+            steve = load_steve_from_ckpt(
+                config_path=config.ocr_config_path,
+                checkpoint_path=config.checkpoint_path,
+                image_size=image_size,
+                image_channels=config.observation_shape[0],
+                device='cuda',
+            )
+            steve.requires_grad_(False)
+            slot_extractor = SlotExtractor(model=steve, device='cuda', name_model='STEVE')
+
         elif oc_model_type == 'DINOSAUR':
             from zoo.ocr.tools import Dinosaur
             dinosaur = Dinosaur(
@@ -277,7 +290,7 @@ class SlotExtractor:
 
         if self.name_model == 'SLATE':
             slots = self._model._module._get_slots(batch_images, prev_slots=batch_prev_slots).detach()
-        elif self.name_model in ('SAVi', 'SlotContrast'):
+        elif self.name_model in ('SAVi', 'SlotContrast', 'STEVE'):
             slots = self._model.extract_slots(batch_images, prev_slots=batch_prev_slots).detach()
         elif self.name_model == 'DINOSAUR':
             slots = self._model(batch_images, prev_slots=batch_prev_slots).detach()
