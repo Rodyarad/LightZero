@@ -2,7 +2,7 @@ from easydict import EasyDict
 import comet_ml
 
 
-def main(env_id, seed):
+def main(env_id, seed, model_path=None):
     action_space_size = 4
     collector_env_num = 2
     num_segments = 2
@@ -118,7 +118,7 @@ def main(env_id, seed):
         f'_numsegments-{num_segments}_gsl{game_segment_length}_rr{replay_ratio}'
         f'_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
     )
-    train_unizero_segment([main_config, create_config], seed=seed, model_path=None, max_env_step=max_env_step)
+    train_unizero_segment([main_config, create_config], seed=seed, model_path=model_path, max_env_step=max_env_step)
 
 
 if __name__ == "__main__":
@@ -126,5 +126,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process different environments and seeds.')
     parser.add_argument('--env', type=str, help='The environment to use', default='VizdoomDefendLine-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
+    parser.add_argument('--model_path', type=str, help='Path to the model checkpoint for resume', default=None)
     args = parser.parse_args()
-    main(args.env, args.seed)
+    main(args.env, args.seed, args.model_path)
