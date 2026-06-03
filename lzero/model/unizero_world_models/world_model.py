@@ -21,7 +21,7 @@ from torch.distributions import (Categorical, Independent, Normal,
                                  TanhTransform, TransformedDistribution)
 
 from .kv_caching import KeysValues
-from .slicer import Head, PolicyHeadCont, AggregationHead, AggregationPolicyHeadCont, CausalHead, CausalPolicyHeadCont
+from .slicer import Head, PolicyHeadCont, AggregationHead, AggregationPolicyHeadCont, CausalHead, CausalPolicyHeadCont, CausalDynamicsHead
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
 from .utils import (LossWithIntermediateLosses, WorldModelOutput, hash_state,
@@ -111,9 +111,9 @@ class WorldModel(nn.Module):
             self._init_causal_transformers()
 
             self.head_rewards = self._create_causal_head(self.act_tokens_pattern, self.support_size, self.causal_reward_transformer)
-            self.head_observations = self._create_head_for_latent(self.act_tokens_pattern, self.obs_per_embdding_dim, \
-                                                        self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
-                                                       )
+            self.head_observations = self._create_causal_dynamics_head(self.act_tokens_pattern, self.obs_per_embdding_dim, \
+                self.causal_dynamics_transformer, self._get_final_norm(self.final_norm_option_in_obs_head)
+            )
             if self.continuous_action_space:
                 self.sigma_type = self.config.sigma_type
                 self.bound_type = self.config.bound_type
@@ -545,6 +545,10 @@ class WorldModel(nn.Module):
         self.causal_policy_transformer = Transformer(causal_config)
         self.causal_value_transformer = Transformer(causal_config)
 
+        causal_dynamics_config = deepcopy(causal_config)
+        causal_dynamics_config.slots_num = self.tokens_per_block // 2 - 1
+        self.causal_dynamics_transformer = Transformer(causal_dynamics_config)
+
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
         """Create head modules for the transformer."""
         modules = [
@@ -664,6 +668,36 @@ class WorldModel(nn.Module):
             block_mask=block_mask,
             head_module=self.fc_policy_head,
             transformer_module=transformer_module,
+        )
+
+    def _create_causal_dynamics_head(
+            self,
+            block_mask: torch.Tensor,
+            output_dim: int,
+            transformer_module: nn.Module,
+            norm_layer=None
+    ) -> CausalDynamicsHead:
+        pair_proj_module = self._create_mlp_head(self.config.embed_dim * 2, self.config.embed_dim)
+        causal_prob_module = self._create_mlp_head(self.config.embed_dim, 1)
+
+        modules = [
+            nn.LayerNorm(self.config.embed_dim),
+            nn.Linear(self.config.embed_dim, self.config.embed_dim * 4),
+            nn.LayerNorm(self.config.embed_dim * 4),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(self.config.embed_dim * 4, output_dim)
+        ]
+        if norm_layer:
+            modules.append(norm_layer)
+
+        return CausalDynamicsHead(
+            max_blocks=self.config.max_blocks,
+            block_mask=block_mask,
+            head_module=nn.Sequential(*modules),
+            transformer_module=transformer_module,
+            pair_proj_module=pair_proj_module,
+            causal_prob_module=causal_prob_module,
+            output_dim=output_dim,
         )
 
     def _initialize_last_layer(self) -> None:
