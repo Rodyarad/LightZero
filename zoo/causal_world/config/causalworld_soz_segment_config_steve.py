@@ -26,15 +26,15 @@ def main(seed, model_path=None):
 
     num_slots = 6
     slot_dim = 192
-    ocr_config_path = 'zoo/ocr/steve/configs/steve_сw.yaml'
-    checkpoint_path = 'zoo/ocr/steve_weights/steve_causalworld.pt'
+    ocr_config_path = 'zoo/ocr/steve/configs/steve_cw.yaml'
+    checkpoint_path = 'zoo/ocr/steve_weights/steve_cw.pt'
     tokens_per_block = num_slots * 2
 
     causalworld_pixels_cont_sampled_unizero_config = dict(
         env=dict(
             env_config_path='zoo/causal_world/env/causal_world/cw_envs/config/reaching-hard_orig.yaml',
             from_pixels=True,
-            observation_shape=(3, 336, 336),
+            observation_shape=(3, 128, 128),
             continuous=True,
             gray_scale=False,
             save_replay_gif=False,
