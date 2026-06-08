@@ -2,7 +2,7 @@ from easydict import EasyDict
 import comet_ml
 
 
-def main(env_id='VizdoomDefendLine-v0', seed=0):
+def main(env_id='VizdoomDefendLine-v0', seed=0, model_path=None):
     action_space_size = 4
 
     # ==============================================================
@@ -69,7 +69,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
                     rotary_emb=False,
                 ),
             ),
-            model_path=None,
+            model_path=model_path,
             num_unroll_steps=num_unroll_steps,
             replay_ratio=replay_ratio,
             batch_size=batch_size,
@@ -103,7 +103,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0):
 
     main_config.exp_name = f'data_lz/data_unizero/Vizdoom_uz_nlayer{num_layers}_gsl{game_segment_length}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_seed{seed}'
     from lzero.entry import train_unizero
-    train_unizero([main_config, create_config], seed=seed, model_path=main_config.policy.model_path, max_env_step=max_env_step)
+    train_unizero([main_config, create_config], seed=seed, model_path=model_path, max_env_step=max_env_step)
 
 
 if __name__ == "__main__":
@@ -111,7 +111,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some environment.')
     parser.add_argument('--env', type=str, help='The environment to use', default='VizdoomDefendLine-v0')
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
+    parser.add_argument('--model_path', type=str, help='Path to the model checkpoint for resume', default=None)
     args = parser.parse_args()
 
-    main(args.env, args.seed)
-
+    main(args.env, args.seed, args.model_path)

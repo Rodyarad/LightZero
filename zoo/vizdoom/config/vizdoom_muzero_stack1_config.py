@@ -91,4 +91,4 @@ create_config = vizdoom_muzero_create_config
 
 if __name__ == "__main__":
     from lzero.entry import train_muzero
-    train_muzero([main_config, create_config], seed=0, model_path=main_config.policy.model_path, max_env_step=max_env_step)
+    train_muzero([main_config, create_config], seed=0, model_path=None, max_env_step=max_env_step)

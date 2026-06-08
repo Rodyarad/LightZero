@@ -5,7 +5,7 @@ import comet_ml
 # ==============================================================
 
 
-def main(seed):
+def main(seed, model_path=None):
     #action_space_size = robosuite_state_env_action_space_map[env_id]
     #obs_space_size = robosuite_state_env_obs_space_map[env_id]
     action_space_size = 4
@@ -42,7 +42,7 @@ def main(seed):
     robosuite_pixels_cont_sampled_unizero_config = dict(
         env=dict(
             from_pixels=True,
-            observation_shape=(3, 336, 336),
+            observation_shape=(3, 128, 128),
             continuous=True,
             gray_scale=False,
             save_replay_gif=False,
@@ -94,7 +94,7 @@ def main(seed):
                     env_num=max(collector_env_num, evaluator_env_num),
                 ),
             ),
-            model_path=None,
+            model_path=model_path,
             num_unroll_steps=num_unroll_steps,
             cuda=True,
             use_root_value=False,
@@ -147,7 +147,7 @@ def main(seed):
     # ============ use muzero_segment_collector instead of muzero_collector =============
     from lzero.entry import train_unizero_segment
     main_config.exp_name=f'data_sampled_unizero/robosuite_Lift_brf{buffer_reanalyze_freq}_image_cont_suz_nlayer{num_layers}_numsegments-{num_segments}_gsl{game_segment_length}_K{K}_ns{num_simulations}_rr{replay_ratio}_Htrain{num_unroll_steps}-Hinfer{infer_context_length}_bs{batch_size}_{norm_type}_seed{seed}_learnsigma'
-    train_unizero_segment([main_config, create_config], model_path=main_config.policy.model_path, seed=seed, max_env_step=max_env_step)
+    train_unizero_segment([main_config, create_config], model_path=model_path, seed=seed, max_env_step=max_env_step)
 
 
 if __name__ == "__main__":
@@ -155,6 +155,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some environment.')
 
     parser.add_argument('--seed', type=int, help='The seed to use', default=0)
+    parser.add_argument('--model_path', type=str, help='Path to the model checkpoint for resume', default=None)
     args = parser.parse_args()
 
-    main(args.seed)
+    main(args.seed, args.model_path)
