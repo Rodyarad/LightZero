@@ -352,6 +352,8 @@ class Transformer(nn.Module):
         self.drop = nn.Dropout(config.embed_pdrop)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_layers)])
         self.ln_f = nn.LayerNorm(config.embed_dim)
+        self._spartan_path_matrix: Optional[torch.Tensor] = None
+        self._spartan_adjacency_matrices = []
 
         self.task_embed = task_embed
 
@@ -373,16 +375,38 @@ class Transformer(nn.Module):
             - torch.Tensor: The output tensor of shape (B, T, C).
         """
         x = self.drop(sequences)
+        self._spartan_path_matrix = None
+        self._spartan_adjacency_matrices = []
+        path_matrix = None
 
         for i, block in enumerate(self.blocks):
             if self.config.attention == "object_causal":
                 x = block(x, probabilities=probabilities)
             else:
                 x = block(x)
+            if self.config.attention == "spartan_causal":
+                adjacency = block.attn.last_adjacency_matrix
+                if adjacency is not None:
+                    # Aggregate heads by logical OR-like max to get token-level graph.
+                    adjacency_for_path = adjacency.max(dim=1).values
+                    self._spartan_adjacency_matrices.append(adjacency_for_path)
+                    eye = torch.eye(adjacency_for_path.size(-1), device=adjacency_for_path.device,
+                                    dtype=adjacency_for_path.dtype).unsqueeze(0)
+                    update = adjacency_for_path + eye
+                    path_matrix = update if path_matrix is None else torch.bmm(update, path_matrix)
 
         x = self.ln_f(x)
 
+        if self.config.attention == "spartan_causal" and path_matrix is not None:
+            self._spartan_path_matrix = path_matrix
+
         return x
+
+    def get_spartan_path_matrix(self) -> Optional[torch.Tensor]:
+        return self._spartan_path_matrix
+
+    def get_spartan_adjacency_matrices(self):
+        return self._spartan_adjacency_matrices
 
 
 class Block(nn.Module):
@@ -410,6 +434,8 @@ class Block(nn.Module):
 
         if config.attention == "object_causal":
             self.attn = CausalSelfAttention(config)
+        elif config.attention == "spartan_causal":
+            self.attn = SpartanCausalSelfAttention(config)
         else:
             self.attn = SelfAttention(config)
 
@@ -730,4 +756,80 @@ class CausalSelfAttention(nn.Module):
         y = rearrange(y, 'b h t e -> b t (h e)')
         y = self.resid_drop(self.proj(y))
 
+        return y
+
+
+class SpartanCausalSelfAttention(nn.Module):
+    """
+    SPARTAN-style sparse causal attention.
+    """
+
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
+        assert config.embed_dim % config.num_heads == 0, "Embedding dimension must be divisible by number of heads."
+
+        self.config = config
+        self.num_heads = config.num_heads
+        self.temperature = 1.0
+        self.use_hard = True
+
+        self.key = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.query = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.value = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.proj = _maybe_wrap_linear(nn.Linear(config.embed_dim, config.embed_dim), config, "attn")
+        self.slots_num = config.slots_num
+
+        self.attn_drop = nn.Dropout(config.attn_pdrop)
+        self.resid_drop = nn.Dropout(config.resid_pdrop)
+
+        mask_size = self.slots_num
+        mask = torch.ones(mask_size, mask_size)
+        self.register_buffer('mask', mask)
+        self.last_adjacency_matrix: Optional[torch.Tensor] = None
+
+    def _sample_hard_adjacency(self, logits: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        if self.training:
+            u = torch.rand_like(logits).clamp_(1e-6, 1 - 1e-6)
+            gumbel = -torch.log(-torch.log(u))
+            soft = torch.sigmoid((logits + gumbel) / self.temperature)
+            if self.use_hard:
+                hard = (soft > 0.5).to(soft.dtype)
+                return hard + soft - soft.detach()
+            return soft
+        return (probs > 0.5).to(probs.dtype) if self.use_hard else probs
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C = x.size()
+        head_size = C // self.num_heads
+
+        q = self.query(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        k = self.key(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+        v = self.value(x).view(B, T, self.num_heads, head_size).transpose(1, 2)
+
+        edge_logits = q @ k.transpose(-2, -1)
+        att_logits = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+
+        if T <= self.mask.size(0):
+            mask = self.mask[:T, :T]
+        else:
+            # Safety fallback when runtime token count exceeds configured slots_num.
+            mask = torch.ones(T, T, device=x.device, dtype=self.mask.dtype)
+        att_logits = att_logits.masked_fill(mask == 0, float('-inf'))
+        edge_logits = edge_logits.masked_fill(mask == 0, -1e4)
+
+        adjacency = self._sample_hard_adjacency(edge_logits) * mask.unsqueeze(0).unsqueeze(0)
+        # Fallback for numerical stability: if a row has no active edges, keep only self-edge for that row.
+        row_has_edge = adjacency.sum(dim=-1, keepdim=True) > 0
+        eye = torch.eye(T, device=x.device, dtype=adjacency.dtype).unsqueeze(0).unsqueeze(0)
+        adjacency = torch.where(row_has_edge, adjacency, eye)
+        self.last_adjacency_matrix = adjacency
+
+        att_logits = att_logits.masked_fill(adjacency <= 0, float('-inf'))
+        att = F.softmax(att_logits, dim=-1)
+        att = self.attn_drop(att)
+
+        y = att @ v
+        y = rearrange(y, 'b h t e -> b t (h e)')
+        y = self.resid_drop(self.proj(y))
         return y

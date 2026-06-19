@@ -1,6 +1,7 @@
 import hashlib
 import xxhash
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import torch
@@ -211,6 +212,7 @@ class WorldModelOutput:
     logits_ends: torch.FloatTensor
     logits_policy: torch.FloatTensor
     logits_value: torch.FloatTensor
+    spartan_path_matrix: Optional[torch.FloatTensor] = None
 
 
 def init_weights(module, norm_type='BN',liner_weight_zero=False):
@@ -264,7 +266,8 @@ class LossWithIntermediateLosses:
     Returns:
         - None
     """
-    def __init__(self, latent_recon_loss_weight=0, perceptual_loss_weight=0, continuous_action_space=False, **kwargs):
+    def __init__(self, latent_recon_loss_weight=0, perceptual_loss_weight=0, spartan_sparse_loss_weight=0,
+                continuous_action_space=False, **kwargs):
         # Ensure that kwargs is not empty
         if not kwargs:
             raise ValueError("At least one loss must be provided")
@@ -290,6 +293,7 @@ class LossWithIntermediateLosses:
 
         self.latent_recon_loss_weight = latent_recon_loss_weight
         self.perceptual_loss_weight = perceptual_loss_weight
+        self.spartan_sparse_loss_weight = spartan_sparse_loss_weight
 
         # Initialize the total loss tensor on the correct device
         self.loss_total = torch.tensor(0., device=device)
@@ -308,6 +312,8 @@ class LossWithIntermediateLosses:
                 self.loss_total += self.latent_recon_loss_weight * v
             elif k == 'perceptual_loss':
                 self.loss_total += self.perceptual_loss_weight * v
+            elif k == 'loss_spartan_sparse':
+                self.loss_total += self.spartan_sparse_loss_weight * v
 
         self.intermediate_losses = {
             k: v if isinstance(v, dict) or isinstance(v, np.ndarray) or isinstance(v, torch.Tensor) else (v if isinstance(v, float) else v.item())

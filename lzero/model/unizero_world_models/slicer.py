@@ -314,17 +314,15 @@ class CausalDynamicsHead(Slicer):
             block_mask: torch.Tensor,
             head_module: nn.Module,
             transformer_module: nn.Module,
-            pair_proj_module: nn.Module,
-            causal_prob_module: nn.Module,
             output_dim: int,
     ) -> None:
         super().__init__(max_blocks, block_mask)
         assert isinstance(head_module, nn.Module)
         self.head_module = head_module
         self.transformer_module = transformer_module
-        self.pair_proj_module = pair_proj_module
-        self.causal_prob_module = causal_prob_module
         self.output_dim = output_dim
+        self.last_spartan_path_matrix = None
+        self.last_spartan_adjacency_matrices = []
 
     def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int) -> torch.Tensor:
         selected_token_indices = self.compute_slice(num_steps, prev_steps)
@@ -334,27 +332,10 @@ class CausalDynamicsHead(Slicer):
 
         L = num_selected // K
         tokens_grouped = selected_tokens.view(B, L, K, E)
-
-        cls_slots = tokens_grouped.unsqueeze(3).expand(B, L, K, K, E)
-        other_slots = tokens_grouped.unsqueeze(2).expand(B, L, K, K, E)
-        pair_inputs = torch.cat([cls_slots, other_slots], dim=-1)
-
-        non_self_mask = ~torch.eye(K, dtype=torch.bool, device=x.device).view(1, 1, K, K)
-        pair_inputs = pair_inputs[non_self_mask.expand(B, L, K, K)].view(B, L, K, K - 1, E * 2)
-
-        pair_tokens = self.pair_proj_module(pair_inputs.reshape(-1, E * 2)).view(B, L, K, K - 1, E)
-
-        pair_causality = torch.sigmoid(self.causal_prob_module(pair_tokens.reshape(-1, E))).view(B, L, K, K - 1, 1)
-        pair_probs = torch.cat([pair_causality, 1.0 - pair_causality], dim=-1)
-
-        cls_tokens = tokens_grouped.unsqueeze(3)
-        tokens_with_cls = torch.cat([cls_tokens, pair_tokens], dim=3)
-
-        seq = tokens_with_cls.reshape(B * L * K, K, E)
-        probs_flat = pair_probs.reshape(B * L * K, K - 1, 2)
-
-        seq = self.transformer_module(seq, probabilities=probs_flat)
-        cls_outputs = seq[:, 0, :].view(B, L, K, E)
-
-        next_slot_pred = self.head_module(cls_outputs.reshape(-1, E)).view(B, L * K, self.output_dim)
+        seq_in = tokens_grouped.reshape(B * L, K, E)
+        seq = self.transformer_module(seq_in)
+        self.last_spartan_adjacency_matrices = self.transformer_module.get_spartan_adjacency_matrices()
+        self.last_spartan_path_matrix = self.transformer_module.get_spartan_path_matrix()
+        seq = seq + seq_in
+        next_slot_pred = self.head_module(seq.reshape(-1, E)).view(B, L * K, self.output_dim)
         return next_slot_pred

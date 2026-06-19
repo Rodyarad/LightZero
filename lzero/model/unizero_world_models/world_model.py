@@ -361,6 +361,18 @@ class WorldModel(nn.Module):
         self.env_num = self.config.env_num
         self.num_layers = self.config.num_layers
         self.sim_norm = SimNorm(simnorm_dim=self.group_size)
+        self.spartan_sparse_loss_weight = getattr(self.config, 'spartan_sparse_loss_weight', 1e-3)
+        self.use_spartan_lagrangian_relaxation = getattr(self.config, 'use_spartan_lagrangian_relaxation', False)
+        self.spartan_tau = getattr(self.config, 'spartan_tau', 0.0)
+        self.spartan_lambda_alpha = getattr(self.config, 'spartan_lambda_alpha', 1e-2)
+        self.spartan_lambda_ema_decay = getattr(self.config, 'spartan_lambda_ema_decay', 0.99)
+        self.spartan_lambda_min = getattr(self.config, 'spartan_lambda_min', 1e-6)
+        self.spartan_lambda_max = getattr(self.config, 'spartan_lambda_max', 1e6)
+        spartan_lambda_init = getattr(self.config, 'spartan_lambda_init', 1.0)
+        if not hasattr(self, 'spartan_lambda'):
+            self.register_buffer('spartan_lambda', torch.tensor(float(spartan_lambda_init)))
+        if not hasattr(self, 'spartan_constraint_ema'):
+            self.register_buffer('spartan_constraint_ema', torch.tensor(0.0))
 
         # ==================== [NEW] Policy Stability Fix Options ====================
         # Load fix options from config (with defaults for backward compatibility)
@@ -546,7 +558,8 @@ class WorldModel(nn.Module):
         self.causal_value_transformer = Transformer(causal_config)
 
         causal_dynamics_config = deepcopy(causal_config)
-        causal_dynamics_config.slots_num = self.tokens_per_block // 2 - 1
+        causal_dynamics_config.attention = getattr(self.config, "causal_dynamics_attention", "spartan_causal")
+        causal_dynamics_config.slots_num = self.tokens_per_block // 2
         self.causal_dynamics_transformer = Transformer(causal_dynamics_config)
 
     def _create_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> Head:
@@ -677,9 +690,6 @@ class WorldModel(nn.Module):
             transformer_module: nn.Module,
             norm_layer=None
     ) -> CausalDynamicsHead:
-        pair_proj_module = self._create_mlp_head(self.config.embed_dim * 2, self.config.embed_dim)
-        causal_prob_module = self._create_mlp_head(self.config.embed_dim, 1)
-
         modules = [
             nn.LayerNorm(self.config.embed_dim),
             nn.Linear(self.config.embed_dim, self.config.embed_dim * 4),
@@ -695,8 +705,6 @@ class WorldModel(nn.Module):
             block_mask=block_mask,
             head_module=nn.Sequential(*modules),
             transformer_module=transformer_module,
-            pair_proj_module=pair_proj_module,
-            causal_prob_module=causal_prob_module,
             output_dim=output_dim,
         )
 
@@ -869,6 +877,7 @@ class WorldModel(nn.Module):
 
         # Generate logits for various components.
         logits_observations = self.head_observations(x, num_steps, 0)
+        spartan_path_matrix = self.head_observations.last_spartan_path_matrix
 
         if self.model_type == 'slot':
             reward_causality = torch.sigmoid(self.head_causal_prob_reward(x, num_steps, 0))
@@ -899,7 +908,10 @@ class WorldModel(nn.Module):
             logits_value = logits_value[:,-1:,:]
 
         # The 'logits_ends' is intentionally set to None.
-        return WorldModelOutput(x, logits_observations, logits_rewards, None, logits_policy, logits_value)
+        return WorldModelOutput(
+            x, logits_observations, logits_rewards, None, logits_policy, logits_value,
+            spartan_path_matrix=spartan_path_matrix
+        )
 
     #@profile
     def _add_position_embeddings(self, embeddings, num_steps):
@@ -1526,6 +1538,13 @@ class WorldModel(nn.Module):
         else:
             mask_padding_expanded = batch['mask_padding'][:, 1:].contiguous().view(-1)
         loss_obs = (loss_obs * mask_padding_expanded)
+        if outputs.spartan_path_matrix is None:
+            spartan_path_l1 = torch.tensor(0., device=loss_obs.device, dtype=loss_obs.dtype)
+            loss_spartan_sparse = torch.tensor(0., device=loss_obs.device, dtype=loss_obs.dtype)
+        else:
+            # SPARTAN sparsity regularization: L1 norm over the final path matrix.
+            spartan_path_l1 = outputs.spartan_path_matrix.abs().mean()
+            loss_spartan_sparse = spartan_path_l1
 
         # ==================== [NEW] Fix3: Load re-smooth options from config ====================
         use_target_policy_resmooth = getattr(self.config, 'use_target_policy_resmooth', False)
@@ -1616,6 +1635,20 @@ class WorldModel(nn.Module):
         discounted_loss_policy = (loss_policy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_orig_policy_loss = (orig_policy_loss.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
         discounted_policy_entropy = (policy_entropy.view(-1, batch['actions'].shape[1]) * discounts).sum()/ batch['mask_padding'].sum()
+        if self.model_type == 'slot' and self.use_spartan_lagrangian_relaxation:
+            mse_term = discounted_loss_obs
+            constraint_error = mse_term.detach() - self.spartan_tau
+            with torch.no_grad():
+                self.spartan_constraint_ema.mul_(self.spartan_lambda_ema_decay).add_(
+                    (1.0 - self.spartan_lambda_ema_decay) * constraint_error
+                )
+                lambda_update = torch.exp(self.spartan_lambda_alpha * self.spartan_constraint_ema)
+                self.spartan_lambda.mul_(lambda_update)
+                self.spartan_lambda.clamp_(min=self.spartan_lambda_min, max=self.spartan_lambda_max)
+            discounted_loss_obs = mse_term - self.spartan_tau
+            loss_spartan_sparse = spartan_path_l1 / (self.spartan_lambda.detach() + 1e-8)
+        else:
+            constraint_error = torch.tensor(0., device=discounted_loss_obs.device, dtype=discounted_loss_obs.dtype)
 
         # Add encoder output to return dictionary for external training loop access
         # Using .detach() because this tensor is only used for subsequent clip operations and should not affect gradient computation
@@ -1625,11 +1658,14 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
+                spartan_sparse_loss_weight=1.0 if self.use_spartan_lagrangian_relaxation else self.spartan_sparse_loss_weight,
+                use_spartan_lagrangian_relaxation=self.use_spartan_lagrangian_relaxation,
                 continuous_action_space=True,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_spartan_sparse=loss_spartan_sparse,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
@@ -1649,6 +1685,9 @@ class WorldModel(nn.Module):
                 policy_mu=mu,
                 policy_sigma=sigma,
                 target_sampled_actions=target_sampled_actions,
+                spartan_lambda=self.spartan_lambda.detach(),
+                spartan_path_l1=spartan_path_l1.detach(),
+                spartan_constraint_error=constraint_error.detach(),
                 
                 value_priority=value_priority,
                 intermediate_tensor_x=intermediate_tensor_x,
@@ -1661,11 +1700,14 @@ class WorldModel(nn.Module):
             return LossWithIntermediateLosses(
                 latent_recon_loss_weight=self.latent_recon_loss_weight,
                 perceptual_loss_weight=self.perceptual_loss_weight,
+                spartan_sparse_loss_weight=1.0 if self.use_spartan_lagrangian_relaxation else self.spartan_sparse_loss_weight,
+                use_spartan_lagrangian_relaxation=self.use_spartan_lagrangian_relaxation,
                 continuous_action_space=False,
                 loss_obs=discounted_loss_obs,
                 loss_rewards=discounted_loss_rewards,
                 loss_value=discounted_loss_value,
                 loss_policy=discounted_loss_policy,
+                loss_spartan_sparse=loss_spartan_sparse,
                 latent_recon_loss=discounted_latent_recon_loss,
                 perceptual_loss=discounted_perceptual_loss,
                 orig_policy_loss=discounted_orig_policy_loss,
@@ -1682,6 +1724,9 @@ class WorldModel(nn.Module):
                 e_rank_last_linear = e_rank_last_linear,
                 e_rank_sim_norm = e_rank_sim_norm,
                 latent_state_l2_norms=latent_state_l2_norms,
+                spartan_lambda=self.spartan_lambda.detach(),
+                spartan_path_l1=spartan_path_l1.detach(),
+                spartan_constraint_error=constraint_error.detach(),
                 value_priority=value_priority,
                 intermediate_tensor_x=intermediate_tensor_x,
                 obs_embeddings=detached_obs_embeddings,
