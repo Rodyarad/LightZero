@@ -37,7 +37,7 @@ def main(seed):
 
     num_slots = 5
     slot_dim = 64
-    checkpoint_path = 'zoo/ocr/robosuite.ckpt'
+    checkpoint_path = 'zoo/ocr/dinosaur_weights/robosuite.ckpt'
 
     tokens_per_block = num_slots * 2
 
