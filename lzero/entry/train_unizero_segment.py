@@ -95,7 +95,7 @@ def train_unizero_segment(
         if model_path is not None and not run_id_comet_ml:
             logging.warning("run_id_comet_ml is empty; starting a new Comet experiment for resumed training.")
         experiment = comet_ml.start(
-            project_name="lightzero"
+            project_name=os.environ.get('COMET_PROJECT_NAME', 'lightzero')
         )
         experiment.log_parameters(vars(cfg))
     tb_logger = SummaryWriter(os.path.join('./{}/log/'.format(cfg.exp_name), 'serial')) if get_rank() == 0 else None
