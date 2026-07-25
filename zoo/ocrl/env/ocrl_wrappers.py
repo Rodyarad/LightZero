@@ -51,7 +51,9 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         env = JpegWrapper(env, transform2string=config.transform2string)
 
 
-    if config.oc_model:
+    if config.oc_model and getattr(config, 'oc_encode_in_collector', False):
+        pass
+    elif config.oc_model:
         oc_model_type = getattr(config, 'oc_model_type', 'SLATE')
 
         if oc_model_type == 'SLATE':
@@ -378,6 +380,7 @@ class SlotExtractorWrapper(gym.Wrapper):
             low=-np.inf, high=np.inf, shape=(num_slots, slot_dim), dtype=np.float32
         )
         self.prev_slots = None
+        self.last_frame = None
 
     def _get_slots(self, frame, prev_slots=None):
         if (self.slot_extractor.name_model == 'SLATE' or self.slot_extractor.name_model == 'DINOSAUR') and prev_slots is None:
@@ -386,10 +389,12 @@ class SlotExtractorWrapper(gym.Wrapper):
 
     def reset(self):
         frame = self.env.reset()
+        self.last_frame = np.array(frame, copy=True)
         self.prev_slots = self._get_slots(frame, prev_slots=None)
         return self.prev_slots.copy()
 
     def step(self, action):
         frame, reward, done, info = self.env.step(action)
+        self.last_frame = np.array(frame, copy=True)
         self.prev_slots = self._get_slots(frame, prev_slots=self.prev_slots)
         return self.prev_slots.copy(), reward, done, info

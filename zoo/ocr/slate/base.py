@@ -117,5 +117,5 @@ class Base(BaseFeaturesExtractor):
         self._module.load_state_dict(checkpoint["ocr_module_state_dict"])
         # for name1, name2 in zip(self._module.state_dict().keys(), checkpoint["ocr_nets_state_dict"].keys()):
         #    self._module.state_dict()[name1] = checkpoint["ocr_nets_state_dict"][name2]
-        if hasattr(self, "_opt"):
+        if hasattr(self, "_opt") and "ocr_opt_state_dict" in checkpoint:
             self._opt.load_state_dict(checkpoint["ocr_opt_state_dict"])

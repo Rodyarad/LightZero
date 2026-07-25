@@ -249,6 +249,10 @@ class MuZeroSegmentCollector(ISerialCollector):
         # [<frame_stack_num> : <frame_stack_num> + <num_unroll_steps>] for padding.
         pad_obs_lst = game_segments[i].obs_segment[beg_index:end_index]
 
+        pad_over_raw_kwargs = {}
+        if getattr(self.policy_config, 'store_raw_obs', False):
+            pad_over_raw_kwargs['next_segment_raw_observations'] = game_segments[i].raw_obs_segment[beg_index:end_index]
+
         # NOTE: Specific padding logic for UniZero.
         pad_action_lst = game_segments[i].action_segment[:self.policy_config.num_unroll_steps + self.policy_config.td_steps]
         pad_child_visits_lst = game_segments[i].child_visit_segment[:self.policy_config.num_unroll_steps + self.policy_config.td_steps]
@@ -271,17 +275,18 @@ class MuZeroSegmentCollector(ISerialCollector):
         if self.policy_config.gumbel_algo:
             last_game_segments[i].pad_over(
                 pad_obs_lst, pad_reward_lst, pad_action_lst, pad_root_values_lst, pad_child_visits_lst,
-                next_segment_improved_policy=pad_improved_policy_prob
+                next_segment_improved_policy=pad_improved_policy_prob, **pad_over_raw_kwargs
             )
         else:
             if self.policy_config.use_ture_chance_label_in_chance_encoder:
                 last_game_segments[i].pad_over(
                     pad_obs_lst, pad_reward_lst, pad_action_lst, pad_root_values_lst, pad_child_visits_lst,
-                    next_chances=chance_lst
+                    next_chances=chance_lst, **pad_over_raw_kwargs
                 )
             else:
                 last_game_segments[i].pad_over(
-                    pad_obs_lst, pad_reward_lst, pad_action_lst, pad_root_values_lst, pad_child_visits_lst
+                    pad_obs_lst, pad_reward_lst, pad_action_lst, pad_root_values_lst, pad_child_visits_lst,
+                    **pad_over_raw_kwargs
                 )
 
         last_game_segments[i].game_segment_to_array()
@@ -356,11 +361,32 @@ class MuZeroSegmentCollector(ISerialCollector):
         ]
 
         # Stacked observation windows for initializing game segments.
+        store_raw_obs = getattr(self.policy_config, 'store_raw_obs', False)
+        encode_slots_in_collector = getattr(self.policy_config, 'finetune_slate', False)
+        if encode_slots_in_collector and not hasattr(self, '_slot_encoder'):
+            from lzero.policy.slate_finetune import CollectorSlotEncoder
+            self._slot_encoder = CollectorSlotEncoder(
+                self._policy.get_attribute('slate'), self.policy_config.device
+            )
+        init_slots = {}
+        if encode_slots_in_collector:
+            init_frames_dict = {env_id: to_ndarray(init_obs[env_id]['raw_obs']) for env_id in range(env_nums)}
+            init_slots = self._slot_encoder.encode_init(init_frames_dict)
         observation_window_stack = [deque(maxlen=self.policy_config.model.frame_stack_num) for _ in range(env_nums)]
+        raw_observation_window_stack = [deque(maxlen=self.policy_config.model.frame_stack_num) for _ in range(env_nums)]
         for env_id in range(env_nums):
-            initial_frames = [to_ndarray(init_obs[env_id]['observation']) for _ in range(self.policy_config.model.frame_stack_num)]
+            if encode_slots_in_collector:
+                init_obs_frame = init_slots[env_id]
+            else:
+                init_obs_frame = to_ndarray(init_obs[env_id]['observation'])
+            initial_frames = [init_obs_frame for _ in range(self.policy_config.model.frame_stack_num)]
             observation_window_stack[env_id].extend(initial_frames)
-            game_segments[env_id].reset(observation_window_stack[env_id])
+            if store_raw_obs:
+                initial_raw_frames = [to_ndarray(init_obs[env_id]['raw_obs']) for _ in range(self.policy_config.model.frame_stack_num)]
+                raw_observation_window_stack[env_id].extend(initial_raw_frames)
+                game_segments[env_id].reset(observation_window_stack[env_id], init_raw_observations=raw_observation_window_stack[env_id])
+            else:
+                game_segments[env_id].reset(observation_window_stack[env_id])
 
         # Lists for storing values for priority calculation.
         search_values_lst = [[] for _ in range(env_nums)]
@@ -444,6 +470,15 @@ class MuZeroSegmentCollector(ISerialCollector):
 
             interaction_duration = self._timer.value / len(timesteps)
 
+            step_slots = {}
+            if encode_slots_in_collector:
+                step_frames = {
+                    env_id: to_ndarray(episode_timestep.obs['raw_obs'])
+                    for env_id, episode_timestep in timesteps.items()
+                    if not episode_timestep.info.get('abnormal', False)
+                }
+                step_slots = self._slot_encoder.encode(step_frames)
+
             for env_id, episode_timestep in timesteps.items():
                 with self._timer:
                     # Handle abnormal timesteps by resetting the environment and policy state.
@@ -451,6 +486,8 @@ class MuZeroSegmentCollector(ISerialCollector):
                         self._env.reset({env_id: None})
                         self._policy.reset([env_id])
                         self._reset_stat(env_id)
+                        if encode_slots_in_collector:
+                            self._slot_encoder.reset(env_id)
                         self._logger.info(f'Env {env_id} had an abnormal step, info: {episode_timestep.info}')
                         continue
 
@@ -476,9 +513,15 @@ class MuZeroSegmentCollector(ISerialCollector):
                     append_kwargs = {'timestep': to_ndarray(obs.get('timestep', -1))}
                     if self.policy_config.use_ture_chance_label_in_chance_encoder:
                         append_kwargs['chance'] = self.chance_dict_tmp[env_id]
-                    
+                    if store_raw_obs:
+                        append_kwargs['raw_obs'] = to_ndarray(obs['raw_obs'])
+
+                    if encode_slots_in_collector:
+                        obs_for_segment = step_slots[env_id]
+                    else:
+                        obs_for_segment = to_ndarray(obs['observation'])
                     game_segments[env_id].append(
-                        actions[env_id], to_ndarray(obs['observation']), reward,
+                        actions[env_id], obs_for_segment, reward,
                         self.action_mask_dict_tmp[env_id], self.to_play_dict_tmp[env_id], **append_kwargs
                     )
 
@@ -509,7 +552,9 @@ class MuZeroSegmentCollector(ISerialCollector):
                             improved_policy_lst[env_id].append(improved_policy_dict_with_env_id[env_id])
 
                     # Append the newest observation to the observation window.
-                    observation_window_stack[env_id].append(to_ndarray(obs['observation']))
+                    observation_window_stack[env_id].append(obs_for_segment if encode_slots_in_collector else to_ndarray(obs['observation']))
+                    if store_raw_obs:
+                        raw_observation_window_stack[env_id].append(to_ndarray(obs['raw_obs']))
 
                     # ==============================================================
                     # Save a game segment if it is full or the game has ended.
@@ -539,7 +584,10 @@ class MuZeroSegmentCollector(ISerialCollector):
                             config=self.policy_config,
                             task_id=self.task_id
                         )
-                        game_segments[env_id].reset(observation_window_stack[env_id])
+                        if store_raw_obs:
+                            game_segments[env_id].reset(observation_window_stack[env_id], init_raw_observations=raw_observation_window_stack[env_id])
+                        else:
+                            game_segments[env_id].reset(observation_window_stack[env_id])
 
                     self._env_info[env_id]['step'] += 1
                     collected_step += 1
@@ -586,6 +634,8 @@ class MuZeroSegmentCollector(ISerialCollector):
                     # NOTE: Reset the policy state for the completed environment.
                     self._policy.reset([env_id], task_id=self.task_id)
                     self._reset_stat(env_id)
+                    if encode_slots_in_collector:
+                        self._slot_encoder.reset(env_id)
 
                     # NOTE: If an episode finishes but collection continues, re-initialize its game segment.
                     game_segments[env_id] = GameSegment(
@@ -594,7 +644,10 @@ class MuZeroSegmentCollector(ISerialCollector):
                         config=self.policy_config,
                         task_id=self.task_id
                     )
-                    game_segments[env_id].reset(observation_window_stack[env_id])
+                    if store_raw_obs:
+                        game_segments[env_id].reset(observation_window_stack[env_id], init_raw_observations=raw_observation_window_stack[env_id])
+                    else:
+                        game_segments[env_id].reset(observation_window_stack[env_id])
 
             # Check if the required number of segments has been collected.
             if len(self.game_segment_pool) >= self._default_num_segments:

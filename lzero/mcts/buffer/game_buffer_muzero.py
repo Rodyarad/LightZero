@@ -292,7 +292,8 @@ class MuZeroGameBuffer(GameBuffer):
             - reward_value_context (:obj:`list`): value_obs_list, value_mask, pos_in_game_segment_list, rewards_list, game_segment_lens,
               td_steps_list, action_mask_segment, to_play_segment
         """
-        zero_obs = game_segment_list[0].zero_obs()
+        use_raw_obs = getattr(self._cfg, 'finetune_slate', False)
+        zero_obs = game_segment_list[0].zero_raw_obs() if use_raw_obs else game_segment_list[0].zero_obs()
         value_obs_list = []
         # the value is valid or not (out of game_segment)
         value_mask = []
@@ -313,7 +314,10 @@ class MuZeroGameBuffer(GameBuffer):
             # prepare the corresponding observations for bootstrapped values o_{t+k}
             # o[t+ td_steps, t + td_steps + stack frames + num_unroll_steps]
             # t=2+3 -> o[2+3, 2+3+4+5] -> o[5, 14]
-            game_obs = game_segment.get_unroll_obs(state_index + td_steps, self._cfg.num_unroll_steps)
+            if use_raw_obs:
+                game_obs = game_segment.get_unroll_raw_obs(state_index + td_steps, self._cfg.num_unroll_steps)
+            else:
+                game_obs = game_segment.get_unroll_obs(state_index + td_steps, self._cfg.num_unroll_steps)
 
             rewards_list.append(game_segment.reward_segment)
             

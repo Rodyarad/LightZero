@@ -273,6 +273,17 @@ class MuZeroEvaluator(ISerialEvaluator):
 
             dones = np.array([False for _ in range(env_nums)])
 
+            encode_slots_in_collector = getattr(self.policy_config, 'finetune_slate', False)
+            if encode_slots_in_collector:
+                if not hasattr(self, '_slot_encoder'):
+                    from lzero.policy.slate_finetune import CollectorSlotEncoder
+                    self._slot_encoder = CollectorSlotEncoder(
+                        self._policy.get_attribute('slate'), self.policy_config.device
+                    )
+                self._slot_encoder.reset()
+                init_frames_dict = {i: to_ndarray(init_obs[i]['raw_obs']) for i in range(env_nums)}
+                init_slots = self._slot_encoder.encode(init_frames_dict)
+
             game_segments = [
                 GameSegment(
                     self._env.action_space,
@@ -282,8 +293,12 @@ class MuZeroEvaluator(ISerialEvaluator):
                 ) for _ in range(env_nums)
             ]
             for i in range(env_nums):
+                if encode_slots_in_collector:
+                    init_obs_frame = init_slots[i]
+                else:
+                    init_obs_frame = to_ndarray(init_obs[i]['observation'])
                 game_segments[i].reset(
-                    [to_ndarray(init_obs[i]['observation']) for _ in range(self.policy_config.model.frame_stack_num)]
+                    [init_obs_frame for _ in range(self.policy_config.model.frame_stack_num)]
                 )
 
             ready_env_id = set()
@@ -354,6 +369,15 @@ class MuZeroEvaluator(ISerialEvaluator):
                     # ==============================================================
                     timesteps = self._env.step(actions)
                     timesteps = to_tensor(timesteps, dtype=torch.float32)
+
+                    step_slots = {}
+                    if encode_slots_in_collector:
+                        step_frames = {
+                            env_id: to_ndarray(episode_timestep.obs['raw_obs'])
+                            for env_id, episode_timestep in timesteps.items()
+                        }
+                        step_slots = self._slot_encoder.encode(step_frames)
+
                     for env_id, episode_timestep in timesteps.items():
                         obs, reward, done, info = episode_timestep.obs, episode_timestep.reward, episode_timestep.done, episode_timestep.info
 
@@ -362,8 +386,12 @@ class MuZeroEvaluator(ISerialEvaluator):
                         if self._policy.get_attribute('cfg').type in ['unizero', 'sampled_unizero']:
                             self._policy.reset(env_id=env_id, current_steps=eps_steps_lst[env_id], reset_init_data=False, task_id=self.task_id)
 
+                        if encode_slots_in_collector:
+                            obs_for_segment = step_slots[env_id]
+                        else:
+                            obs_for_segment = to_ndarray(obs['observation'])
                         game_segments[env_id].append(
-                            actions[env_id], to_ndarray(obs['observation']), reward, action_mask_dict[env_id],
+                            actions[env_id], obs_for_segment, reward, action_mask_dict[env_id],
                             to_play_dict[env_id], timestep_dict[env_id]
                         )
 
@@ -375,6 +403,8 @@ class MuZeroEvaluator(ISerialEvaluator):
                         dones[env_id] = done
                         if episode_timestep.done:
                             self._policy.reset([env_id])
+                            if encode_slots_in_collector:
+                                self._slot_encoder.reset(env_id)
                             reward = episode_timestep.info['eval_episode_return']
                             saved_info = {'eval_episode_return': episode_timestep.info['eval_episode_return']}
                             if 'episode_info' in episode_timestep.info:
@@ -412,8 +442,15 @@ class MuZeroEvaluator(ISerialEvaluator):
                                     config=self.policy_config,
                                     task_id=self.task_id
                                 )
+                                if encode_slots_in_collector:
+                                    new_episode_slots = self._slot_encoder.encode(
+                                        {env_id: to_ndarray(init_obs[env_id]['raw_obs'])}
+                                    )
+                                    init_obs_frame = new_episode_slots[env_id]
+                                else:
+                                    init_obs_frame = init_obs[env_id]['observation']
                                 game_segments[env_id].reset(
-                                    [init_obs[env_id]['observation'] for _ in range(self.policy_config.model.frame_stack_num)]
+                                    [init_obs_frame for _ in range(self.policy_config.model.frame_stack_num)]
                                 )
 
                             eps_steps_lst[env_id] = 0

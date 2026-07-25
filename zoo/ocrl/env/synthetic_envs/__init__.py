@@ -89,3 +89,10 @@ gym.register(
     entry_point="zoo.ocrl.env.synthetic_envs:SpriteSyntheticGymEnv",
     kwargs={"config_stem": "odd-one-out-N4C2S2S1", "env_type": "OddOneOutEnv"},
 )
+
+#obj.comp_shifted
+gym.register(
+    id="OddOneOutShiftedEnvObject-v0",
+    entry_point="zoo.ocrl.env.synthetic_envs:SpriteSyntheticGymEnv",
+    kwargs={"config_stem": "odd-one-out-N4C2S2S1-oc_shifted", "env_type": "OddOneOutEnv"},
+)

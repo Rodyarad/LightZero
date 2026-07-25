@@ -64,6 +64,19 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
         self.value_support = DiscreteSupport(*self._cfg.model.value_support_range)
         self.reward_support = DiscreteSupport(*self._cfg.model.reward_support_range)
 
+        self._slate_for_encoding = None
+
+    def _encode_raw_obs_to_slots(self, raw_obs_list: List[Any]) -> torch.Tensor:
+        from lzero.policy.slate_finetune import encode_flat_windows_to_slots
+        assert self._slate_for_encoding is not None, \
+            "finetune_slate=True but no SLATE model was provided to the buffer (call sample()/reanalyze_buffer() with the policy)"
+        assert self._cfg.model.frame_stack_num == 1, "SLATE online fine-tuning supports frame_stack_num=1 only"
+        raw_obs_array = np.asarray(raw_obs_list)
+        raw_obs_array = raw_obs_array.reshape(-1, *raw_obs_array.shape[2:])
+        return encode_flat_windows_to_slots(
+            self._slate_for_encoding, raw_obs_array, self._cfg.num_unroll_steps + 1, self._cfg.device
+        )
+
     #@profile
     def sample(
             self, batch_size: int, policy: Union["MuZeroPolicy", "EfficientZeroPolicy", "SampledEfficientZeroPolicy"]
@@ -79,6 +92,9 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
         """
         policy._target_model.to(self._cfg.device)
         policy._target_model.eval()
+
+        if getattr(self._cfg, 'finetune_slate', False):
+            self._slate_for_encoding = policy._slate
 
         # obtain the current_batch and prepare target context
         reward_value_context, policy_re_context, policy_non_re_context, current_batch = self._make_batch(
@@ -110,6 +126,8 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
 
         # a batch contains the current_batch and the target_batch
         train_data = [current_batch, target_batch]
+        if getattr(self._cfg, 'store_raw_obs', False) and not getattr(self._cfg, 'finetune_slate', False):
+            train_data.append(self._raw_obs_batch_tmp)
         return train_data
 
     #@profile
@@ -138,6 +156,9 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
         obs_list, action_list, mask_list = [], [], []
         timestep_list = []
         bootstrap_action_list = []
+        store_raw_obs = getattr(self._cfg, 'store_raw_obs', False)
+        finetune_slate = getattr(self._cfg, 'finetune_slate', False)
+        raw_obs_list = []
 
         # prepare the inputs of a batch
         for i in range(batch_size):
@@ -166,11 +187,24 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
             ]
 
             # obtain the current observations sequence
-            obs_list.append(
-                game_segment_list[i].get_unroll_obs(
-                    pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+            if finetune_slate:
+                obs_list.append(
+                    game_segment_list[i].get_unroll_raw_obs(
+                        pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+                    )
                 )
-            )
+            else:
+                obs_list.append(
+                    game_segment_list[i].get_unroll_obs(
+                        pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+                    )
+                )
+                if store_raw_obs:
+                    raw_obs_list.append(
+                        game_segment_list[i].get_unroll_raw_obs(
+                            pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+                        )
+                    )
             action_list.append(actions_tmp)
 
             mask_list.append(mask_tmp)
@@ -188,12 +222,18 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
 
 
         # formalize the input observations
-        obs_list = prepare_observation(obs_list, self._cfg.model.model_type)
+        if finetune_slate:
+            obs_list = np.asarray(obs_list)
+        else:
+            obs_list = prepare_observation(obs_list, self._cfg.model.model_type)
 
         # formalize the inputs of a batch
         current_batch = [obs_list, action_list, bootstrap_action_list, mask_list, batch_index_list, weights_list, make_time_list, timestep_list]
         for i in range(len(current_batch)):
             current_batch[i] = np.asarray(current_batch[i])
+
+        if store_raw_obs and not finetune_slate:
+            self._raw_obs_batch_tmp = np.asarray(raw_obs_list)
 
         total_transitions = self.get_num_of_transitions()
 
@@ -246,6 +286,9 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
         """
         policy._target_model.to(self._cfg.device)
         policy._target_model.eval()
+
+        if getattr(self._cfg, 'finetune_slate', False):
+            self._slate_for_encoding = policy._slate
 
         # obtain the current_batch and prepare target context
         policy_re_context, current_batch = self._make_batch_for_reanalyze(batch_size)
@@ -304,11 +347,18 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
             ]
 
             # obtain the current observations sequence
-            obs_list.append(
-                game_segment_list[i].get_unroll_obs(
-                    pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+            if getattr(self._cfg, 'finetune_slate', False):
+                obs_list.append(
+                    game_segment_list[i].get_unroll_raw_obs(
+                        pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+                    )
                 )
-            )
+            else:
+                obs_list.append(
+                    game_segment_list[i].get_unroll_obs(
+                        pos_in_game_segment_list[i], num_unroll_steps=self._cfg.num_unroll_steps, padding=True
+                    )
+                )
             action_list.append(actions_tmp)
             mask_list.append(mask_tmp)
 
@@ -325,7 +375,10 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
             bootstrap_action_list.append(bootstrap_action_tmp)
 
         # formalize the input observations
-        obs_list = prepare_observation(obs_list, self._cfg.model.model_type)
+        if getattr(self._cfg, 'finetune_slate', False):
+            obs_list = np.asarray(obs_list)
+        else:
+            obs_list = prepare_observation(obs_list, self._cfg.model.model_type)
 
         # formalize the inputs of a batch
         current_batch = [obs_list, action_list, bootstrap_action_list, mask_list, batch_index_list, weights_list, make_time_list, timestep_list]
@@ -357,7 +410,8 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
             - policy_re_context (:obj:`list`): policy_obs_list, policy_mask, pos_in_game_segment_list, indices,
               child_visits, game_segment_lens, action_mask_segment, to_play_segment
         """
-        zero_obs = game_segment_list[0].zero_obs()
+        use_raw_obs = getattr(self._cfg, 'finetune_slate', False)
+        zero_obs = game_segment_list[0].zero_raw_obs() if use_raw_obs else game_segment_list[0].zero_obs()
         with torch.no_grad():
             # for policy
             policy_obs_list = []
@@ -378,7 +432,10 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
                 timestep_segment.append(game_segment.timestep_segment)
                 child_visits.append(game_segment.child_visit_segment)
                 # prepare the corresponding observations
-                game_obs = game_segment.get_unroll_obs(state_index, self._cfg.num_unroll_steps)
+                if use_raw_obs:
+                    game_obs = game_segment.get_unroll_raw_obs(state_index, self._cfg.num_unroll_steps)
+                else:
+                    game_obs = game_segment.get_unroll_obs(state_index, self._cfg.num_unroll_steps)
                 for current_index in range(state_index, state_index + self._cfg.num_unroll_steps + 1):
 
                     if current_index < game_segment_len:
@@ -437,9 +494,12 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
         model.world_model.reanalyze_phase = True
 
         with torch.no_grad():
-            policy_obs_list = prepare_observation(policy_obs_list, self._cfg.model.model_type)
             network_output = []
-            batch_obs = torch.from_numpy(policy_obs_list).to(self._cfg.device)
+            if getattr(self._cfg, 'finetune_slate', False):
+                batch_obs = self._encode_raw_obs_to_slots(policy_obs_list)
+            else:
+                policy_obs_list = prepare_observation(policy_obs_list, self._cfg.model.model_type)
+                batch_obs = torch.from_numpy(policy_obs_list).to(self._cfg.device)
 
             # =============== NOTE: The key difference with MuZero =================
             # To obtain the target policy from MCTS guided by the recent target model
@@ -560,9 +620,12 @@ class UniZeroGameBuffer(MuZeroGameBuffer):
 
         batch_target_values, batch_rewards = [], []
         with torch.no_grad():
-            value_obs_list = prepare_observation(value_obs_list, self._cfg.model.model_type)
             network_output = []
-            batch_obs = torch.from_numpy(value_obs_list).to(self._cfg.device)
+            if getattr(self._cfg, 'finetune_slate', False):
+                batch_obs = self._encode_raw_obs_to_slots(value_obs_list)
+            else:
+                value_obs_list = prepare_observation(value_obs_list, self._cfg.model.model_type)
+                batch_obs = torch.from_numpy(value_obs_list).to(self._cfg.device)
 
             # =============== NOTE: The key difference with MuZero =================
             # calculate the bootstrapped value and target value

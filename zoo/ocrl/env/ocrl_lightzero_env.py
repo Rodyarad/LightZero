@@ -70,7 +70,9 @@ class OCRLEnvLightZero(BaseEnv):
         chekpoint_path='LightZero/zoo/ocr/slate_weights/slate_ocrl.pth',
         num_slots=6,
         slot_dim=192,
-        oc_model=False
+        oc_model=False,
+        return_raw_obs=False,
+        oc_encode_in_collector=False,
     )
 
     @classmethod
@@ -203,8 +205,13 @@ class OCRLEnvLightZero(BaseEnv):
 
         action_mask = np.ones(self._action_space.n, 'int8')
 
-        return {'observation': observation, 'action_mask': action_mask, 'to_play': np.array(-1),
-                'timestep': np.array(self._timestep)}
+        obs_dict = {'observation': observation, 'action_mask': action_mask, 'to_play': np.array(-1),
+                    'timestep': np.array(self._timestep)}
+        if self.cfg.oc_model and getattr(self.cfg, 'oc_encode_in_collector', False):
+            obs_dict['raw_obs'] = observation
+        elif self.cfg.oc_model and getattr(self.cfg, 'return_raw_obs', False):
+            obs_dict['raw_obs'] = self._env.last_frame
+        return obs_dict
 
     @property
     def legal_actions(self):

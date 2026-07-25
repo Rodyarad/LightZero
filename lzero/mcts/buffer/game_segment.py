@@ -56,6 +56,10 @@ class GameSegment:
         self.gumbel_algo = config.gumbel_algo
         self.use_ture_chance_label_in_chance_encoder = config.use_ture_chance_label_in_chance_encoder
         # self.store_obs_int8 = getattr(config, 'store_obs_int8', False)
+        self.store_raw_obs = getattr(config, 'store_raw_obs', False)
+        self.drop_obs_on_save = getattr(config, 'finetune_slate', False)
+        if self.drop_obs_on_save:
+            assert self.store_raw_obs, "finetune_slate=True requires store_raw_obs=True"
 
         if task_id is None:
             if isinstance(config.model.observation_shape, int) or len(config.model.observation_shape) == 1:
@@ -79,6 +83,7 @@ class GameSegment:
                 self.zero_obs_shape = (config.model.image_channel, config.model.observation_shape[-2], config.model.observation_shape[-1])
 
         self.obs_segment = []
+        self.raw_obs_segment = []
         self.action_segment = []
         self.reward_segment = []
 
@@ -126,6 +131,16 @@ class GameSegment:
         #     ]
         return stacked_obs
 
+    def get_unroll_raw_obs(self, timestep: int, num_unroll_steps: int = 0, padding: bool = False) -> np.ndarray:
+        assert self.store_raw_obs, "get_unroll_raw_obs requires config.store_raw_obs=True"
+        stacked_raw_obs = self.raw_obs_segment[timestep:timestep + self.frame_stack_num + num_unroll_steps]
+        if padding:
+            pad_len = self.frame_stack_num + num_unroll_steps - len(stacked_raw_obs)
+            if pad_len > 0:
+                pad_frames = np.array([stacked_raw_obs[-1] for _ in range(pad_len)])
+                stacked_raw_obs = np.concatenate((stacked_raw_obs, pad_frames))
+        return stacked_raw_obs
+
     def zero_obs(self) -> List:
         """
         Overview:
@@ -134,6 +149,10 @@ class GameSegment:
             ndarray: An array filled with zeros.
         """
         return [np.zeros(self.zero_obs_shape, dtype=np.float32) for _ in range(self.frame_stack_num)]
+
+    def zero_raw_obs(self) -> List:
+        assert self.store_raw_obs and len(self.raw_obs_segment) > 0
+        return [np.zeros_like(self.raw_obs_segment[0]) for _ in range(self.frame_stack_num)]
 
     def get_obs(self) -> List:
         """
@@ -167,6 +186,7 @@ class GameSegment:
             to_play: int = -1,
             timestep: int = 0,
             chance: int = 0,
+            raw_obs: np.ndarray = None,
     ) -> None:
         """
         Overview:
@@ -176,6 +196,8 @@ class GameSegment:
         # if self.store_obs_int8 and isinstance(obs, np.ndarray) and np.issubdtype(obs.dtype, np.floating):
         #     obs = (np.clip(obs, 0.0, 1.0) * 255.0).astype(np.uint8)
         self.obs_segment.append(obs)
+        if self.store_raw_obs and raw_obs is not None:
+            self.raw_obs_segment.append(raw_obs)
         self.reward_segment.append(reward)
 
         self.action_mask_segment.append(action_mask)
@@ -188,6 +210,7 @@ class GameSegment:
     def pad_over(
             self, next_segment_observations: List, next_segment_rewards: List, next_segment_actions: List, next_segment_root_values: List,
             next_segment_child_visits: List, next_segment_improved_policy: List = None, next_chances: List = None,
+            next_segment_raw_observations: List = None,
     ) -> None:
         """
         Overview:
@@ -216,6 +239,10 @@ class GameSegment:
         # NOTE: next block observation should start from (stacked_observation - 1) in next trajectory
         for observation in next_segment_observations:
             self.obs_segment.append(copy.deepcopy(observation))
+
+        if self.store_raw_obs and next_segment_raw_observations is not None:
+            for raw_observation in next_segment_raw_observations:
+                self.raw_obs_segment.append(copy.deepcopy(raw_observation))
 
         for reward in next_segment_rewards:
             self.reward_segment.append(reward)
@@ -313,7 +340,12 @@ class GameSegment:
             For environments with a variable action space, such as board games, the elements in `child_visit_segment` may have
             different lengths. In such scenarios, it is necessary to use the object data type for `self.child_visit_segment`.
         """
-        self.obs_segment = np.array(self.obs_segment)
+        if self.drop_obs_on_save:
+            self.obs_segment = np.array([])
+        else:
+            self.obs_segment = np.array(self.obs_segment)
+        if self.store_raw_obs:
+            self.raw_obs_segment = np.array(self.raw_obs_segment)
         self.action_segment = np.array(self.action_segment)
         self.reward_segment = np.array(self.reward_segment)
 
@@ -336,15 +368,18 @@ class GameSegment:
         if self.use_ture_chance_label_in_chance_encoder:
             self.chance_segment = np.array(self.chance_segment)
 
-    def reset(self, init_observations: np.ndarray) -> None:
+    def reset(self, init_observations: np.ndarray, init_raw_observations: np.ndarray = None) -> None:
         """
         Overview:
             Initialize the game segment using ``init_observations``,
             which is the previous ``frame_stack_num`` stacked frames.
         Arguments:
             - init_observations (:obj:`list`): list of the stack observations in the previous time steps.
+            - init_raw_observations (:obj:`list`): list of the corresponding raw observations,
+              only used when ``store_raw_obs`` is True.
         """
         self.obs_segment = []
+        self.raw_obs_segment = []
         self.action_segment = []
         self.reward_segment = []
 
@@ -362,6 +397,11 @@ class GameSegment:
 
         for observation in init_observations:
             self.obs_segment.append(copy.deepcopy(observation))
+
+        if self.store_raw_obs and init_raw_observations is not None:
+            assert len(init_raw_observations) == self.frame_stack_num
+            for raw_observation in init_raw_observations:
+                self.raw_obs_segment.append(copy.deepcopy(raw_observation))
 
     def is_full(self) -> bool:
         """
