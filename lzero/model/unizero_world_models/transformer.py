@@ -303,7 +303,6 @@ class TransformerConfig:
 
     model_type: str
     slots_num: int
-    slot_attention_mask: str = "slot"
 
     # LoRA parameters
     lora_r: int = 0
@@ -521,40 +520,19 @@ class SelfAttention(nn.Module):
             mask_size += self.register_token_num * 5
         causal_mask = torch.tril(torch.ones(mask_size, mask_size))
 
-        #slot_mask = torch.max(causal_mask, torch.block_diag(*[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
-
-        #i = torch.arange(mask_size)
-        #b, p = i[:,None]//config.tokens_per_block, i[:,None]%config.tokens_per_block
-        #slot_mask = ((b == b.T)|((b.T < b)&(( p== p.T)|(p.T==config.tokens_per_block-1)))).int()
-
         i = torch.arange(mask_size)
-        b, p = i[:, None] // config.tokens_per_block, i[:, None] % config.tokens_per_block
-        h = config.tokens_per_block // 2
+        b = i[:, None] // (config.tokens_per_block)
+        p = i[:, None] % (config.tokens_per_block)
+        n = config.tokens_per_block - 1
 
         slot_mask = (
-                ((b == b.T) & (p < h) & (p.T < h))
-                | ((b == b.T) & (p >= h) & (p.T < h))
-                | ((b == b.T) & (p >= h) & (p == p.T))
-                | ((b == b.T) & (p >= h) & (p.T == (p - h)))
-                | ((b > b.T) & (p < h) & ((p.T < h) | (p.T == (p + h))))
-                | ((b > b.T) & (p >= h) & (p.T < h))
+            (b > b.T)
+            | ((b == b.T) & (p < n) & (p.T < n))
+            | ((b == b.T) & (p == n))
         ).int()
 
-        causal_mask = torch.tril(torch.ones(mask_size, mask_size))
-        block_causal_mask = torch.max(causal_mask, torch.block_diag(
-            *[torch.ones(config.tokens_per_block // 2, config.tokens_per_block // 2) for _ in range(mask_size * 2 // config.tokens_per_block)]))
-
-        slot_attention_mask = getattr(config, "slot_attention_mask", "slot")
         if config.model_type == 'slot':
-            if slot_attention_mask == "slot":
-                selected_mask = slot_mask
-            elif slot_attention_mask == "block_causal":
-                selected_mask = block_causal_mask
-            else:
-                raise ValueError(
-                    f"Unsupported slot_attention_mask: {slot_attention_mask}. "
-                    f"Expected one of: slot, block_causal"
-                )
+            selected_mask = slot_mask
         else:
             selected_mask = causal_mask
 

@@ -21,7 +21,7 @@ from torch.distributions import (Categorical, Independent, Normal,
                                  TanhTransform, TransformedDistribution)
 
 from .kv_caching import KeysValues
-from .slicer import Head, PolicyHeadCont, AggregationHead, AggregationPolicyHeadCont, CausalHead, CausalPolicyHeadCont
+from .slicer import Head, PolicyHeadCont, SlotExpansionHead, CausalHead, CausalPolicyHeadCont
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
 from .utils import (LossWithIntermediateLosses, WorldModelOutput, hash_state,
@@ -110,8 +110,8 @@ class WorldModel(nn.Module):
         if self.model_type == 'slot':
             self._init_causal_transformers()
 
-            self.head_rewards = self._create_agg_head(self.act_tokens_pattern, self.support_size)
-            self.head_observations = self._create_head_for_latent(self.act_tokens_pattern, self.obs_per_embdding_dim, \
+            self.head_rewards = self._create_head(self.act_tokens_pattern, self.support_size)
+            self.head_observations = self._create_slot_expansion_head(self.act_tokens_pattern, self.obs_per_embdding_dim, \
                                                         self._get_final_norm(self.final_norm_option_in_obs_head)  # NOTE: using the specified normalization method for observations head
                                                        )
             if self.continuous_action_space:
@@ -121,7 +121,6 @@ class WorldModel(nn.Module):
             else:
                 self.head_policy = self._create_causal_head(self.value_policy_tokens_pattern, self.action_space_size, self.causal_policy_transformer)
             self.head_value = self._create_causal_head(self.value_policy_tokens_pattern, self.support_size, self.causal_value_transformer)
-            self.head_proj = self._create_mlp_head(self.obs_per_embdding_dim * 2, self.obs_per_embdding_dim)
             self.value_policy_emb = nn.Embedding(2, config.embed_dim, device=self.device)
             self.head_causal_prob_policy = self._create_head(self.value_policy_tokens_pattern, 1)
             self.head_causal_prob_value = self._create_head(self.value_policy_tokens_pattern, 1)
@@ -349,7 +348,13 @@ class WorldModel(nn.Module):
         self.analysis_dormant_ratio_weight_rank = self.config.analysis_dormant_ratio_weight_rank
         self.tokens_per_block = self.config.tokens_per_block
         if self.model_type == 'slot':
-            self.num_observations_tokens = self.config.tokens_per_block // 2
+            # A block holds the K slots of a timestep followed by a single action token.
+            self.num_slots = self.config.num_slots
+            assert self.tokens_per_block == self.num_slots + 1, (
+                f"For the slot model type, tokens_per_block must be num_slots + 1, "
+                f"got tokens_per_block={self.tokens_per_block} and num_slots={self.num_slots}."
+            )
+            self.num_observations_tokens = self.num_slots
         else:
             self.num_observations_tokens = self.config.tokens_per_block - 1
         self.latent_recon_loss_weight = self.config.latent_recon_loss_weight
@@ -408,8 +413,9 @@ class WorldModel(nn.Module):
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
         if self.model_type == 'slot':
+            # The action token is the last one of a block, the K slots precede it.
             self.act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
-            self.act_tokens_pattern[self.num_observations_tokens:] = 1
+            self.act_tokens_pattern[-1] = 1
             self.value_policy_tokens_pattern = 1 - self.act_tokens_pattern
         else:
             self.all_but_last_latent_state_pattern = torch.ones(self.config.tokens_per_block)
@@ -536,7 +542,7 @@ class WorldModel(nn.Module):
 
         causal_config = deepcopy(self.config)
         causal_config.attention = "object_causal"
-        causal_config.slots_num = self.tokens_per_block // 2
+        causal_config.slots_num = self.num_slots
         causal_config.num_layers = 1
         causal_config.num_heads = 4
 
@@ -577,36 +583,27 @@ class WorldModel(nn.Module):
             head_module=nn.Sequential(*modules)
         )
 
-    def _create_agg_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> AggregationHead:
+    def _create_slot_expansion_head(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> SlotExpansionHead:
         """
-        Create head module for slot-based models (policy/value).
-        Aggregates K slots per block using mean pooling, then passes to MLP.
+        Create the head that predicts all K next slots at once from the single action token of a block.
+        The MLP outputs num_slots * output_dim values, which are then reshaped into K slot predictions.
         """
         modules = [
             nn.LayerNorm(self.config.embed_dim),
             nn.Linear(self.config.embed_dim, self.config.embed_dim*4),
             nn.LayerNorm(self.config.embed_dim*4),
             nn.GELU(approximate='tanh'),
-            nn.Linear(self.config.embed_dim*4, output_dim)
+            nn.Linear(self.config.embed_dim*4, self.num_slots * output_dim)
         ]
         if norm_layer:
             modules.append(norm_layer)
-        return AggregationHead(
+        return SlotExpansionHead(
             max_blocks=self.config.max_blocks,
             block_mask=block_mask,
-            head_module=nn.Sequential(*modules)
+            head_module=nn.Sequential(*modules),
+            num_slots=self.num_slots,
+            output_dim=output_dim,
         )
-    
-    def _create_mlp_head(self, input_dim: int, output_dim: int):
-        modules = [
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, self.config.embed_dim*4),
-            nn.LayerNorm(self.config.embed_dim*4),
-            nn.GELU(approximate='tanh'),
-            nn.Linear(self.config.embed_dim*4, output_dim)
-        ]
-
-        return nn.Sequential(*modules)
 
     def _create_head_cont(self, block_mask: torch.Tensor, output_dim: int, norm_layer=None) -> PolicyHeadCont:
         """Create head modules for the transformer."""
@@ -913,31 +910,16 @@ class WorldModel(nn.Module):
         act_embeddings = self.act_embedding_table(act_tokens)
         act_embeddings = act_embeddings.reshape(B, -1, E)[:, :L, :]
 
-        if self.model_type == 'slot':
-            act_embeddings = act_embeddings.unsqueeze(2).expand(B, L, K, E)
-            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) * 2))
-        else:
-            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
+        # Each block is [obs_token_1, ..., obs_token_K, action_token].
+        num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
 
-        if self.model_type == 'slot':
-            obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
-        else:
-            obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
-
-        slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
-        slot_acts = slot_acts.view(-1, E * 2)
-        act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
+        obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
 
         for i in range(L):
             obs = obs_embeddings[:, i, :, :]
-            if self.model_type == 'slot':
-                act = act_embeddings[:, i, :, :]
-                obs_act = torch.cat([obs, act], dim=1)
-                obs_act_embeddings[:, i * (K * 2):(i + 1) * (K * 2), :] = obs_act
-            else:
-                act = act_embeddings[:, i, :].unsqueeze(1)
-                obs_act = torch.cat([obs, act], dim=1)
-                obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
+            act = act_embeddings[:, i, :].unsqueeze(1)
+            obs_act = torch.cat([obs, act], dim=1)
+            obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
 
         if eval_init_inference:
             return_result = torch.cat((obs_act_embeddings, current_obs_embeddings), dim=1)
@@ -973,34 +955,20 @@ class WorldModel(nn.Module):
                 obs_embeddings = obs_embeddings.view(act_tokens.shape[0], act_tokens.shape[1], self.num_observations_tokens,
                                                      -1)
 
-        if self.model_type == 'slot':
-            act_tokens = act_tokens.repeat(1, 1, self.num_observations_tokens)
-            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) * 2))
-        else:
-            num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
+        # Each block is [obs_token_1, ..., obs_token_K, action_token].
+        num_steps = int(obs_embeddings.size(1) * (obs_embeddings.size(2) + 1))
         act_embeddings = self.act_embedding_table(act_tokens)
 
         B, L, K, E = obs_embeddings.size()
-        if self.model_type == 'slot':
-            obs_act_embeddings = torch.empty(B, L * (K * 2), E, device=self.device)
-        else:
-            obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
+        obs_act_embeddings = torch.empty(B, L * (K + 1), E, device=self.device)
 
         act_embeddings = act_embeddings[:, :L, :, :]
-        slot_acts = torch.cat([obs_embeddings, act_embeddings], dim=-1)
-        slot_acts = slot_acts.view(-1, E * 2)
-        act_embeddings = self.head_proj(slot_acts).view(B, L, K, E)
 
         for i in range(L):
             obs = obs_embeddings[:, i, :, :]
-            if self.model_type == 'slot':
-                act = act_embeddings[:, i, :, :]
-                obs_act = torch.cat([obs, act], dim=1)
-                obs_act_embeddings[:, i * (K * 2):(i + 1) * (K * 2), :] = obs_act
-            else:
-                act = act_embeddings[:, i, 0, :].unsqueeze(1)
-                obs_act = torch.cat([obs, act], dim=1)
-                obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
+            act = act_embeddings[:, i, 0, :].unsqueeze(1)
+            obs_act = torch.cat([obs, act], dim=1)
+            obs_act_embeddings[:, i * (K + 1):(i + 1) * (K + 1), :] = obs_act
 
         if eval_init_inference:
             return_result = torch.cat((obs_act_embeddings, current_obs_embeddings), dim=1)

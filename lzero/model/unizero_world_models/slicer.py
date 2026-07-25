@@ -167,82 +167,49 @@ class Embedder(nn.Module):
         return output
 
 
-class AggregationHead(Slicer):
-    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module) -> None:
+class SlotExpansionHead(Slicer):
+    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module, num_slots: int,
+                 output_dim: int) -> None:
         """
         Overview:
-            Head module extends Slicer to include a head module for processing sliced inputs.
+            Head module that expands the single selected token of each block into ``num_slots`` predictions.
+            It is used to predict the whole set of next slots from the action token, which is the only token
+            of a block that has attended to the action.
         Arguments:
             - max_blocks (:obj:`int`): The maximum number of blocks to process.
-            - block_mask (:obj:`torch.Tensor`): A tensor mask indicating which blocks to keep.
-            - head_module (:obj:`nn.Module`): The head module to process the sliced inputs.
+            - block_mask (:obj:`torch.Tensor`): A tensor mask selecting exactly one token per block.
+            - head_module (:obj:`nn.Module`): The head module, whose output width is ``num_slots * output_dim``.
+            - num_slots (:obj:`int`): The number of slots to predict per block.
+            - output_dim (:obj:`int`): The dimension of a single predicted slot.
         """
         super().__init__(max_blocks, block_mask)
         assert isinstance(head_module, nn.Module)
+        assert self.num_kept_tokens == 1, (
+            f"SlotExpansionHead expects exactly one kept token per block, got {self.num_kept_tokens}."
+        )
         self.head_module = head_module
+        self.num_slots = num_slots
+        self.output_dim = output_dim
 
     def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int) -> torch.Tensor:
         """
         Overview:
-            Forward method processes the input tensor through the head module using computed slices.
+            Forward method expands the selected token of each block into ``num_slots`` predictions.
         Arguments:
-            - x (:obj:`torch.Tensor`): The input tensor.
+            - x (:obj:`torch.Tensor`): The input tensor of shape (B, T, E).
             - num_steps (:obj:`int`): The number of steps to consider.
-            - prev_steps (:obj:`int | :obj:`torch.Tensor`): The number of previous steps to consider.
+            - prev_steps (:obj:`int`): The number of previous steps to consider.
         Returns:
-            - torch.Tensor: The processed tensor.
+            - torch.Tensor: The predictions of shape (B, L * num_slots, output_dim), ordered block-major.
         """
         selected_token_indices = self.compute_slice(num_steps, prev_steps)
-        selected_tokens = x[:, selected_token_indices, :]
-        batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
-        num_timesteps = num_selected_tokens // self.num_kept_tokens
-        if num_selected_tokens % self.num_kept_tokens != 0:
-            selected_tokens = selected_tokens.new_zeros(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
-        tokens_grouped_by_time = selected_tokens.view(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
-        aggregated_tokens = tokens_grouped_by_time.sum(dim=2)
+        action_tokens = x[:, selected_token_indices, :]  # (B, L, E)
+        batch_size, num_blocks, _ = action_tokens.shape
 
-        return self.head_module(aggregated_tokens)
-    
-class AggregationPolicyHeadCont(Slicer):
-    def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module) -> None:
-        """
-        Overview:
-            Head module extends Slicer to include a head module for processing sliced inputs.
-        Arguments:
-            - max_blocks (:obj:`int`): The maximum number of blocks to process.
-            - block_mask (:obj:`torch.Tensor`): A tensor mask indicating which blocks to keep.
-            - head_module (:obj:`nn.Module`): The head module to process the sliced inputs.
-        """
-        super().__init__(max_blocks, block_mask)
-        assert isinstance(head_module, nn.Module)
-        self.head_module = head_module
+        output = self.head_module(action_tokens)  # (B, L, num_slots * output_dim)
+        return output.reshape(batch_size, num_blocks * self.num_slots, self.output_dim)
 
-    def forward(self, x: torch.Tensor, num_steps: int, prev_steps: int) -> torch.Tensor:
-        """
-        Overview:
-            Forward method processes the input tensor through the head module using computed slices.
-        Arguments:
-            - x (:obj:`torch.Tensor`): The input tensor.
-            - num_steps (:obj:`int`): The number of steps to consider.
-            - prev_steps (:obj:`int | :obj:`torch.Tensor`): The number of previous steps to consider.
-        Returns:
-            - torch.Tensor: The processed tensor.
-        """
-        selected_token_indices = self.compute_slice(num_steps, prev_steps)
-        selected_tokens = x[:, selected_token_indices, :]
-        batch_size, num_selected_tokens, embed_dim = selected_tokens.shape
-        num_timesteps = num_selected_tokens // self.num_kept_tokens
-        if num_selected_tokens % self.num_kept_tokens != 0:
-            selected_tokens = selected_tokens.new_zeros(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
-        tokens_grouped_by_time = selected_tokens.view(batch_size, num_timesteps, self.num_kept_tokens, embed_dim)
-        aggregated_tokens = tokens_grouped_by_time.sum(dim=2)
 
-        output = self.head_module(aggregated_tokens)
-
-        output = torch.cat([output['mu'], output['sigma']], dim=-1)
-
-        return output
-    
 class CausalHead(Slicer):
 
     def __init__(self, max_blocks: int, block_mask: torch.Tensor, head_module: nn.Module, transformer_module: nn.Module) -> None:
