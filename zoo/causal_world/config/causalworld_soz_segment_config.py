@@ -59,7 +59,7 @@ def main(seed, model_path=None):
             collector_env_num=collector_env_num,
             evaluator_env_num=evaluator_env_num,
             n_evaluator_episode=evaluator_env_num,
-            manager=dict(shared_memory=False, context='spawn'),
+            manager=dict(shared_memory=False, context='spawn', connect_timeout=300),
             oc_model=True,
             ocr_config_path=ocr_config_path,
             checkpoint_path=checkpoint_path,
