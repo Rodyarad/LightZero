@@ -14,6 +14,10 @@ from lzero.policy import (DiscreteSupport, InverseScalarTransform,
                           mz_network_output_unpack, phi_transform, prepare_obs,
                           prepare_obs_stack_for_unizero, scalar_transform,
                           select_action, to_torch_float_tensor)
+from lzero.policy.slate_finetune import (build_finetune_slate,
+                                         encode_image_sequences_to_slots,
+                                         prepare_slate_obs_batch,
+                                         slate_finetune_step)
 from lzero.policy.unizero import UniZeroPolicy
 from .utils import configure_optimizers_nanogpt
 
@@ -232,6 +236,13 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         momentum=0.9,
         # (float) The maximum constraint value of gradient norm clipping.
         grad_clip_value=5,
+        store_raw_obs=False,
+        finetune_slate=False,
+        slate_ocr_config_path=None,
+        slate_checkpoint_path=None,
+        slate_obs_size=64,
+        slate_obs_channels=3,
+        slate_batch_size=None,
         # (int) The number of episodes in each collecting stage.
         n_episode=8,
         # (int) the number of simulations in MCTS.
@@ -384,6 +395,18 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         self.value_inverse_scalar_transform_handle = InverseScalarTransform(self.value_support, self._cfg.model.categorical_distribution)
         self.reward_inverse_scalar_transform_handle = InverseScalarTransform(self.reward_support, self._cfg.model.categorical_distribution)
 
+        if self._cfg.finetune_slate:
+            assert self._cfg.store_raw_obs, "finetune_slate=True requires store_raw_obs=True (and env-side return_raw_obs=True)"
+            assert self._cfg.slate_ocr_config_path is not None, "finetune_slate=True requires slate_ocr_config_path"
+            self._slate = build_finetune_slate(
+                ocr_config_path=self._cfg.slate_ocr_config_path,
+                checkpoint_path=self._cfg.slate_checkpoint_path,
+                obs_size=self._cfg.slate_obs_size,
+                obs_channels=self._cfg.slate_obs_channels,
+                device=self._cfg.device,
+            )
+            self._slate_train_step = 0
+
         self.intermediate_losses = defaultdict(float)
         self.l2_norm_before = 0.
         self.l2_norm_after = 0.
@@ -429,15 +452,26 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         self._learn_model.train()
         self._target_model.train()
 
-        current_batch, target_batch, _ = data
+        if self._cfg.store_raw_obs and not self._cfg.finetune_slate:
+            current_batch, target_batch, raw_obs_batch, _ = data
+        else:
+            raw_obs_batch = None
+            current_batch, target_batch, _ = data
         # ==============================================================
         # sampled related core code
         # ==============================================================
         obs_batch_ori, action_batch, child_sampled_actions_batch, target_action_batch, mask_batch, indices, weights, make_time, batch_timestep = current_batch
         target_reward, target_value, target_policy = target_batch
+        if self._cfg.finetune_slate:
+            raw_obs_batch = obs_batch_ori
+        raw_obs_mask_np = np.asarray(mask_batch) if raw_obs_batch is not None else None
 
         # Prepare observations based on frame stack number
-        if self._cfg.model.frame_stack_num > 1:
+        if self._cfg.finetune_slate:
+            slots_seq = encode_image_sequences_to_slots(self._slate, obs_batch_ori, self._cfg.device)
+            obs_batch = slots_seq[:, :1]
+            obs_target_batch = slots_seq[:, 1:] if self._cfg.model.self_supervised_learning_loss else None
+        elif self._cfg.model.frame_stack_num > 1:
             obs_batch, obs_target_batch = prepare_obs_stack_for_unizero(obs_batch_ori, self._cfg)
         else:
             obs_batch, obs_target_batch = prepare_obs(obs_batch_ori, self._cfg)
@@ -584,6 +618,14 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         # Core target model update step
         self._target_model.update(self._learn_model.state_dict())
 
+        slate_log_dict = {}
+        if self._cfg.finetune_slate:
+            slate_images = prepare_slate_obs_batch(
+                raw_obs_batch, raw_obs_mask_np, self._cfg.device, max_images=self._cfg.slate_batch_size
+            )
+            slate_log_dict = slate_finetune_step(self._slate, slate_images, self._slate_train_step)
+            self._slate_train_step += 1
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             current_memory_allocated = torch.cuda.memory_allocated()
@@ -656,6 +698,9 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 'target_sampled_actions_min': target_sampled_actions_min,
                 'target_sampled_actions_mean': target_sampled_actions_mean
             })
+
+        if slate_log_dict:
+            return_log_dict.update(slate_log_dict)
 
         if self._cfg.use_wandb:
             wandb.log({'learner_step/' + k: v for k, v in return_log_dict.items()}, step=self.env_step)
@@ -985,7 +1030,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             tensorboard according to the return value ``_forward_learn``.
         """
         if self._cfg.model.continuous_action_space:
-            return [
+            monitored_vars = [
                 'analysis/dormant_ratio_encoder',
                 'analysis/dormant_ratio_world_model',
                 'analysis/latent_state_l2_norms',
@@ -1052,7 +1097,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 'total_grad_norm_before_clip',
             ]
         else:
-            return [
+            monitored_vars = [
                 'analysis/dormant_ratio_encoder',
                 'analysis/dormant_ratio_world_model',
                 'analysis/latent_state_l2_norms',
@@ -1102,3 +1147,19 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 'reconstruction_loss',
                 'perceptual_loss',
             ]
+
+        if self._cfg.finetune_slate:
+            monitored_vars += [
+                'slate/loss',
+                'slate/dvae_mse',
+                'slate/cross_entropy',
+                'slate/tau',
+                'slate/lr_dvae',
+                'slate/lr_enc',
+                'slate/lr_dec',
+                'slate/norm',
+                'slate/num_images',
+                'slate/step',
+            ]
+
+        return monitored_vars

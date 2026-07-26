@@ -60,7 +60,11 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     if config.from_pixels:
         env = JpegWrapper(env, transform2string=config.transform2string)
         
-    if config.oc_model:
+    if config.oc_model and getattr(config, 'oc_encode_in_collector', False):
+        # Slots are computed in the collector/evaluator with the policy's (finetuned) OCR model,
+        # so the env returns raw frames and no frozen OCR model is loaded here.
+        pass
+    elif config.oc_model:
         oc_model_type = getattr(config, 'oc_model_type', 'SLATE')
 
         if oc_model_type == 'SLATE':

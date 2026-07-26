@@ -56,7 +56,9 @@ class CausalWorldEnvLightZero(BaseEnv):
         num_slots=10,
         slot_dim=192,
         oc_model=False,
-        oc_model_type='SLATE'
+        oc_model_type='SLATE',
+        return_raw_obs=False,
+        oc_encode_in_collector=False,
     )
 
     def __init__(self, cfg: dict) -> None:
@@ -130,7 +132,11 @@ class CausalWorldEnvLightZero(BaseEnv):
         
 
         obs = self._env.reset()
-        obs = to_ndarray(obs).astype('float32')
+        obs = to_ndarray(obs)
+        oc_encode_in_collector = self.oc_model and getattr(self._cfg, 'oc_encode_in_collector', False)
+        if not oc_encode_in_collector:
+            # keep raw uint8 frames when slots are computed in the collector
+            obs = obs.astype('float32')
 
         if self._cfg.from_pixels:
             if not self.channel_last and not self.oc_model:
@@ -144,6 +150,8 @@ class CausalWorldEnvLightZero(BaseEnv):
 
         action_mask = -1
         obs = {'observation': obs, 'action_mask': np.array(action_mask), 'to_play': np.array(-1), 'timestep': np.array(self._timestep)}
+        if oc_encode_in_collector:
+            obs['raw_obs'] = obs['observation']
 
         return obs
 
@@ -192,7 +200,11 @@ class CausalWorldEnvLightZero(BaseEnv):
                 print(f'save episode {self._save_replay_count} in {self._replay_path_gif}!')
                 self._save_replay_count += 1
 
-        obs = to_ndarray(obs).astype(np.float32)
+        obs = to_ndarray(obs)
+        oc_encode_in_collector = self.oc_model and getattr(self._cfg, 'oc_encode_in_collector', False)
+        if not oc_encode_in_collector:
+            # keep raw uint8 frames when slots are computed in the collector
+            obs = obs.astype(np.float32)
         rew = to_ndarray(rew).astype(np.float32)
 
         if self._cfg.from_pixels:
@@ -201,6 +213,8 @@ class CausalWorldEnvLightZero(BaseEnv):
 
         action_mask = -1
         obs = {'observation': obs, 'action_mask': np.array(action_mask), 'to_play': np.array(-1), 'timestep': np.array(self._timestep)}
+        if oc_encode_in_collector:
+            obs['raw_obs'] = obs['observation']
 
         return BaseEnvTimestep(obs, rew, done, info)
 
