@@ -109,7 +109,7 @@ def main(env_id, seed, model_path=None):
             type='ocrl_lightzero',
             import_names=['zoo.ocrl.env.ocrl_lightzero_env'],
         ),
-        env_manager=dict(type='subprocess'),
+        env_manager=dict(type='base'),
         policy=dict(
             type='unizero',
             import_names=['lzero.policy.unizero'],

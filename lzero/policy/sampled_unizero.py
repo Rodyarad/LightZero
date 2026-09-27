@@ -345,7 +345,14 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         if self._cfg.cos_lr_scheduler:
             from torch.optim.lr_scheduler import CosineAnnealingLR
 
-            # TODO: check the total training steps
+            # TODO(T_max): ``T_max`` is hard-coded to 1e5 here, while ``unizero.py`` (discrete UniZero) takes it from
+            # ``cfg.total_iterations`` (default 5e5) with ``eta_min=cfg.final_learning_rate``. This affects EVERY policy
+            # that goes through ``sampled_unizero`` with ``cos_lr_scheduler=True`` (object-centric SOZ configs on
+            # robosuite/maniskill/causalworld AND plain Sampled UniZero, e.g. dmc2gym_state_suz_config), not only the
+            # object-centric experiments. The actual number of train iterations is roughly
+            # ``max_env_step * replay_ratio`` (e.g. 5e5 * 0.1 = 5e4), so with T_max=1e5 the LR only decays to ~half of
+            # its peak by the end of training. To align: set T_max to the expected number of iterations (or read it
+            # from the config like ``unizero.py`` does), or disable ``cos_lr_scheduler`` when comparing algorithms.
             self.lr_scheduler = CosineAnnealingLR(self._optimizer_world_model, 1e5, eta_min=0, last_epoch=-1)
 
         if self._cfg.model.continuous_action_space:

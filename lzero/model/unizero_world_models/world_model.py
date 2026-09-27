@@ -175,6 +175,10 @@ class WorldModel(nn.Module):
 
         self.obs_history: List = []
         self.act_history: List = []
+        # Real (obs, act) history preceding the current MCTS roots, set in ``wm_forward_for_initial_infererence``.
+        # Tuple ``(obs (B, P, K, E), act (B, P, A) or (B, P, 1))`` or None. Used by ``forward_recurrent_inference``
+        # to give in-tree nodes the same kind of temporal context the model sees during training.
+        self.root_context: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
 
         self.latent_recon_loss = torch.tensor(0., device=self.device)
         self.perceptual_loss = torch.tensor(0., device=self.device)
@@ -1092,6 +1096,8 @@ class WorldModel(nn.Module):
                 if first_step_flag:
                     # ------------------------- First Step of an Episode -------------------------
                     self._reset_env_history()
+                    # No real history yet: MCTS nodes of this search will be conditioned on the root only.
+                    self.root_context = None
                     outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
                     self._append_obs_to_history(current_obs_embeddings)
                 else:
@@ -1112,11 +1118,17 @@ class WorldModel(nn.Module):
                     obs_seq = torch.stack(self.obs_history, dim=1).to(self.device)
                     act_seq = torch.stack(self.act_history, dim=1).to(self.device)
 
+                    # Real (obs, act) pairs preceding the root. ``obs_seq[:, -1]`` is the root itself and is
+                    # excluded; ``act_seq`` has exactly one entry fewer than ``obs_seq``.
+                    self.root_context = (obs_seq[:, :-1].detach(), act_seq.detach())
+
                     outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_seq, act_seq)},
                                               is_init_infer=True)
 
         elif batch_action is not None and current_obs_embeddings is None:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
+            # Roots built here (e.g. reanalyze) carry no real history, so in-tree nodes start from the root only.
+            self.root_context = None
             # [192, 16, 64] -> [32, 6, 16, 64]
             last_obs_embeddings = last_obs_embeddings.contiguous().view(batch_action.shape[0], -1, self.num_observations_tokens,
                                                           self.config.embed_dim)  # (BL, K) for unroll_step=1
@@ -1200,66 +1212,129 @@ class WorldModel(nn.Module):
         Returns:
             - tuple: A tuple containing output sequence, updated latent state, reward, logits policy, and logits value.
         """
-        latest_state, action = state_action_history[-1]
-        ready_env_num = latest_state.shape[0]
-
-        if len(state_action_history) > self.max_blocks:
-            state_action_history = state_action_history[-self.max_blocks:]
-
-        history_states = []
-        history_actions = []
-
-        for state, act in state_action_history:
-            if isinstance(state, np.ndarray):
-                state = torch.from_numpy(state).to(self.device)
-            if isinstance(act, np.ndarray):
-                act = torch.from_numpy(act).to(self.device)
-
-            if not isinstance(state, torch.Tensor):
-                state = torch.tensor(state, device=self.device)
-            if not isinstance(act, torch.Tensor):
-                act = torch.tensor(act, device=self.device)
-            history_states.append(state)
-            history_actions.append(act)
-
-        latent_state_list = []
-        obs_embeddings = torch.stack(history_states, dim=1)  # (B, L, K, E)
-        if self.continuous_action_space:
-            act_tokens = torch.stack(history_actions, dim=1)  # (B, L, action_space_size)
+        # ------------------------------------------------------------------------------------------------
+        # Build, for every batch element, the temporal context of the node being expanded:
+        #   [real (obs, act) pairs preceding the root] + [root, a_0, s_1, a_1, ..., s_leaf, a_leaf]
+        # truncated to the last ``max_blocks`` pairs. This mirrors the sequences seen in ``compute_loss``.
+        #
+        # Two input formats are accepted:
+        #   * dict {'search_paths': [(states, actions), ...]} produced by ``SearchPathTracker`` in the MCTS,
+        #     where ``states``/``actions`` are the root->leaf chain of one batch element;
+        #   * legacy list of ``(leaf_states, last_actions)`` accumulated per simulation. Only its last element
+        #     is used: previous elements are leaves of *other* simulations and are not a valid context.
+        # ------------------------------------------------------------------------------------------------
+        if isinstance(state_action_history, dict) and 'search_paths' in state_action_history:
+            search_paths = state_action_history['search_paths']
         else:
-            act_tokens = torch.stack(history_actions, dim=1)  # (B, L)
-            act_tokens = act_tokens.unsqueeze(-1)  # (B, L, 1)
+            latest_state, action = state_action_history[-1]
+            latest_state = self._to_device_tensor(latest_state)
+            action = self._to_device_tensor(action)
+            search_paths = [([latest_state[i]], [action[i]]) for i in range(latest_state.shape[0])]
 
-        for k in range(2):
+        batch_size = len(search_paths)
+        groups = self._build_recurrent_context_groups(search_paths)
 
-            # Perform forward pass
-            if k == 0:
-                outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)})
+        latent_state_out = [None] * batch_size
+        reward_out = [None] * batch_size
+        policy_out = [None] * batch_size
+        value_out = [None] * batch_size
+
+        for _, (batch_indices, obs_embeddings, act_tokens) in groups.items():
+            outputs_wm, latent_state, reward = self._recurrent_forward_on_group(obs_embeddings, act_tokens)
+            for j, b in enumerate(batch_indices):
+                latent_state_out[b] = latent_state[j]
+                reward_out[b] = reward[j]
+                policy_out[b] = outputs_wm.logits_policy[j]
+                value_out[b] = outputs_wm.logits_value[j]
+
+        if hasattr(self, 'latent_state'):
+            del self.latent_state  # Very important to minimize cuda memory usage
+        self.latent_state = torch.stack(latent_state_out, dim=0)  # (B, K, E)
+        reward = torch.stack(reward_out, dim=0)  # (B, 1, support)
+        logits_policy = torch.stack(policy_out, dim=0)  # (B, 1, action_dim)
+        logits_value = torch.stack(value_out, dim=0)  # (B, 1, support)
+
+        return (outputs_wm.output_sequence, self.latent_state, reward, logits_policy, logits_value)
+
+    def _to_device_tensor(self, x: Any) -> torch.Tensor:
+        """Convert numpy arrays / python scalars / tensors to a tensor on ``self.device``."""
+        if isinstance(x, torch.Tensor):
+            return x.to(self.device)
+        if isinstance(x, np.ndarray):
+            return torch.from_numpy(x).to(self.device)
+        return torch.tensor(x, device=self.device)
+
+    def _build_recurrent_context_groups(
+            self, search_paths: List[Tuple[List[Any], List[Any]]]
+    ) -> Dict[int, Tuple[List[int], torch.Tensor, torch.Tensor]]:
+        """
+        Assemble the per-element context sequences and group them by length so that each group can be
+        processed in a single batched transformer pass (sequences of different lengths cannot be stacked
+        without changing the attention mask).
+
+        Returns:
+            dict: length -> (batch_indices, obs_embeddings (b, L, K, E), act_tokens (b, L, A) or (b, L, 1)).
+        """
+        root_context = self.root_context
+        if root_context is not None and root_context[0].shape[0] != len(search_paths):
+            # Roots of this search do not correspond to the stored history (e.g. reanalyze or a stale context).
+            root_context = None
+
+        grouped: Dict[int, List[Tuple[int, torch.Tensor, torch.Tensor]]] = defaultdict(list)
+        for b, (states, actions) in enumerate(search_paths):
+            tree_obs = torch.stack([self._to_device_tensor(s) for s in states], dim=0).float()  # (d+1, K, E)
+            tree_act = torch.stack([self._to_device_tensor(a) for a in actions], dim=0)  # (d+1, A) or (d+1,)
+            if not self.continuous_action_space:
+                tree_act = tree_act.long().view(-1, 1)  # (d+1, 1)
             else:
-                obs_embeddings = torch.cat([obs_embeddings, token.unsqueeze(1)], dim=1)
-                if obs_embeddings.shape[1] > self.max_blocks:
-                    obs_embeddings = obs_embeddings[:, 1:, :, :]
-                    act_tokens = act_tokens[:, 1:, :]
-                outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
+                tree_act = tree_act.float()
 
-            if k == 0:
-                reward = outputs_wm.logits_rewards[:,-1:,:]  # (B,)
-
-            if self.model_type == 'slot':
-                if k == 0:
-                    token = outputs_wm.logits_observations[:,-self.num_observations_tokens:,:]
-                    latent_state_list.append(token)
+            if tree_obs.shape[0] >= self.max_blocks:
+                obs_seq = tree_obs[-self.max_blocks:]
+                act_seq = tree_act[-self.max_blocks:]
             else:
-                if k < self.num_observations_tokens:
-                    token = outputs_wm.logits_observations
-                    if len(token.shape) != 3:
-                        token = token.unsqueeze(1)  # (8,1024) -> (8,1,1024)
-                    latent_state_list.append(token)
+                num_real = self.max_blocks - tree_obs.shape[0]
+                if root_context is not None and num_real > 0:
+                    real_obs = root_context[0][b, -num_real:].float()  # (P', K, E)
+                    real_act = root_context[1][b, -num_real:]  # (P', A), (P', 1, A) or (P', 1)
+                    if not self.continuous_action_space:
+                        real_act = real_act.long().view(-1, 1)
+                    else:
+                        # ``act_history`` stores continuous actions as (B, 1, A); flatten to (P', A).
+                        real_act = real_act.float().reshape(real_act.shape[0], -1)
+                    obs_seq = torch.cat([real_obs, tree_obs], dim=0)
+                    act_seq = torch.cat([real_act, tree_act], dim=0)
+                else:
+                    obs_seq, act_seq = tree_obs, tree_act
 
-        del self.latent_state  # Very important to minimize cuda memory usage
-        self.latent_state = torch.cat(latent_state_list, dim=1)  # (B, K)
+            grouped[obs_seq.shape[0]].append((b, obs_seq, act_seq))
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, outputs_wm.logits_policy, outputs_wm.logits_value)
+        groups: Dict[int, Tuple[List[int], torch.Tensor, torch.Tensor]] = {}
+        for length, items in grouped.items():
+            batch_indices = [item[0] for item in items]
+            obs_embeddings = torch.stack([item[1] for item in items], dim=0)  # (b, L, K, E)
+            act_tokens = torch.stack([item[2] for item in items], dim=0)  # (b, L, A) or (b, L, 1)
+            groups[length] = (batch_indices, obs_embeddings, act_tokens)
+        return groups
+
+    def _recurrent_forward_on_group(self, obs_embeddings: torch.Tensor, act_tokens: torch.Tensor):
+        """
+        Two-pass recurrent step for a batch of equally long contexts:
+            pass 0: [.., s_leaf, a_leaf]            -> reward and next latent state s_{leaf+1}
+            pass 1: [.., s_leaf, a_leaf, s_{leaf+1}] -> policy and value at s_{leaf+1}
+        """
+        outputs_wm = self.forward({'obs_embeddings_and_act_tokens': (obs_embeddings, act_tokens)})
+        reward = outputs_wm.logits_rewards[:, -1:, :]  # (b, 1, support)
+        # Prediction of the next latent state comes from the action tokens of the last block.
+        token = outputs_wm.logits_observations[:, -self.num_observations_tokens:, :]  # (b, K, E)
+
+        obs_embeddings = torch.cat([obs_embeddings, token.unsqueeze(1)], dim=1)
+        if obs_embeddings.shape[1] > self.max_blocks:
+            obs_embeddings = obs_embeddings[:, 1:, :, :]
+            act_tokens = act_tokens[:, 1:, :]
+        outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
+
+        return outputs_wm, token, reward
 
 
     def compute_loss(self, batch, target_tokenizer: Tokenizer = None, inverse_scalar_transform_handle=None,

@@ -92,7 +92,7 @@ def main(env_id='VizdoomDefendLine-v0', seed=0, model_path=None):
             type='vizdoom_lightzero',
             import_names=['zoo.vizdoom.env.vizdoom_lightzero_env'],
         ),
-        env_manager=dict(type='subprocess'),
+        env_manager=dict(type='base'),
         policy=dict(
             type='unizero',
             import_names=['lzero.policy.unizero'],

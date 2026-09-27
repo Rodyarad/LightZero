@@ -147,7 +147,7 @@ def main(seed, model_path=None):
             import_names=['zoo.causal_world.env.causalworld_lightzero_env'],
         ),
         # env_manager=dict(type='subprocess'),
-        env_manager=dict(type='subprocess'),
+        env_manager=dict(type='base'),
         policy=dict(
             type='sampled_unizero',
             import_names=['lzero.policy.sampled_unizero'],

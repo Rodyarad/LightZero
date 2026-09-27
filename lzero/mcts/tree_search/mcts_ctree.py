@@ -9,6 +9,7 @@ from lzero.mcts.ctree.ctree_efficientzero import ez_tree as tree_efficientzero
 from lzero.mcts.ctree.ctree_gumbel_muzero import gmz_tree as tree_gumbel_muzero
 from lzero.mcts.ctree.ctree_muzero import mz_tree as tree_muzero
 from lzero.policy import DiscreteSupport, InverseScalarTransform, to_detach_cpu_numpy
+from lzero.mcts.tree_search.search_path import SearchPathTracker
 
 if TYPE_CHECKING:
     from lzero.mcts.ctree.ctree_efficientzero import ez_tree as ez_ctree
@@ -106,7 +107,7 @@ class UniZeroMCTSCtree(object):
             min_max_stats_lst = tree_muzero.MinMaxStatsList(batch_size)
             min_max_stats_lst.set_delta(self._cfg.value_delta_max)
 
-            state_action_history = []
+            path_tracker = SearchPathTracker(batch_size)
             for simulation_index in range(self._cfg.num_simulations):
                 # In each simulation, we expanded a new node, so in one search, we have ``num_simulations`` num of nodes at most.
                 latent_states = []
@@ -142,8 +143,14 @@ class UniZeroMCTSCtree(object):
                 # TODO: .long() is only for discrete action
                 last_actions = torch.from_numpy(np.asarray(last_actions)).to(self._cfg.device).long()
 
-                # Update state_action_history after each simulation
-                state_action_history.append((latent_states.detach().cpu().numpy(), last_actions))
+                # Root -> leaf (state, action) chain of the node expanded in this simulation, per batch element.
+                # NOTE: this replaces the per-simulation accumulated history: leaves of previous simulations
+                # belong to other branches of the tree and are not a valid temporal context for this node.
+                search_paths = path_tracker.build_paths(
+                    latent_state_batch_in_search_path, latent_state_index_in_search_path,
+                    latent_state_index_in_batch, last_actions
+                )
+                state_action_history = {'search_paths': search_paths}
 
                 """
                 MCTS stage 2: Expansion

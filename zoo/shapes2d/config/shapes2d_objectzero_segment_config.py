@@ -130,7 +130,7 @@ def main(env_id, seed):
             type='shapes2d_lightzero',
             import_names=['zoo.shapes2d.env.shapes2d_lightzero_env'],
         ),
-        env_manager=dict(type='subprocess'),
+        env_manager=dict(type='base'),
         policy=dict(
             type='unizero',
             import_names=['lzero.policy.unizero'],
