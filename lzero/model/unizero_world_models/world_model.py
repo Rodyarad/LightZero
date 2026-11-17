@@ -173,12 +173,12 @@ class WorldModel(nn.Module):
         # Hit count and query count statistics
         self._initialize_statistics()
 
-        self.obs_history: List = []
-        self.act_history: List = []
-        # Real (obs, act) history preceding the current MCTS roots, set in ``wm_forward_for_initial_infererence``.
-        # Tuple ``(obs (B, P, K, E), act (B, P, A) or (B, P, 1))`` or None. Used by ``forward_recurrent_inference``
-        # to give in-tree nodes the same kind of temporal context the model sees during training.
-        self.root_context: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        # Histories are keyed by mode and stable environment ID, never by ready-batch position.
+        self.env_history: Dict[str, Dict[int, Dict[str, List[torch.Tensor]]]] = {
+            'collect': {}, 'eval': {}
+        }
+        # Real pairs preceding the current roots, in the current ready-batch order.
+        self.root_context: Optional[List[Tuple[List[torch.Tensor], List[torch.Tensor]]]] = None
 
         self.latent_recon_loss = torch.tensor(0., device=self.device)
         self.perceptual_loss = torch.tensor(0., device=self.device)
@@ -352,6 +352,7 @@ class WorldModel(nn.Module):
         self.dormant_threshold = self.config.dormant_threshold
         self.analysis_dormant_ratio_weight_rank = self.config.analysis_dormant_ratio_weight_rank
         self.tokens_per_block = self.config.tokens_per_block
+        self._initialize_context_lengths()
         if self.model_type == 'slot':
             self.num_observations_tokens = self.config.tokens_per_block // 2
         else:
@@ -408,6 +409,30 @@ class WorldModel(nn.Module):
         if self.use_policy_loss_temperature and self.policy_loss_temperature != 1.0:
             logging.info(f"[Policy Loss Temperature] ENABLED: temperature={self.policy_loss_temperature}")
         # =============================================================================
+
+    def _initialize_context_lengths(self) -> None:
+        """Separate training length, inference window and transformer capacity (all in blocks)."""
+        self.train_context_length = getattr(self.config, 'train_context_length', None)
+        if self.train_context_length is None:
+            self.train_context_length = self.max_blocks
+        self.infer_context_length = getattr(self.config, 'infer_context_length', None)
+        if self.infer_context_length is None:
+            if self.context_length % self.tokens_per_block:
+                raise ValueError('context_length must be a multiple of tokens_per_block')
+            self.infer_context_length = self.context_length // self.tokens_per_block
+        for name in ('train_context_length', 'infer_context_length'):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f'{name} must be a positive integer in timestep blocks')
+        if not 2 <= self.train_context_length <= self.max_blocks:
+            raise ValueError('Require 2 <= train_context_length <= max_blocks')
+        # Training drops the final observation, then excludes the final latent prediction from loss.
+        # Therefore only transitions with at most H_train - 1 input pairs receive latent supervision.
+        if self.infer_context_length >= self.train_context_length:
+            raise ValueError(
+                'infer_context_length must be <= train_context_length - 1: '
+                'the final latent prediction in the training sequence has no target'
+            )
 
     def _initialize_patterns(self) -> None:
         """Initialize patterns for block masks."""
@@ -1061,7 +1086,8 @@ class WorldModel(nn.Module):
             # print(f"current_obs_embeddings.device: {current_obs_embeddings.device}")
             self.latent_state = current_obs_embeddings
             outputs_wm = self.wm_forward_for_initial_infererence(obs_embeddings, batch_action,
-                                                                                   current_obs_embeddings)
+                current_obs_embeddings, env_ids=obs_act_dict.get('env_ids'),
+                context_mode=obs_act_dict.get('context_mode', 'collect'))
         else:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
             self.latent_state = obs_embeddings
@@ -1072,8 +1098,9 @@ class WorldModel(nn.Module):
     #@profile
     @torch.no_grad()
     def wm_forward_for_initial_infererence(self, last_obs_embeddings: torch.LongTensor,
-                                                             batch_action=None,
-                                                             current_obs_embeddings=None) -> torch.FloatTensor:
+                                                              batch_action=None,
+                                                              current_obs_embeddings=None,
+                                                              env_ids=None, context_mode='collect') -> torch.FloatTensor:
         """
         Refresh key-value pairs with the initial latent state for inference.
 
@@ -1084,46 +1111,8 @@ class WorldModel(nn.Module):
         Returns:
             - torch.FloatTensor: The outputs from the world model.
         """
-        n, num_observations_tokens, _ = last_obs_embeddings.shape
-        if n <= self.env_num and current_obs_embeddings is not None:
-            # ================ Collect and Evaluation Phase ================
-            if current_obs_embeddings is not None:
-                 # Determine whether it is the first step in an episode.
-                if self.continuous_action_space:
-                    first_step_flag = not isinstance(batch_action[0], np.ndarray)
-                else:
-                    first_step_flag = max(batch_action) == -1
-                if first_step_flag:
-                    # ------------------------- First Step of an Episode -------------------------
-                    self._reset_env_history()
-                    # No real history yet: MCTS nodes of this search will be conditioned on the root only.
-                    self.root_context = None
-                    outputs_wm = self.forward({'obs_embeddings': current_obs_embeddings}, is_init_infer=True)
-                    self._append_obs_to_history(current_obs_embeddings)
-                else:
-                    # --------------------- Continuing an Episode (Multi-environment) ---------------------
-                    # current_obs_embeddings is the new latent_state, containing information from ready_env_num environments
-                    ready_env_num = current_obs_embeddings.shape[0]
-                    batch_action = batch_action[:ready_env_num]
-
-                    self._append_obs_to_history(current_obs_embeddings)
-
-                    if self.continuous_action_space:
-                        act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(1)
-                    else:
-                        act_tokens = torch.from_numpy(np.array(batch_action)).to(last_obs_embeddings.device).unsqueeze(-1)
-
-                    self._append_act_to_history(act_tokens)
-
-                    obs_seq = torch.stack(self.obs_history, dim=1).to(self.device)
-                    act_seq = torch.stack(self.act_history, dim=1).to(self.device)
-
-                    # Real (obs, act) pairs preceding the root. ``obs_seq[:, -1]`` is the root itself and is
-                    # excluded; ``act_seq`` has exactly one entry fewer than ``obs_seq``.
-                    self.root_context = (obs_seq[:, :-1].detach(), act_seq.detach())
-
-                    outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_seq, act_seq)},
-                                              is_init_infer=True)
+        if current_obs_embeddings is not None:
+            return self._forward_env_roots(current_obs_embeddings, batch_action, env_ids, context_mode)
 
         elif batch_action is not None and current_obs_embeddings is None:
             # ================ calculate the target value in Train phase or calculate the target policy in reanalyze phase ================
@@ -1180,23 +1169,66 @@ class WorldModel(nn.Module):
         return (outputs_wm.output_sequence, latent_state, outputs_wm.logits_rewards,
                 outputs_wm.logits_policy, outputs_wm.logits_value)
 
-    def _reset_env_history(self) -> None:
-            self.obs_history = []
-            self.act_history = []
+    def reset_env_history(self, env_ids=None, context_mode='collect') -> None:
+        """Reset only the requested episodes, without touching the other inference mode."""
+        histories = self.env_history[context_mode]
+        if env_ids is None:
+            histories.clear()
+        else:
+            if isinstance(env_ids, (int, np.integer)):
+                env_ids = [env_ids]
+            for env_id in env_ids:
+                histories.pop(int(env_id), None)
+        self.root_context = None
 
-    def _append_obs_to_history(self, next_obs_embedding: torch.Tensor) -> None:
+    def _forward_env_roots(self, current_obs, batch_action, env_ids, context_mode):
+        """Batch roots by history length; no padding can leak into attention."""
+        batch_size = current_obs.shape[0]
+        env_ids = list(range(batch_size)) if env_ids is None else [int(i) for i in env_ids]
+        if len(env_ids) != batch_size or len(set(env_ids)) != batch_size:
+            raise ValueError('env_ids must contain one unique ID per ready-batch element')
+        if batch_action is None:
+            batch_action = [-1] * batch_size
+        if len(batch_action) != batch_size:
+            raise ValueError('batch_action must be aligned with env_ids')
+        histories = self.env_history[context_mode]
+        grouped = defaultdict(list)
+        self.root_context = []
+        for b, env_id in enumerate(env_ids):
+            action = self._to_device_tensor(batch_action[b]).detach()
+            first_step = action.ndim == 0 and action.item() == -1
+            if first_step or env_id not in histories:
+                histories[env_id] = {'obs': [], 'act': []}
+            history = histories[env_id]
+            if history['obs']:
+                action = action.float().reshape(self.action_space_size) if self.continuous_action_space \
+                    else action.long().reshape(1)
+                history['act'].append(action.clone())
+            history['obs'].append(current_obs[b].detach().clone())
+            history['obs'] = history['obs'][-self.infer_context_length:]
+            num_actions = len(history['obs']) - 1
+            history['act'] = history['act'][-num_actions:] if num_actions else []
+            self.root_context.append((history['obs'][:-1], list(history['act'])))
+            grouped[len(history['obs'])].append((b, history))
 
-        self.obs_history.append(next_obs_embedding.detach())
-
-        if len(self.obs_history) > self.max_blocks:
-            excess = len(self.obs_history) - self.max_blocks
-            self.obs_history = self.obs_history[excess:]
-
-    def _append_act_to_history(self, action: Any) -> None:
-        self.act_history.append(action.detach())
-
-        if len(self.act_history) == self.max_blocks:
-            self.act_history = self.act_history[1:]
+        policies, values, features = [None] * batch_size, [None] * batch_size, [None] * batch_size
+        for length, items in grouped.items():
+            obs = torch.stack([torch.stack(h['obs']) for _, h in items])
+            if length == 1:
+                outputs = self.forward({'obs_embeddings': obs[:, 0]})
+            else:
+                actions = torch.stack([torch.stack(h['act']) for _, h in items])
+                outputs = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs, actions)})
+            for j, (b, _) in enumerate(items):
+                policies[b] = outputs.logits_policy[j, -1:]
+                values[b] = outputs.logits_value[j, -1:]
+                features[b] = outputs.output_sequence[j, -self.num_observations_tokens:]
+        # Initial inference consumes only root-state features/policy/value, not earlier predictions.
+        return WorldModelOutput(
+            torch.stack(features), current_obs,
+            current_obs.new_zeros(batch_size, 1, self.support_size), None,
+            torch.stack(policies), torch.stack(values)
+        )
 
     #@profile
     @torch.no_grad()
@@ -1215,7 +1247,7 @@ class WorldModel(nn.Module):
         # ------------------------------------------------------------------------------------------------
         # Build, for every batch element, the temporal context of the node being expanded:
         #   [real (obs, act) pairs preceding the root] + [root, a_0, s_1, a_1, ..., s_leaf, a_leaf]
-        # truncated to the last ``max_blocks`` pairs. This mirrors the sequences seen in ``compute_loss``.
+        # truncated to the last ``infer_context_length`` pairs, within the supervised training horizon.
         #
         # Two input formats are accepted:
         #   * dict {'search_paths': [(states, actions), ...]} produced by ``SearchPathTracker`` in the MCTS,
@@ -1238,6 +1270,7 @@ class WorldModel(nn.Module):
         reward_out = [None] * batch_size
         policy_out = [None] * batch_size
         value_out = [None] * batch_size
+        feature_out = [None] * batch_size
 
         for _, (batch_indices, obs_embeddings, act_tokens) in groups.items():
             outputs_wm, latent_state, reward = self._recurrent_forward_on_group(obs_embeddings, act_tokens)
@@ -1246,6 +1279,7 @@ class WorldModel(nn.Module):
                 reward_out[b] = reward[j]
                 policy_out[b] = outputs_wm.logits_policy[j]
                 value_out[b] = outputs_wm.logits_value[j]
+                feature_out[b] = outputs_wm.output_sequence[j, -self.num_observations_tokens:]
 
         if hasattr(self, 'latent_state'):
             del self.latent_state  # Very important to minimize cuda memory usage
@@ -1254,7 +1288,7 @@ class WorldModel(nn.Module):
         logits_policy = torch.stack(policy_out, dim=0)  # (B, 1, action_dim)
         logits_value = torch.stack(value_out, dim=0)  # (B, 1, support)
 
-        return (outputs_wm.output_sequence, self.latent_state, reward, logits_policy, logits_value)
+        return (torch.stack(feature_out), self.latent_state, reward, logits_policy, logits_value)
 
     def _to_device_tensor(self, x: Any) -> torch.Tensor:
         """Convert numpy arrays / python scalars / tensors to a tensor on ``self.device``."""
@@ -1276,9 +1310,8 @@ class WorldModel(nn.Module):
             dict: length -> (batch_indices, obs_embeddings (b, L, K, E), act_tokens (b, L, A) or (b, L, 1)).
         """
         root_context = self.root_context
-        if root_context is not None and root_context[0].shape[0] != len(search_paths):
-            # Roots of this search do not correspond to the stored history (e.g. reanalyze or a stale context).
-            root_context = None
+        if root_context is not None and len(root_context) != len(search_paths):
+            raise ValueError('MCTS batch does not match the initial-inference roots')
 
         grouped: Dict[int, List[Tuple[int, torch.Tensor, torch.Tensor]]] = defaultdict(list)
         for b, (states, actions) in enumerate(search_paths):
@@ -1289,14 +1322,14 @@ class WorldModel(nn.Module):
             else:
                 tree_act = tree_act.float()
 
-            if tree_obs.shape[0] >= self.max_blocks:
-                obs_seq = tree_obs[-self.max_blocks:]
-                act_seq = tree_act[-self.max_blocks:]
+            if tree_obs.shape[0] >= self.infer_context_length:
+                obs_seq = tree_obs[-self.infer_context_length:]
+                act_seq = tree_act[-self.infer_context_length:]
             else:
-                num_real = self.max_blocks - tree_obs.shape[0]
-                if root_context is not None and num_real > 0:
-                    real_obs = root_context[0][b, -num_real:].float()  # (P', K, E)
-                    real_act = root_context[1][b, -num_real:]  # (P', A), (P', 1, A) or (P', 1)
+                num_real = self.infer_context_length - tree_obs.shape[0]
+                if root_context is not None and root_context[b][0] and num_real > 0:
+                    real_obs = torch.stack(root_context[b][0][-num_real:]).float()
+                    real_act = torch.stack(root_context[b][1][-num_real:])
                     if not self.continuous_action_space:
                         real_act = real_act.long().view(-1, 1)
                     else:
@@ -1329,7 +1362,7 @@ class WorldModel(nn.Module):
         token = outputs_wm.logits_observations[:, -self.num_observations_tokens:, :]  # (b, K, E)
 
         obs_embeddings = torch.cat([obs_embeddings, token.unsqueeze(1)], dim=1)
-        if obs_embeddings.shape[1] > self.max_blocks:
+        if obs_embeddings.shape[1] > self.infer_context_length:
             obs_embeddings = obs_embeddings[:, 1:, :, :]
             act_tokens = act_tokens[:, 1:, :]
         outputs_wm = self.forward({'last_obs_embeddings_act_tokens_and_current_obs': (obs_embeddings, act_tokens)})
@@ -1339,6 +1372,10 @@ class WorldModel(nn.Module):
 
     def compute_loss(self, batch, target_tokenizer: Tokenizer = None, inverse_scalar_transform_handle=None,
                      **kwargs: Any) -> LossWithIntermediateLosses:
+        if batch['observations'].shape[1] != self.train_context_length:
+            raise ValueError('Training observations must have train_context_length timesteps')
+        if batch['actions'].shape[1] != self.train_context_length:
+            raise ValueError('Training actions must have train_context_length timesteps')
         # Encode observations into latent state representations
         obs_embeddings = self.tokenizer.encode_to_obs_embeddings(batch['observations'])
 
@@ -1739,7 +1776,7 @@ class WorldModel(nn.Module):
             - policy_loss (:obj:`torch.Tensor`): The simplified policy loss.
         """
         batch_size, num_unroll_steps, action_space_size = outputs.logits_policy.shape[
-            0], self.config.num_unroll_steps, self.config.action_space_size
+            0], self.train_context_length, self.config.action_space_size
 
         # Get the policy logits and batch data
         policy_logits_all = outputs.logits_policy
@@ -1805,10 +1842,10 @@ class WorldModel(nn.Module):
         """
         if  task_id is None:
             batch_size, num_unroll_steps, action_space_size = outputs.logits_policy.shape[
-            0], self.config.num_unroll_steps, self.config.action_space_size
+            0], self.train_context_length, self.config.action_space_size
         else:
             batch_size, num_unroll_steps, action_space_size = outputs.logits_policy.shape[
-                0], self.config.num_unroll_steps, self.config.action_space_size_list[task_id]
+                0], self.train_context_length, self.config.action_space_size_list[task_id]
         policy_logits_all = outputs.logits_policy
         mask_batch = batch['mask_padding']
         child_sampled_actions_batch = batch['child_sampled_actions']

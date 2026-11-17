@@ -318,7 +318,8 @@ class SampledUniZeroModel(nn.Module):
         print(f'{"=" * 80}\n')
 
     def initial_inference(self, obs_batch: torch.Tensor, action_batch: Optional[torch.Tensor] = None, 
-                          current_obs_batch: Optional[torch.Tensor] = None) -> MZNetworkOutput:
+                          current_obs_batch: Optional[torch.Tensor] = None,
+                          env_ids=None, context_mode='collect') -> MZNetworkOutput:
         """
         Overview:
             Initial inference of the UniZero model, which is the first step of the UniZero model.
@@ -346,7 +347,10 @@ class SampledUniZeroModel(nn.Module):
                 latent state, W_ is the width of latent state.
          """
         batch_size = obs_batch.size(0)
-        obs_act_dict = {'obs': obs_batch, 'action': action_batch, 'current_obs': current_obs_batch}
+        obs_act_dict = {
+            'obs': obs_batch, 'action': action_batch, 'current_obs': current_obs_batch,
+            'env_ids': env_ids, 'context_mode': context_mode,
+        }
         _, obs_token, logits_rewards, logits_policy, logits_value = self.world_model.forward_initial_inference(obs_act_dict)
         latent_state, reward, policy_logits, value = obs_token, logits_rewards, logits_policy, logits_value
         policy_logits = policy_logits.squeeze(1)

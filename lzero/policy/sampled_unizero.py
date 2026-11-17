@@ -80,7 +80,12 @@ class SampledUniZeroPolicy(UniZeroPolicy):
                 max_blocks=10,
                 # (int) The maximum number of tokens, calculated as tokens per block multiplied by max blocks.
                 max_tokens=2 * 10,
-                # (int) The context length, usually calculated as twice the number of some base unit.
+                # Training timesteps; filled from policy.num_unroll_steps.
+                train_context_length=None,
+                # Inference blocks, strictly shorter than train_context_length.
+                # None converts the legacy token budget below into blocks.
+                infer_context_length=None,
+                # Legacy inference budget in tokens.
                 context_length=2 * 4,
                 # (bool) Whether to use GRU gating mechanism.
                 gru_gating=False,
@@ -751,7 +756,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
         output = {i: None for i in ready_env_id}
 
         with torch.no_grad():
-            network_output = self._collect_model.initial_inference(self.last_batch_obs_collect, self.last_batch_action_collect, data)
+            network_output = self._initial_inference_with_context(data, ready_env_id, 'collect')
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
@@ -844,12 +849,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
 
             self.last_batch_obs_collect = data
             self.last_batch_action_collect = batch_action
-
-            # ========= TODO: for muzero_segment_collector now =========
-            if active_collect_env_num < self.collector_env_num:
-                print('==========collect_forward============')
-                print(f'len(self.last_batch_obs) < self.collector_env_num, {active_collect_env_num}<{self.collector_env_num}')
-                self._reset_collect(reset_init_data=True) 
+            self._store_context_actions(ready_env_id, batch_action, 'collect')
 
         return output
 
@@ -906,7 +906,7 @@ class SampledUniZeroPolicy(UniZeroPolicy):
             ready_env_id = np.arange(active_eval_env_num)
         output = {i: None for i in ready_env_id}
         with torch.no_grad():
-            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action_eval, data)
+            network_output = self._initial_inference_with_context(data, ready_env_id, 'eval')
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             # if not in training, obtain the scalars of the value/reward
@@ -980,8 +980,8 @@ class SampledUniZeroPolicy(UniZeroPolicy):
 
             self.last_batch_obs_eval = data
             self.last_batch_action_eval = batch_action
+            self._store_context_actions(ready_env_id, batch_action, 'eval')
 
-        self._reset_collect(reset_init_data=True)
         return output
 
 

@@ -1,3 +1,43 @@
+## Single-task context windows (cache-free inference)
+
+The single-task `WorldModel` uses three separate lengths, measured in timestep blocks:
+
+| Setting | Meaning |
+| --- | --- |
+| `policy.num_unroll_steps` | `H_train`: observations/actions passed to the training forward. The policy copies this into `world_model_cfg.train_context_length`. |
+| `world_model_cfg.infer_context_length` | `C`: explicit inference window. Roots and next-state policy/value see at most `C` observations and `C-1` preceding actions. Dynamics/reward see at most `C` complete `(state, action)` pairs. |
+| `world_model_cfg.max_blocks` | Transformer capacity, independent of the two windows. `max_tokens = tokens_per_block * max_blocks`. |
+
+If `infer_context_length` is `None`, legacy configurations use
+`context_length // tokens_per_block` (an exact division is required).
+An explicit `infer_context_length` takes precedence over this legacy token budget.
+When constructing a model directly, set `train_context_length` explicitly if it differs
+from `max_blocks`.
+
+Require `2 <= H_train <= max_blocks` and `1 <= C <= H_train - 1`.
+Training keeps its existing teacher-forced layout: the buffer supplies `H_train+1`
+observations, the policy drops the last observation, and latent loss supervises
+`H_train-1` transitions. Thus dynamics inference must not exceed `H_train-1`
+input pairs. Invalid configurations fail immediately rather than silently clipping
+the requested window. Padding near episode ends can make the usable training context shorter.
+
+For example, `num_unroll_steps=5, infer_context_length=2, max_blocks=8`
+trains on 5 blocks, uses at most 2 blocks during inference, and reserves capacity for 8.
+Increasing capacity alone does not increase either window.
+
+Real histories are keyed by `(collect/eval, env_id)` and survive reordered or partial
+ready batches. Episode reset clears only the requested IDs in that mode.
+Segment-boundary notifications (`reset_init_data=False`) do not clear history.
+MCTS appends only the current root-to-leaf branch, never leaves of other simulations.
+Different sequence lengths are grouped without padding the transformer input.
+Initial/recurrent inference returns compact `output_sequence` features for the current
+state, with shape `(B, num_observation_tokens, embed_dim)`; training forward still returns
+the full sequence.
+
+These rules apply to the single-task cache-free path. The historical KV-cache/RoPE
+description below concerns the older/multi-task implementation and is not the
+context-window contract of the single-task path.
+
 ## Position Encoding in UniZero World Model
 
 This section provides a detailed explanation of the position encoding strategies used in the UniZero world model and presents two configurable options based on the value of the configuration parameter `self.config.rotary_emb`.

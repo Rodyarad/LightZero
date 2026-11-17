@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import wandb
+from easydict import EasyDict
 from ding.model import model_wrap
 from ding.utils import POLICY_REGISTRY
 from lzero.mcts import UniZeroMCTSCtree as MCTSCtree
@@ -18,7 +19,6 @@ from lzero.policy import (DiscreteSupport, InverseScalarTransform,
 from lzero.policy.head_clip_manager import (HeadClipConfig, HeadClipManager,
                                             create_head_clip_manager_from_dict)
 from lzero.policy.muzero import MuZeroPolicy
-from lzero.policy.utils import initialize_pad_batch
 from torch.nn.utils.convert_parameters import (parameters_to_vector,
                                                vector_to_parameters)
 
@@ -144,7 +144,12 @@ class UniZeroPolicy(MuZeroPolicy):
                 max_blocks=10,
                 # (int) The maximum number of tokens, calculated as tokens per block multiplied by max blocks.
                 max_tokens=2 * 10,
-                # (int) The context length, usually calculated as twice the number of some base unit.
+                # Training timesteps; filled from policy.num_unroll_steps before model creation.
+                train_context_length=None,
+                # Inference blocks: root <= C observations; dynamics <= C complete (s, a) pairs.
+                # Require C < train_context_length. None uses legacy context_length / tokens_per_block.
+                infer_context_length=None,
+                # Legacy inference budget in tokens, not transformer capacity.
                 context_length=2 * 4,
                 # (bool) Whether to use GRU gating mechanism.
                 gru_gating=False,
@@ -495,6 +500,45 @@ class UniZeroPolicy(MuZeroPolicy):
             decay=int(1e5),
         ),
     )
+
+    def _create_model(self, cfg: EasyDict, model=None):
+        world_cfg = cfg.model.world_model_cfg
+        train_length = world_cfg.get('train_context_length')
+        if train_length is not None and train_length != cfg.num_unroll_steps:
+            raise ValueError('train_context_length must equal policy.num_unroll_steps')
+        world_cfg.train_context_length = cfg.num_unroll_steps
+        model = super()._create_model(cfg, model)
+        world_model = getattr(model, 'world_model', None)
+        if hasattr(world_model, 'train_context_length') and world_model.train_context_length != cfg.num_unroll_steps:
+            raise ValueError('Provided model has a different train_context_length from policy.num_unroll_steps')
+        return model
+
+    def _initial_inference_with_context(self, data, env_ids, context_mode):
+        """Align the previous actions to stable IDs, including reordered/partial ready batches."""
+        if not hasattr(self, '_context_actions'):
+            self._context_actions = {'collect': {}, 'eval': {}}
+        actions = [self._context_actions[context_mode].get(int(i), -1) for i in env_ids]
+        model = self._collect_model if context_mode == 'collect' else self._eval_model
+        return model.initial_inference(
+            data, actions, data, env_ids=env_ids, context_mode=context_mode
+        )
+
+    def _store_context_actions(self, env_ids, actions, context_mode):
+        for env_id, action in zip(env_ids, actions):
+            self._context_actions[context_mode][int(env_id)] = \
+                np.array(action, copy=True) if isinstance(action, np.ndarray) else action
+
+    def _reset_inference_context(self, env_ids, context_mode):
+        if not hasattr(self, '_context_actions'):
+            self._context_actions = {'collect': {}, 'eval': {}}
+        if env_ids is None:
+            self._context_actions[context_mode].clear()
+        else:
+            if isinstance(env_ids, (int, np.integer)):
+                env_ids = [env_ids]
+            for env_id in env_ids:
+                self._context_actions[context_mode].pop(int(env_id), None)
+        self._model.world_model.reset_env_history(env_ids, context_mode)
 
     def default_model(self) -> Tuple[str, List[str]]:
         """
@@ -1405,7 +1449,7 @@ class UniZeroPolicy(MuZeroPolicy):
         output = {i: None for i in ready_env_id}
 
         with torch.no_grad():
-            network_output = self._collect_model.initial_inference(self.last_batch_obs_collect, self.last_batch_action_collect, data)
+            network_output = self._initial_inference_with_context(data, ready_env_id, 'collect')
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             pred_values = self.value_inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
@@ -1478,26 +1522,7 @@ class UniZeroPolicy(MuZeroPolicy):
 
             self.last_batch_obs_collect = data
             self.last_batch_action_collect = batch_action
-
-            # This logic is a temporary workaround specific to the muzero_segment_collector.
-            if active_collect_env_num < self.collector_env_num:
-                # When an environment finishes an episode ('done'), the length of `self.last_batch_obs` passed back
-                # becomes smaller than the total number of collector environments.
-                # Handling this dynamic batch size is complex, as the transformer's KV cache retrieval
-                # requires a stable environment ID for correct indexing. A mismatch would cause retrieval errors.
-                #
-                # Therefore, as a simpler solution, we reset the collection state for ALL environments.
-                # By resetting `self.last_batch_action` to -1 for all `self.collector_env_num` environments,
-                # we force the transformer to start its context from scratch, avoiding incorrect cache lookups.
-                logging.info('========== collect_forward ============')
-                logging.info(f'An environment has finished. Active envs: {active_collect_env_num} < Total envs: {self.collector_env_num}. Resetting all.')
-
-                self._reset_collect(reset_init_data=True)
-
-                # If the sampling type is 'episode', it's unexpected for the number of active environments to drop,
-                # as this suggests an inconsistent state or a potential issue in the collection logic.
-                if getattr(self._cfg, 'sample_type', '') == 'episode':
-                    logging.warning('Inconsistent state detected. `sample_type` is "episode", but the number of active environments has changed.')
+            self._store_context_actions(ready_env_id, batch_action, 'collect')
 
         return output
 
@@ -1564,7 +1589,7 @@ class UniZeroPolicy(MuZeroPolicy):
             ready_env_id = np.arange(active_eval_env_num)
         output = {i: None for i in ready_env_id}
         with torch.no_grad():
-            network_output = self._eval_model.initial_inference(self.last_batch_obs_eval, self.last_batch_action_eval, data)
+            network_output = self._initial_inference_with_context(data, ready_env_id, 'eval')
             latent_state_roots, reward_roots, pred_values, policy_logits = mz_network_output_unpack(network_output)
 
             # if not in training, obtain the scalars of the value/reward
@@ -1625,129 +1650,20 @@ class UniZeroPolicy(MuZeroPolicy):
 
             self.last_batch_obs_eval = data
             self.last_batch_action_eval = batch_action
+            self._store_context_actions(ready_env_id, batch_action, 'eval')
 
-        self._reset_collect(reset_init_data=True)
         return output
 
     def _reset_collect(self, env_id: int = None, current_steps: int = None, reset_init_data: bool = True, task_id: int = None) -> None:
-        """
-        Overview:
-            This method resets the collection process for a specific environment. It clears caches and memory
-            when certain conditions are met, ensuring optimal performance. If reset_init_data is True, the initial data
-            will be reset.
-        Arguments:
-            - env_id (:obj:`int`, optional): The ID of the environment to reset. If None or list, the function returns immediately.
-            - current_steps (:obj:`int`, optional): The current step count in the environment. Used to determine
-              whether to clear caches.
-            - reset_init_data (:obj:`bool`, optional): Whether to reset the initial data. If True, the initial data will be reset.
-        """
+        """Reset the requested episodes only; None resets the entire collection mode."""
         if reset_init_data:
-            self.last_batch_obs_collect = initialize_pad_batch(
-                self._cfg.model.observation_shape,
-                self._cfg.collector_env_num,
-                self._cfg.device,
-                pad_token_id=self.pad_token_id
-            )
-            self.last_batch_action_collect = [-1 for _ in range(self._cfg.collector_env_num)]
-
-
-        # We must handle both single int and list of ints for env_id.
-        if env_id is not None:
-            if isinstance(env_id, int):
-                env_ids_to_reset = [env_id]
-            else: # Assumes it's a list
-                env_ids_to_reset = env_id
-
-        # Determine the clear interval based on the environment's sample type
-        clear_interval = 2000 if getattr(self._cfg, 'sample_type', '') == 'episode' else self._cfg.game_segment_length
-
-        # Clear caches if the current steps are a multiple of the clear interval
-        if current_steps is not None and current_steps % clear_interval == 0:
-            logging.info(f'clear_interval: {clear_interval}')
-
-            # Clear various caches in the collect model's world model
-            world_model = self._collect_model.world_model
-            # ==================== Phase 1.5: Use unified clear_caches() method ====================
-            # This automatically handles both old and new cache systems
-            world_model.clear_caches()
-            # ======================================================================================
-
-            # Free up GPU memory
-            torch.cuda.empty_cache()
-
-            logging.info(f'eps_steps_lst[{env_id}]: {current_steps}, collector: collect_model clear()')
+            self._reset_inference_context(env_id, 'collect')
+        # reset_init_data=False denotes a segment boundary, not the end of an episode.
 
     def _reset_eval(self, env_id: int = None, current_steps: int = None, reset_init_data: bool = True, task_id: int = None) -> None:
-        """
-        Overview:
-            This method resets the evaluation process for a specific environment. It clears caches and memory
-            when certain conditions are met, ensuring optimal performance. If reset_init_data is True,
-            the initial data will be reset.
-        Arguments:
-            - env_id (:obj:`int`, optional): The ID of the environment to reset. If None or list, the function returns immediately.
-            - current_steps (:obj:`int`, optional): The current step count in the environment. Used to determine
-              whether to clear caches.
-            - reset_init_data (:obj:`bool`, optional): Whether to reset the initial data. If True, the initial data will be reset.
-        """
+        """Reset evaluation episodes without touching collection histories on the shared model."""
         if reset_init_data:
-            if task_id is not None:
-                self.last_batch_obs_eval = initialize_pad_batch(
-                    self._cfg.model.observation_shape_list[task_id],
-                    self._cfg.evaluator_env_num,
-                    self._cfg.device,
-                    pad_token_id=self.pad_token_id
-                )
-                logging.info(f'unizero.py task_id:{task_id} after _reset_eval: last_batch_obs_eval:{self.last_batch_obs_eval.shape}')
-
-            else:
-                self.last_batch_obs_eval = initialize_pad_batch(
-                    self._cfg.model.observation_shape,
-                    self._cfg.evaluator_env_num,
-                    self._cfg.device,
-                    pad_token_id=self.pad_token_id
-                )
-                logging.info(f'unizero.py task_id:{task_id} after _reset_eval: last_batch_obs_eval:{self.last_batch_obs_eval.shape}')
-
-            self.last_batch_action_eval = [-1 for _ in range(self._cfg.evaluator_env_num)]
-
-        # This logic handles the crucial end-of-episode cache clearing for evaluation.
-        # The evaluator calls `_policy.reset([env_id])` when an episode is done.
-        if env_id is not None:
-            if isinstance(env_id, int):
-                env_ids_to_reset = [env_id]
-            else: # Assumes it's a list
-                env_ids_to_reset = env_id
-
-            # The key condition: `current_steps` is None only on the end-of-episode reset call from the evaluator.
-            if current_steps is None:
-                world_model = self._eval_model.world_model
-
-                # The recurrent cache is global.
-                # ==================== Phase 1.5: Use unified clear_caches() method ====================
-                # This automatically handles both old and new cache systems
-                world_model.clear_caches()
-                # ======================================================================================
-                torch.cuda.empty_cache()
-                return
-
-        # Determine the clear interval based on the environment's sample type
-        clear_interval = 2000 if getattr(self._cfg, 'sample_type', '') == 'episode' else self._cfg.game_segment_length
-        # Clear caches if the current steps are a multiple of the clear interval
-        if current_steps is not None and current_steps % clear_interval == 0:
-            logging.info(f'clear_interval: {clear_interval}')
-
-            # Clear various caches in the eval model's world model
-            world_model = self._eval_model.world_model
-            # ==================== Phase 1.5: Use unified clear_caches() method ====================
-            # This automatically handles both old and new cache systems
-            world_model.clear_caches()
-            # ======================================================================================
-
-            # Free up GPU memory
-            torch.cuda.empty_cache()
-
-            logging.info('evaluator: eval_model clear()')
-            logging.info(f'eps_steps_lst[{env_id}]: {current_steps}')
+            self._reset_inference_context(env_id, 'eval')
 
     def _monitor_vars_learn(self) -> List[str]:
         """
