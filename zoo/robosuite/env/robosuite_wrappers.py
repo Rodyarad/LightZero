@@ -38,7 +38,9 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         obs_image_size=obs_image_size,
         time_limit=config.max_episode_steps,
         seed=config.seed,
+        gt_masks=bool(config.oc_model and getattr(config, 'oc_model_type', None) == 'DinoObject'),
     )
+    raw_env = env
 
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
@@ -54,6 +56,15 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
         )
 
     env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
+    if config.oc_model and getattr(config, 'oc_model_type', None) == 'DinoObject':
+        from zoo.ocr.dino_object.encoder import DinoObjectWrapper
+        if config.num_slots != 4 or config.slot_dim != 384:
+            raise ValueError('robosuite DinoObject requires num_slots=4, slot_dim=384')
+        return DinoObjectWrapper(
+            env, raw_env, num_objects=4,
+            device=getattr(config, 'dino_device', 'cuda' if torch.cuda.is_available() else 'cpu'),
+            weights_path=getattr(config, 'dino_weights_path', None),
+        )
     if config.from_pixels:
         if config.warp_frame:
             # we must set WarpFrame before ScaledFloatFrameWrapper

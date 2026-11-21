@@ -91,7 +91,7 @@ class RobosuiteEnvLightZero(BaseEnv):
 
             if self.oc_model:
                 self._observation_space = gym.spaces.Dict({
-                    'observation': self._env.env.observation_space,
+                    'observation': self._env.observation_space,
                     'action_mask': gym.spaces.Box(
                         low=0, high=1, shape=(self._env.env.action_space.shape[0],), dtype=np.int8
                     ),
@@ -293,4 +293,3 @@ class RobosuiteEnvLightZero(BaseEnv):
         cfg.max_episode_steps = cfg.eval_max_episode_steps
         cfg.is_eval = True
         return [cfg for _ in range(evaluator_env_num)]
-

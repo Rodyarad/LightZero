@@ -46,7 +46,8 @@ class PushCubeCustomEnv(PushCubeEnv):
 class ManiSkill(gym.Env):
     metadata = {"render.modes": ["rgb_array"]}
 
-    def __init__(self, reward_mode, image_size, pose_reward_coef=1., place_reward_coef=1.):
+    def __init__(self, reward_mode, image_size, pose_reward_coef=1., place_reward_coef=1., gt_masks=False):
+        self._gt_masks = gt_masks
         self.env = gymnasium.make(
             'PushCubeCustom-v1',
             pose_reward_coef=pose_reward_coef,
@@ -64,6 +65,7 @@ class ManiSkill(gym.Env):
             dtype=self.env.action_space.dtype,
         )
         self._last_observation = None
+        self._last_gt_labels = None
 
     def last_observation(self):
         return self._last_observation.copy()
@@ -86,11 +88,15 @@ class ManiSkill(gym.Env):
         return unravel_result
 
     def reset(self):
-        self._last_observation = self._unravel(self.env.reset())[0].numpy()
+        result = self.env.reset()
+        self._update_gt_labels(result[0])
+        self._last_observation = self._unravel(result)[0].numpy()
         return self.last_observation()
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = self._unravel(self.env.step(action))
+        result = self.env.step(action)
+        self._update_gt_labels(result[0])
+        obs, reward, terminated, truncated, info = self._unravel(result)
         assert not truncated, 'Cannot have time limit in unwrapped ManiSkill environment!'
 
         self._last_observation = obs.numpy()
@@ -98,3 +104,14 @@ class ManiSkill(gym.Env):
 
     def render(self, mode=None):
         return self.last_observation()
+
+    def _update_gt_labels(self, observation):
+        if self._gt_masks:
+            from zoo.ocr.dino_object.segmentation import maniskill_own_seg_v1
+            raw = observation['sensor_data']['base_camera']['segmentation'][0, ..., 0].cpu().numpy()
+            self._last_gt_labels = maniskill_own_seg_v1(raw, self.env.unwrapped.segmentation_id_map)
+
+    def get_last_gt_frame(self):
+        if not self._gt_masks or self._last_observation is None:
+            raise RuntimeError("Enable gt_masks to access GT object frames")
+        return self._last_observation.copy(), self._last_gt_labels.copy()

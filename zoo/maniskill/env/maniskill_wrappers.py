@@ -30,7 +30,12 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
     Return:
         - env (:obj:`gym.Env`): The wrapped Atari environment with the given configurations.
     """
-    env = ManiSkill(reward_mode='normalized_dense', pose_reward_coef=0.01, place_reward_coef=0.1, image_size=config.observation_shape[2])
+    env = ManiSkill(
+        reward_mode='normalized_dense', pose_reward_coef=0.01, place_reward_coef=0.1,
+        image_size=config.observation_shape[2],
+        gt_masks=bool(config.oc_model and getattr(config, 'oc_model_type', None) == 'DinoObject'),
+    )
+    raw_env = env
 
     if hasattr(config, 'save_replay') and config.save_replay \
             and hasattr(config, 'replay_path') and config.replay_path is not None:
@@ -45,6 +50,15 @@ def wrap_lightzero(config: EasyDict) -> gym.Env:
 
     env = TimeLimit(env, max_episode_steps=config.max_episode_steps)
     env = FailOnTimelimitWrapper(env)
+    if config.oc_model and getattr(config, 'oc_model_type', None) == 'DinoObject':
+        from zoo.ocr.dino_object.encoder import DinoObjectWrapper
+        if config.num_slots != 5 or config.slot_dim != 384:
+            raise ValueError('ManiSkill DinoObject requires num_slots=5, slot_dim=384')
+        return DinoObjectWrapper(
+            env, raw_env, num_objects=5,
+            device=getattr(config, 'dino_device', 'cuda' if torch.cuda.is_available() else 'cpu'),
+            weights_path=getattr(config, 'dino_weights_path', None),
+        )
     if config.from_pixels:
         if config.warp_frame:
             # we must set WarpFrame before ScaledFloatFrameWrapper

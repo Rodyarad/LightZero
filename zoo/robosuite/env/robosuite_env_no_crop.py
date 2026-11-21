@@ -48,7 +48,7 @@ class FixedPositionSampler(ObjectPositionSampler):
 class RobosuiteEnv(gym.Env):
     metadata = {"render.modes": ["rgb_array"]}
 
-    def __init__(self, use_random_object_position, obs_image_size, time_limit, seed):
+    def __init__(self, use_random_object_position, obs_image_size, time_limit, seed, gt_masks=False):
         self._robot = 'Panda'
         self._task = 'Lift'
 
@@ -57,6 +57,7 @@ class RobosuiteEnv(gym.Env):
         self._initialization_noise_magnitude = 0.5
         self._use_random_object_position = use_random_object_position
         self._seed = seed
+        self._gt_masks = gt_masks
         self.render_mode = self.metadata["render.modes"][0]
 
         np.random.seed(self._seed)
@@ -121,12 +122,14 @@ class RobosuiteEnv(gym.Env):
             initialization_noise=initialization_noise,
             camera_heights=224,
             camera_widths=224,
+            camera_segmentations="element" if gt_masks else None,
             ignore_done=True,
         )
 
         self._env = env
         self._last_frame = None
         self._last_source_frame = None
+        self._last_gt_masks = None
         observation_shape = (*self._obs_image_size, 3)
         self.observation_space = gym.spaces.Box(0, 255, observation_shape, dtype=np.uint8)
 
@@ -139,6 +142,10 @@ class RobosuiteEnv(gym.Env):
         image = np.flipud(image)
 
         self._last_source_frame = image.copy()
+        if self._gt_masks:
+            from zoo.ocr.dino_object.segmentation import robosuite_own_seg_v1
+            elements = np.flipud(observation["frontview_segmentation_element"][..., 0])
+            self._last_gt_masks = robosuite_own_seg_v1(elements, self._env)
         self._last_frame = np.array(Image.fromarray(image).resize(self._obs_image_size))
         return self._last_frame.copy()
 
@@ -159,3 +166,8 @@ class RobosuiteEnv(gym.Env):
 
     def get_last_source_frame(self):
         return self._last_source_frame
+
+    def get_last_gt_frame(self):
+        if not self._gt_masks or self._last_source_frame is None:
+            raise RuntimeError("Enable gt_masks to access GT object frames")
+        return self._last_source_frame.copy(), self._last_gt_masks.copy()
